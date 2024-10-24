@@ -127,7 +127,7 @@ function add_dns_to_named_rr() {
 # Deletes a DNS entry from Bind
 function del_from_dns() {
 	echo "## Delete DNS entries for ${_vm_name}"
-	sed "/${myip//*.}      IN  PTR     ${_vm_name}./d" -i /var/lib/named/8.168.192.db
+	sed "/${myip//*.}      IN  PTR     ${_vm_name}./d" -i /var/lib/named/${mynet_reverse}.db
 	sed "/${_vm_name//.*}         IN  A       ${myip}/d" -i /var/lib/named/${mydomain}.lan
 	systemctl restart named
 }
