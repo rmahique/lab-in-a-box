@@ -13,6 +13,15 @@
 # set -x -v
 
 
+function show_nicer_messages() {
+  # _msg="" show_nicer_messages
+  tput bold
+  echo -e "\n###._ ${_msg} _.###\n"
+  tput sgr0
+}
+
+
+
 # Creates a VM image from a separate image and resizes it to the desired size.
 function copy_vm_img() {
 	echo "# - Copy the image for the new VM"
