@@ -1,0 +1,28 @@
+autoinstall:
+  version: 1
+  identity:
+    hostname: TEMPLATE_HN
+    password: "ROOT_PWD_HASH"
+    username: ubuntu
+users:
+  - default
+  - name: ubuntu
+    ssh_authorized_keys: "ROOT_SSH_KEY"
+    hashed_passwd: "ROOT_PWD_HASH"
+write_files:
+  - path:  /etc/netplan/50-cloud-init.yaml
+    permissions: '0644'
+    content: |
+         network:
+           version: 2
+           renderer: networkd
+           ethernets:
+             enp3s0:
+               addresses: ${myip}/${mymask}
+               gateway4: ${mygw}
+               nameservers:
+                 addresses: [${mydns}]
+runcmd:
+  - rm /etc/netplan/50-cloud-init.yaml
+  - netplan generate
+  - netplan apply

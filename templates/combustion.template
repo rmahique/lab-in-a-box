@@ -52,14 +52,15 @@ if ! which SUSEConnect > /dev/null 2>&1; then
     zypper --non-interactive install suseconnect-ng
 fi
 SUSEConnect --email ${SUSE_email} --url ${SUSE_url} --regcode ${SUSE_regcode}
-zypper  --non-interactive install vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git
+## Taking outside of combustion for flexibility
+#zypper  --non-interactive install ${BOOT_PACKAGES:-vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git}
 
 
 # set the keyboard
-echo "KEYMAP=us" >> /etc/vconsole.conf
+echo "KEYMAP=${KEYMAP:-us}" >> /etc/vconsole.conf
 
 # set the time zone
-ln -sf /usr/share/zoneinfo/Europe/Zurich /etc/localtime
+ln -sf /usr/share/zoneinfo/${ZONEINFO:-Europe/Zurich} /etc/localtime
 
 # add extra ssh keys
 echo 'ROOT_SSH_KEY' >>/root/.ssh/authorized_keys

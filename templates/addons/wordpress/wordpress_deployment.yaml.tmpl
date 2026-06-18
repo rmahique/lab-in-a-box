@@ -1,0 +1,100 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${wordpress_name:-wordpress}
+  namespace: ${wordpress_ns:-wordpress}
+  labels:
+    app: ${wordpress_name:-wordpress}
+spec:
+  ports:
+    - port: ${wordpress_port:-80}
+  selector:
+    app: ${wordpress_name:-wordpress}
+    tier: frontend
+  type: LoadBalancer
+...
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wp-pv-claim
+  namespace: ${wordpress_ns:-wordpress}
+  labels:
+    app: ${wordpress_name:-wordpress}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: ${wordpress_storage_size:-20Gi}
+...
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${wordpress_name:-wordpress}
+  namespace: ${wordpress_ns:-wordpress}
+  labels:
+    app: ${wordpress_name:-wordpress}
+spec:
+  selector:
+    matchLabels:
+      app: ${wordpress_name:-wordpress}
+      tier: frontend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ${wordpress_name:-wordpress}
+        tier: frontend
+    spec:
+      containers:
+      - image: ${wordpress_image:-wordpress:6.2.1-apache}
+        name: ${wordpress_name:-wordpress}
+        env:
+        - name: WORDPRESS_DB_HOST
+          value: ${wordpress_name:-wordpress}-mysql
+        - name: WORDPRESS_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        - name: WORDPRESS_DB_USER
+          value: ${wordpress_usr:-wordpress}
+        ports:
+        - containerPort: ${wordpress_port:-80}
+          name: ${wordpress_name:-wordpress}
+        volumeMounts:
+        - name: ${wordpress_name:-wordpress}-persistent-storage
+          mountPath: /var/www/html
+      volumes:
+      - name: ${wordpress_name:-wordpress}-persistent-storage
+        persistentVolumeClaim:
+          claimName: wp-pv-claim
+...
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${wordpress_name:-wordpress}
+  namespace: ${wordpress_ns:-wordpress}
+spec:
+  defaultBackend:
+    service:
+      name: ${wordpress_name:-wordpress}
+      port:
+        number: ${wordpress_port:-80}
+  rules:
+    - host: ${wordpress_name:-wordpress}.${clu_name}.${mydomain}
+      http:
+        paths:
+          - backend:
+              service:
+                name: ${wordpress_name:-wordpress}
+                port:
+                  number: ${wordpress_port:-80}
+            path: /
+            pathType: Prefix
+...

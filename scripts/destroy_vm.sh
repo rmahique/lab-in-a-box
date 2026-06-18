@@ -10,35 +10,37 @@
 # You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 
-
-inputFile=${1}
-_vm_name=${2}
-
 function usage() {
-	echo "Usage:
+        echo "Usage:
 $0 <configuration file> <vm_name>"
 
 }
 
 
+_VERSION="__LABVERSION__"
+[[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
+
+# load lab_creation defaults
+if [[ -f /etc/lab_creation.defaults ]]
+then
+        . /etc/lab_creation.defaults
+elif [[ -f lab_creation.defaults ]]
+then
+        . lab_creation.defaults
+else
+        echo "ERROR: Configuration file lab_creation.defaults not found in local path or /etc"
+        exit 1
+fi
+
+# Load primary functions
+. ${_primary_funtions} || exit 1
 
 
-if [[ ! ${inputFile} ]]
-then
-	echo "missing configuration file parameter"
-	usage
-	exit 1
-fi
-if [[ ! -f ${inputFile} ]]
-then
-	echo "configuration file \"${inputFile}\" not found or name incorrect"
-	usage
-	exit 1
-elif ! jq <"${inputFile}" >/dev/null
-then
-   echo "Cluster definition not in validated JSON format"
-   exit 1
-fi
+
+
+
+
+_vm_name=${2}
 
 if [[ ! ${_vm_name} ]]
 then
@@ -48,33 +50,8 @@ then
 fi
 
 
-
-# load lab_creation config
-if [[ -f /etc/lab_creation.cfg ]]
-then
-        . /etc/lab_creation.cfg
-elif [[ -f lab_creation.cfg ]]
-then
-        . lab_creation.cfg
-else
-        echo "ERROR: Configuration file lab_creation.cfg not found in local path or /etc"
-        exit 1
-fi
-
-if [[ ! -f ${_lib_path} ]]
-then
-        echo "ERROR: Library \"${_lib_path}\" not found"
-        exit 1
-else
-        # load library
-        . ${_lib_path}
-fi
-
-
-
 # load VM settings
 load_vm_vars
-
 
 del_from_dns
 

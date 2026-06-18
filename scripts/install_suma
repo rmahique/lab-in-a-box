@@ -10,13 +10,24 @@
 # You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 
-inputFile=${1}
+_VERSION="__LABVERSION__"
+[[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
 
-function usage() {
-        echo "Usage:
-$0 <configuration file>"
+# load lab_creation defaults
+if [[ -f /etc/lab_creation.defaults ]]
+then
+        . /etc/lab_creation.defaults
+elif [[ -f lab_creation.defaults ]]
+then
+        . lab_creation.defaults
+else
+        echo "ERROR: Configuration file lab_creation.defaults not found in local path or /etc"
+        exit 1
+fi
 
-}
+# Load primary functions
+. ${_primary_funtions} || exit 1
+
 
 
 # Load SUMA related variables.
@@ -29,19 +40,76 @@ function load_suma_vars() {
 
 # Setup suma
 function setup_suma() {
-                $ssh_command "transactional-update register -p ${suma_channel:-SUSE-Manager-Server/5.0/x86_64} -r ${suma_key:-aaaaaa} ; reboot"
-                sleep 60
-                $ssh_command "transactional-update pkg install -y mgradm-bash-completion mgrctl-bash-completion mgradm-zsh-completion mgrctl-zsh-completion; reboot"
-                sleep 60
+                _msg="- Registering system to SUMA channel" show_nicer_messages
+                $ssh_command "transactional-update --quiet register -p ${suma_channel:-SUSE-Manager-Server/5.0/x86_64} -r ${suma_key:-aaaaaa} ; reboot"
+                sleep 5
+                check_ssh_conn
+                _msg="- install utility packages" show_nicer_messages
+
+                $ssh_command "transactional-update --quiet pkg install -y mgradm-bash-completion mgrctl-bash-completion mgradm-zsh-completion mgrctl-zsh-completion; reboot"
+                sleep 5
+                check_ssh_conn
+                if [[ "${extra_dsk}" != "" ]]
+                then
+                  for _dsk in ${extra_dsk}
+                  do
+                    _msg="- Adding extra disk ${_dsk}" show_nicer_messages
+                    #if [[ "${_dsk}" =~ "UUID" ]]
+                    #then
+                      $ssh_command "echo \"mirror /srv/mirror 9p trans=virtio,version=9p2000.L,nofail,_netdev,x-mount.mkdir 0 0\" >> /etc/fstab ;  mkdir /srv/mirror"
+                    #  _dsk="${_dsk//,*}"
+                    #  _dsk=`$ssh_command "lsblk -o UUID,PATH | grep ${_dsk//UUID=} | cut -d' ' -f2"`
+                    #  $ssh_command "mgr-storage-server ${_dsk}"
+                    #fi
+                    $ssh_command "echo \"${_dsk//,*} ${_dsk//*,} xfs defaults,nofail 1 2\" >>/etc/fstab"
+                  done
+                  $ssh_command "reboot"
+                  sleep 5
+                  check_ssh_conn
+
+                else
+                   echo "NO EXTRA_DSK "
+                fi
+                _msg="- Installing SUMA" show_nicer_messages
+
                 $ssh_command "podman login --username  ${suma_reg_username:-admin@mydemo.lab} --password ${suma_reg_pwd:-aaaaaaaa} registry.suse.com"
-                $ssh_command "mgradm install --admin-password ${suma_adm_pwd:-admin123} --ssl-password ${suma_ssl_pwd:-admin123}  --admin-email ${suma_adm_email:-admin@mydemo.lab} --scc-user ${suma_scc_user:-XYZ} --scc-password ${suma_scc_pwd:-admin123}  podman"
+                
+                template_file=${_templ_addons_loc}/suma/mgradm.yaml.tmpl
+                process_templates | $ssh_command "cat > /var/tmp/mgradm.yaml"
+                
+#                $ssh_command "mgradm install --admin-password ${suma_adm_pwd:-admin123} --ssl-password ${suma_ssl_pwd:-admin123}  --admin-email ${suma_adm_email:-admin@mydemo.lab} --scc-user ${suma_scc_user:-XYZ} --scc-password ${suma_scc_pwd:-admin123} --mirrorPath ${suma_mirrorPath:-/srv/mirror} --organization ${suma_def_org:-mydemo}  podman"
+
+                $ssh_command "mgradm -c /var/tmp/mgradm.yaml install podman "
+
                 sleep 120
+
                 $ssh_command "reboot"
-                sleep 60
-                echo "SUMA should be available in a few minutes, visit https://${_vm_name}/"
+
+                sleep 5
+                check_ssh_conn
+
+                _msg="- Sync admin user password" show_nicer_messages
+
+                $ssh_command "mgrctl exec -- \"echo -e 'mgrsync.user = admin\nmgrsync.password = ${suma_adm_pwd:-admin123}' >~/.mgr-sync\""
+
+                _msg="SUMA should be available in a few minutes, visit https://${_vm_name}/" show_nicer_messages
                 if [[ "${suma_channels}" != "" ]]
                 then
-                  echo "We will start the process of synching the selected channels, this may take hours"
+                  _count=0
+                  _msg="`date` - Let's wait for the channel list to sync'"  show_nicer_messages
+                  while true
+                  do
+                    sleep 5
+                    ((_count+=1))
+                    printf "Retry $_count\r"
+                    $ssh_command  "mgrctl exec -- mgr-sync list channels 2>/dev/null " | grep -iv 'No channels found.'
+                    if test $? -eq 0
+                    then
+                      break
+                    fi
+                  done
+                  _msg="`date` - We will start the process of synching the selected channels, this may take hours" show_nicer_messages
+                  echo "list: $suma_channels "
                   # wait 5 minutes to let SUMA start
                   sleep 300
                   $ssh_command "mgrctl exec -- mgr-sync add channels ${suma_channels}"
@@ -49,55 +117,31 @@ function setup_suma() {
 }
 
 
-if [[ ! ${inputFile} ]]
-then
-        echo "missing configuration file parameter"
-        usage
-        exit 1
-fi
-
-if [[ ! -f ${inputFile} ]]
-then
-        echo "configuration file \"${inputFile}\" not found or name incorrect"
-        usage
-	exit 1
-elif ! jq <"${inputFile}" >/dev/null
-then
-   echo "Cluster definition not in validated JSON format"
-   exit 1
-fi
-
-# load lab_creation config
-if [[ -f /etc/lab_creation.cfg ]]
-then
-        . /etc/lab_creation.cfg
-elif [[ -f lab_creation.cfg ]]
-then
-        . lab_creation.cfg
-else
-        echo "ERROR: Configuration file lab_creation.cfg not found in local path or /etc"
-        exit 1
-fi
-
-if [[ ! -f ${_lib_path} ]]
-then
-        echo "ERROR: Library \"${_lib_path}\" not found"
-        exit 1
-else
-        # load library
-        . ${_lib_path}
-fi
-
 
 # load insecure_app variables
 load_suma_vars
 
 
-
-load_vm_vars
-ssh_command="ssh  -o StrictHostKeyChecking=accept-new -q  root@${_vm_name}"
-echo "# Using node: $_vm_name"
-setup_suma
-
+if [[ "${_vm_name}" == "" ]]
+then
+  for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs )
+  do
+    for _addon in $(jq -r ".nodes.\"${_vm_name}\".addons[]" < ${inputFile} 2>/dev/null )
+    do
+      if [[ "${_addon}" == "suma" ]]
+      then
+        load_vm_vars
+        ssh_command="ssh  -o StrictHostKeyChecking=accept-new  root@${_vm_name}"
+        _msg="- Using node: $_vm_name" show_nicer_messages
+        setup_suma
+      fi
+    done
+  done
+else
+  load_vm_vars
+  ssh_command="ssh  -o StrictHostKeyChecking=accept-new root@${_vm_name}"
+  _msg="- Using node: $_vm_name" show_nicer_messages
+  setup_suma
+fi
 
 

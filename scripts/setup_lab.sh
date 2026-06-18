@@ -9,122 +9,194 @@
 #
 # You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
-inputFile=${1}
 
+_VERSION="__LABVERSION__"
+[[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
 
-if [[ ! -f "${inputFile}" ]] 
+# load lab_creation defaults
+if [[ -f /etc/lab_creation.defaults ]]
 then
-   echo "ERROR: Lab definition file (${inputFile}) doesn't exists or not specified"
-   exit 1
-elif ! jq <"${inputFile}" >/dev/null
+        . /etc/lab_creation.defaults
+elif [[ -f lab_creation.defaults ]]
 then
-   echo "ERROR: Lab definition not in validated JSON format"
-   exit 1
-fi
-
-clu_name="$(jq -r '.cluster.name ' < ${inputFile} &>/dev/null )"
-lab_name="$(jq -r '.common.lab_name ' < ${inputFile} &>/dev/null )"
-
-# load lab_creation config
-if [[ -f /etc/lab_creation.cfg ]]
-then
-        . /etc/lab_creation.cfg
-elif [[ -f lab_creation.cfg ]]
-then
-        . lab_creation.cfg
+        . lab_creation.defaults
 else
-        echo "ERROR: Configuration file lab_creation.cfg not found in local path or /etc"
+        echo "ERROR: Configuration file lab_creation.defaults not found in local path or /etc"
         exit 1
 fi
 
-if [[ ! -f ${_lib_path} ]]
+# Load primary functions (also validates inputFile, loads lab_creation.cfg and the main lib)
+. ${_primary_funtions} || exit 1
+
+
+lab_name="$(jq -r '.common.lab_name' < "${inputFile}" 2>/dev/null)"
+
+if jq -e '.kclusters' < "${inputFile}" &>/dev/null
 then
-        echo "ERROR: Library \"${_lib_path}\" not found"
-        exit 1
+  _msg="Setup lab \"\e[1;91m${lab_name:-inputFile}\e[0m\" (VMs + Kubernetes clusters)" show_nicer_messages
 else
-        # load library
-        . ${_lib_path}
+  _msg="Setup lab \"\e[1;91m${lab_name:-inputFile}\e[0m\" (VMs only)" show_nicer_messages
 fi
 
 
-if [[ "${clu_name}" != "" ]]
+# Register kcluster DNS entries before creating VMs
+if jq -e '.kclusters' < "${inputFile}" &>/dev/null
 then
-  # load cluster vars
-  load_cluster_vars
-  _msg="Create all the VMs for the cluster \"${lab_name:-$clu_name}\"" show_nicer_messages
-else
-  _msg="Create all the VMs for the lab \"$lab_name\"" show_nicer_messages
+  _msg="Add Kubernetes cluster DNS entries" show_nicer_messages
+  ((_lvl++))
+  list_kclusters | while read clu_name
+  do
+    load_kclu_vars
+    add_kclu_dns
+  done
+  ((_lvl--))
 fi
 
-function load_def(){
-	load_vm_vars
-	ssh_command="ssh  -o StrictHostKeyChecking=accept-new -q  root@${_vm_name}"
-}
 
-for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs)
+# Create all VMs
+_msg="Creating VMs" show_nicer_messages
+((_lvl++))
+for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
 do
-        _msg="Node: $_vm_name" show_nicer_messages
-	ssh-keygen -f ~/.ssh/known_hosts -R "${_vm_name}"
-	destroy_vm.sh "${inputFile}" "${_vm_name}"
-	setup_vm.sh "${inputFile}" "${_vm_name}"
+        load_vm_vars
+        load_def
+        _msg="Node: \e[1;91m\"${_vm_name}\"\e[0m" show_nicer_messages
+        ssh-keygen -f ~/.ssh/known_hosts -R "${_vm_name}"
+        destroy_vm.sh "${inputFile}" "${_vm_name}"
+        setup_vm.sh "${inputFile}" "${_vm_name}"
 done
-
-_msg="Wait ${delay_min} min (${delay_sec} sec)  and restart" show_nicer_messages
-sleep ${delay_sec}
+((_lvl--))
 
 
-
-if [[ "${clu_name}" != "" ]]
+# Kubernetes cluster setup — only when kclusters are defined
+if jq -e '.kclusters' < "${inputFile}" &>/dev/null
 then
-  for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs)
-  do
-	load_def
-        _msg="Restart node ${_vm_name}" show_nicer_messages
-	$ssh_command 'reboot'
-  done
 
-  _msg="Wait ${delay_min} min and continue setting up the cluster" show_nicer_messages
+  # Reboot all nodes to apply initial config
+  ((_lvl++))
+  for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
+  do
+        load_vm_vars
+        load_def
+        _msg="Restart node \e[1;91m${_vm_name}\e[0m" show_nicer_messages
+        $ssh_command 'reboot'
+  done
+  ((_lvl--))
+
   sleep 5
-  check_ssh_conn
-#  sleep $((60 * $delay_min))
-
-  for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs)
+  _msg="Waiting for nodes to come back online" show_nicer_messages
+  ((_lvl++))
+  for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
   do
-        _msg="Installing ${clu_type} on node ${_vm_name}" show_nicer_messages
-	load_def
-	
-	setup_${clu_type}
+        load_vm_vars
+        load_def
+        check_ssh_conn
   done
+  ((_lvl--))
 
-  _msg="Wait $(( 2 + $delay_min )) min and continue setting up the cluster $((60 * ( 2 + $delay_min) ))" show_nicer_messages
-  sleep $((60 * ( 2 + $delay_min ) ))
-
-  for _addon in $(jq -r '.addons[]' < ${inputFile})
+  # Install Kubernetes on each node
+  ((_lvl++))
+  for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
   do
-	if command -v install_${_addon} &>/dev/null
-	then
-                _msg="- Running addon \"${_addon}\"" show_nicer_messages
-		install_${_addon} "${inputFile}"
-	else
-                _msg="- FAILED! Addon script \"install_${_addon}\" not found" show_nicer_messages
-	fi
+        load_vm_vars
+        load_def
+        if [[ "${clu_name}" == "" ]]
+        then
+          _msg="\e[1;91mWARNING\e[0m no kcluster defined for \e[1;91m${_vm_name}\e[0m, SKIPPING" show_nicer_messages
+          continue
+        fi
+        load_kclu_vars
+        if [[ "${clu_type}" == "" ]]
+        then
+          _msg="\e[1;91mWARNING\e[0m clu_type is not defined for \e[1;91m${_vm_name}\e[0m, SKIPPING" show_nicer_messages
+        else
+          _msg="Installing \"\e[1;91m${clu_type}\e[0m\" on node \e[1;91m${_vm_name}\e[0m for cluster \e[1;91m${clu_name}\e[0m" show_nicer_messages
+          setup_${clu_type} || _msg="setup_${clu_type} failed on \e[1;91m${_vm_name}\e[0m" fail_with_error
+        fi
   done
+  ((_lvl--))
+
+  _msg="Wait $((2 + delay_min)) min for cluster/s to stabilise" show_nicer_messages
+  sleep $((60 * (2 + delay_min)))
+
+  # Install cluster-level addons (one kcluster at a time, with mgm_node support and dedup)
+  _msg="Installing Kubernetes cluster/s addon/s" show_nicer_messages
+  ((_lvl++))
+  list_kclusters | while read clu_name
+  do
+    installed_addons=""
+    load_kclu_vars
+
+    # Determine which node runs the addon installer
+    if [[ "${mgm_node}" == "" ]]
+    then
+      for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
+      do
+        if [[ "$(get_vm_kcluster)" == "${clu_name}" ]]
+        then
+          break
+        fi
+      done
+    else
+      _vm_name="${mgm_node}"
+    fi
+
+    _cluster_addons="$(jq -r ".kclusters[\"${clu_name}\"].addons // [] | .[]" < "${inputFile}" 2>/dev/null)"
+    if [[ "${_cluster_addons}" != "" ]]
+    then
+      load_vm_vars
+      load_def
+      _msg="Installing cluster \e[1;91m\"${clu_name}\"\e[0m addon/s from \e[1;91m\"${_vm_name}\"\e[0m" show_nicer_messages
+      ((_lvl++))
+      while read _addon
+      do
+        if [[ " ${installed_addons} " != *" ${_addon} "* ]]
+        then
+          if command -v install_${_addon} &>/dev/null
+          then
+            _msg="Running addon \e[1;91m\"${_addon}\"\e[0m on \e[1;91m\"${_vm_name}\"\e[0m for cluster \e[1;91m\"${clu_name}\"\e[0m" show_nicer_messages
+            _vm_name=${_vm_name} clu_name=${clu_name} install_${_addon} "${inputFile}"
+            installed_addons="${installed_addons} ${_addon}"
+          else
+            _msg="FAILED! Addon script \e[1;91m\"install_${_addon}\"\e[0m not found" fail_with_error
+          fi
+        fi
+      done <<< "${_cluster_addons}"
+      ((_lvl--))
+    else
+      _msg="No Kubernetes cluster addons for \e[1;91m\"${clu_name}\"\e[0m" show_nicer_messages
+    fi
+  done
+  ((_lvl--))
+
 fi
 
-_msg="- Install individual addons for each VM" show_nicer_messages
-for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs )
+
+# Install per-VM addons (node-level addons from .nodes[vm].addons[])
+_msg="Installing VM addons if any" show_nicer_messages
+((_lvl++))
+for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
 do
-    for _addon in $(jq -r ".nodes.\"${_vm_name}\".addons[]" < ${inputFile} 2>/dev/null )
+  load_vm_vars
+  load_def
+  _vm_addons="$(jq -r ".nodes[\"${_vm_name}\"].addons // [] | .[]" < "${inputFile}" 2>/dev/null)"
+  if [[ "${_vm_addons}" != "" ]]
+  then
+    _msg="Installing VM \"\e[1;91m${_vm_name}\e[0m\" addons" show_nicer_messages
+    ((_lvl++))
+    while read _addon
     do
       if command -v install_${_addon} &>/dev/null
       then
-        _msg="- Running addon \"${_addon}\"" show_nicer_messages
-        _vm_name=$_vm_name install_${_addon} "${inputFile}"
+        _msg="Running addon \e[1;91m\"${_addon}\"\e[0m on \e[1;91m\"${_vm_name}\"\e[0m" show_nicer_messages
+        _vm_name=${_vm_name} install_${_addon} "${inputFile}"
       else
-        _msg="- FAILED! Addon script \"install_${_addon}\" not found" show_nicer_messages
+        _msg="Addon script \e[1;91m\"install_${_addon}\"\e[0m not found" fail_with_error
       fi
-    done
+    done <<< "${_vm_addons}"
+    ((_lvl--))
+  else
+    _msg="No VM addons for \e[1;91m\"${_vm_name}\"\e[0m" show_nicer_messages
+  fi
 done
-
-
-
+((_lvl--))

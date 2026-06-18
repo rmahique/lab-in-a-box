@@ -1,5 +1,5 @@
 #!/bin/bash
-# Part of lab-in-a-box, it will install NeuVector
+# Part of lab-in-a-box, it will install wordpress
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
@@ -31,20 +31,25 @@ fi
 # load Kubernetes functions
 . ${_lib_path}/k8s_functions.bash
 
-
-# Setup SUSE NeuVector helm repository
-function setup_nv_repo() {
-        _repo_name="${nv_rel:-neuvector}"
-        _repo_url="${nv_repo_url:-https://neuvector.github.io/neuvector-helm}"
-        helm_repo_add
+# Load insecure-app related variables.
+function load_wordpress_vars() {
+       _section="wordpress"
+       _load_vars
 }
 
 
-# Setup SUSE NeuVector
-function setup_nv() {
-                $ssh_command "kubectl create namespace cattle-neuvector-system"
-                $ssh_command "helm upgrade -i neuvector neuvector/core --namespace cattle-neuvector-system --set k3s.enabled=true --set k3s.runtimePath=/run/k3s/containerd/containerd.sock --set manager.ingress.enabled=true --set manager.svc.type=ClusterIP --set controller.pvc.enabled=true --set manager.ingress.host=${nv_shorthn:-neuvector}.${clu_name}.${mydomain} --set global.cattle.url=https://${rancher_shorthn}.${clu_name}.${mydomain} --set controller.ranchersso.enabled=true --set rbac=true"
-                echo "NeuVector should be available in a few minutes in: ${nv_shorthn:-neuvector}.${clu_name}.${mydomain}"
+
+# Setup insecure-app
+function setup_wordpress() {
+             
+                $ssh_command "kubectl delete -n ${wordpress_ns:-wordpress} Service/${wordpress_name:-wordpress} PersistentVolumeClaim/mysql-pv-claim Deployment.app/${wordpress_name:-wordpress} Service/${wordpress_name:-wordpress}-mysql PersistentVolumeClaim/wp-pv-claim  Deployment.app/${wordpress_name:-wordpress}-mysql"
+
+                for _template in kustomization.yaml  mysql_install.yml  wordpress_deployment.yaml
+                do
+                  template_file=${_templ_addons_loc}/wordpress/${_template}.tmpl
+                  process_templates | $ssh_command "kubectl apply -f -"
+		done
+                echo "wordpress should be available in a few minutes in: ${wordpress_shorthn:-wordpress}.${clu_name}.${mydomain}"
 }
 
 
@@ -55,8 +60,9 @@ load_kclu_vars
 # load rancher variables
 load_rancher_vars
 
-# load neuvector variables
-load_nv_vars
+# load wordpress variables
+load_wordpress_vars
+
 
 
 # find a server node or API url
@@ -64,14 +70,12 @@ for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs)
 do
 	load_vm_vars
 	ssh_command="ssh  -o StrictHostKeyChecking=accept-new -q  root@${_vm_name}"
-	if [[ "${INSTALL_RKE2_TYPE}" == "server" || "${INSTALL_RKE2_TYPE}" == "" ]]
-	then
-		echo "# Using node: $_vm_name"
-		setup_helm
-		setup_nv_repo
-		setup_nv
-		sleep 60
-	fi
+	echo "# Using node: $_vm_name"
+	setup_wordpress
+        _dns_entry="${wordpress_name:-wordpress}.${clu_name}"
+        add_service_dns
+        echo "Service will be ready at ${wordpress_name:-worpress}.${clu_name}.${mydomain}"
+	sleep 60	
 done
 
 

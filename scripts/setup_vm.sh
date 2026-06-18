@@ -34,39 +34,40 @@ then
         exit 1
 elif ! jq <"${inputFile}" >/dev/null
 then
-   _msg="Cluster definition not in validated JSON format" show_nicer_messages
+   _msg="Lab definition not in validated JSON format" show_nicer_messages
    exit 1
 fi
 
 if [[ ! ${_vm_name} ]]
 then
-        _msg="ERROR: Missing VM name parameter" show_nicer_messages
+        _msg="ERROR: Missing \"VM name\" parameter" show_nicer_messages
         usage
         exit 1
 fi
 
 
 
-# load lab_creation config
-if [[ -f /etc/lab_creation.cfg ]]
+
+
+_VERSION="__LABVERSION__"
+[[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
+
+# load lab_creation defaults
+if [[ -f /etc/lab_creation.defaults ]]
 then
-	. /etc/lab_creation.cfg
-elif [[ -f lab_creation.cfg ]]
+        . /etc/lab_creation.defaults
+elif [[ -f lab_creation.defaults ]]
 then
-	. lab_creation.cfg
-else    
-        _msg="ERROR: Configuration file lab_creation.cfg not found in local path or /etc" show_nicer_messages
-	exit 1
+        . lab_creation.defaults
+else
+        echo "ERROR: Configuration file lab_creation.defaults not found in local path or /etc"
+        exit 1
 fi
 
-if [[ ! -f ${_lib_path} ]]
-then
-        _msg="ERROR: Library \"${_lib_path}\" not found" show_nicer_messages
-	exit 1
-else
-	# load library
-	. ${_lib_path}
-fi
+# Load primary functions
+. ${_primary_funtions} || exit 1
+
+
 
 
 
@@ -106,9 +107,17 @@ create_vm
 
 clean_ssh_keys
 
-prepare_local_as_kubeclient
 
 
-_msg="\t\tVM \"${_vm_name}\" created" show_nicer_messages
+
+
+
+#echo "# Wait ${delay_min} min (${delay_sec} sec)  and restart"
+#sleep ${delay_sec}
+
+check_ssh_conn
+
+
+_msg="\t\tVM \e[1;91m\"${_vm_name}\"\e[0m created" show_nicer_messages
 
 

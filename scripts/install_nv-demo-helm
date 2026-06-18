@@ -1,5 +1,5 @@
 #!/bin/bash
-# Part of lab-in-a-box, it will install NeuVector
+# Part of lab-in-a-box, it will install nv-demo-helm
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
@@ -8,7 +8,6 @@
 # This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
-
 
 _VERSION="__LABVERSION__"
 [[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
@@ -32,21 +31,23 @@ fi
 . ${_lib_path}/k8s_functions.bash
 
 
-# Setup SUSE NeuVector helm repository
-function setup_nv_repo() {
-        _repo_name="${nv_rel:-neuvector}"
-        _repo_url="${nv_repo_url:-https://neuvector.github.io/neuvector-helm}"
-        helm_repo_add
+# Load insecure-app related variables.
+function load_nv-demo-helm_vars() {
+       _section="nv-demo-helm"
+       _load_vars
 }
 
 
-# Setup SUSE NeuVector
-function setup_nv() {
-                $ssh_command "kubectl create namespace cattle-neuvector-system"
-                $ssh_command "helm upgrade -i neuvector neuvector/core --namespace cattle-neuvector-system --set k3s.enabled=true --set k3s.runtimePath=/run/k3s/containerd/containerd.sock --set manager.ingress.enabled=true --set manager.svc.type=ClusterIP --set controller.pvc.enabled=true --set manager.ingress.host=${nv_shorthn:-neuvector}.${clu_name}.${mydomain} --set global.cattle.url=https://${rancher_shorthn}.${clu_name}.${mydomain} --set controller.ranchersso.enabled=true --set rbac=true"
-                echo "NeuVector should be available in a few minutes in: ${nv_shorthn:-neuvector}.${clu_name}.${mydomain}"
-}
 
+# Setup insecure-app
+function setup_nv-demo-helm() {
+             
+#                $ssh_command "kubectl apply -f https://raw.githubusercontent.com/SUSE-Technical-Marketing/insecure-app/main/fleet_cattle.yml"
+#		$ssh_command "kubectl delete namespace ${nv-demo-helm_ns}"
+                $ssh_command "git clone https://github.com/horantj/nv-demo-helm.git /var/tmp/nv-demo-helm"
+                $ssh_command "helm install -n ${nv_demo_helm_ns:-demo} --create-namespace --set exploit.image_tag=${nv_demo_helm_tag:-0.4} --set struts.ingress.enabled=true --set struts.ingress.host=struts-${nv_demo_helm_name:-nvdemohelm}.${clu_name}.${mydomain} demo-release /var/tmp/nv-demo-helm/nv-demo"
+                echo "NV demo helm should be available in a few minutes, for instructions please visit: https://github.com/horantj/nv-demo-helm/tree/main"
+}
 
 
 # load cluster vars
@@ -58,20 +59,24 @@ load_rancher_vars
 # load neuvector variables
 load_nv_vars
 
+# load neuvector variables
+load_nv-demo-helm_vars
+
+
 
 # find a server node or API url
 for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs)
 do
 	load_vm_vars
 	ssh_command="ssh  -o StrictHostKeyChecking=accept-new -q  root@${_vm_name}"
-	if [[ "${INSTALL_RKE2_TYPE}" == "server" || "${INSTALL_RKE2_TYPE}" == "" ]]
-	then
-		echo "# Using node: $_vm_name"
-		setup_helm
-		setup_nv_repo
-		setup_nv
-		sleep 60
-	fi
+	echo "# Using node: $_vm_name"
+	setup_nv-demo-helm
+#        _dns_entry="${nv-demo-helm_name:-webphotobook}.${clu_name}"
+#        add_service_dns
+#        echo "Service will be ready at ${nv-demo-helm_name:-webphotobook}.${clu_name}.${mydomain}"
+	sleep 60
+	exit 1
+	
 done
 
 

@@ -74,7 +74,7 @@ ln -sf /usr/share/zoneinfo/Europe/Zurich /mnt/etc/localtime
 
 
 _msg="Install required packages" show_nicer_messages
-chroot /mnt/ zypper install -y  vim-small git rsync apache2  bind-utils bind docker podman libvirt-client jq NetworkManager virt-install git salt-ssh ipcalc
+chroot /mnt/ zypper install -y  vim-small git rsync apache2  bind-utils bind docker podman libvirt-client jq NetworkManager virt-install git salt-ssh ipcalc fuse3 sshfs netcat-openbsd
 _msg="Enable/Disable services" show_nicer_messages
 chroot /mnt/ systemctl disable firewalld.service
 chroot /mnt/ systemctl disable wicked.service
@@ -84,7 +84,11 @@ chroot /mnt/ systemctl enable named
 chroot /mnt/ systemctl enable apache2
 _msg="Generate SSH key" show_nicer_messages
 chroot /mnt/ ssh-keygen -b 16384 -N '' -t rsa -f /root/.ssh/id_rsa
+cp /mnt/root/.ssh/id_rsa.pub /mnt/srv/www/htdocs/ && chmod 0644 /mnt/srv/www/htdocs/id_rsa.pub
 _msg="Clone repository" show_nicer_messages
+
+# add a check to see if the git command is missing 
+
 git clone https://github.com/SUSE-Technical-Marketing/lab-in-a-box.git /mnt/var/tmp/lab-in-a-box
 export _scripts_path=/var/tmp/lab-in-a-box/
 curl -k https://raw.githubusercontent.com/SUSE-Technical-Marketing/lab-in-a-box/main/install_automation_node_scripts.sh >/mnt/tmp/install_automation_node_scripts.sh
@@ -93,7 +97,8 @@ chroot /mnt/ bash /tmp/install_automation_node_scripts.sh
 # Download latest helm and create the script to update it
 _msg="Download latest helm and and install it" show_nicer_messages
 mkdir /mnt/srv/www/htdocs/helm
-chmod 0755 /mnt/srv/www/htdocs/helm
+mkdir /mnt/srv/www/sources
+chmod 0755 /mnt/srv/www/htdocs/helm /mnt/srv/www/sources
 curl -k https://raw.githubusercontent.com/helm/helm/main/KEYS  --output /mnt/srv/www/htdocs/helm/KEYS
 chmod 0644 /mnt/srv/www/htdocs/helm/KEYS
 curl -k https://get.helm.sh/helm-$(curl -L --silent --show-error --fail "https://get.helm.sh/helm-latest-version" 2>&1 | grep '^v[0-9]')-linux-${myarch:-amd64}.tar.gz  --output /mnt/srv/www/htdocs/helm/helm-latest-linux-${myarch:-amd64}.tar.gz
@@ -111,6 +116,9 @@ cp /tmp/helm/linux-${myarch:-amd64}/helm /usr/local/bin
 
 ">/mnt/srv/www/htdocs/helm/install_helm.sh
 chmod 0755 /mnt/usr/local/bin/download_latest_helm.sh /mnt/srv/www/htdocs/helm/install_helm.sh
+
+# setup sshfs mount
+echo 'root@nuc6:/var/lib/libvirt/images/sources /srv/www/htdocs/sources fuse.sshfs  noauto,x-systemd.automount,_netdev,reconnect,identityfile=/root/.ssh/id_rsa,allow_other,default_permissions 0 0' >>/mnt/etc/fstab
 
 
 _msg="Setup SSH keys" show_nicer_messages
@@ -141,6 +149,11 @@ options {
         # allow query range ( set internal server and so on )
         allow-query { 127.0.0.1; 0.0.0.0/0; };
         recursion yes;
+        dnssec-validation no;
+        forward only;
+        forwarders {
+            ${_mydns};
+        };
 };
 zone "." in {
         type hint;
