@@ -1,6 +1,23 @@
 #!/bin/bash
 
 
+inputFile="$1"
+
+
+_VERSION="__LABVERSION__"
+[[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
+
+# load lab_creation defaults
+if [[ -f /etc/lab_creation.defaults ]]
+then
+        . /etc/lab_creation.defaults
+elif [[ -f lab_creation.defaults ]]
+then
+        . lab_creation.defaults
+else
+        echo "ERROR: Configuration file lab_creation.defaults not found in local path or /etc"
+        exit 1
+fi
 
 # load lab_creation config
 if [[ -f /etc/lab_creation.cfg ]]
@@ -27,9 +44,9 @@ fi
 
 
 
-if [[ "$1" ]]
+if [[ "${inputFile}" ]]
 then
-	MYIMAGE="${1}"
+	MYIMAGE="${inputFile}"
         docker pull "$MYIMAGE"
         docker tag "$MYIMAGE" ${MYREG}/${MYIMAGE}
 	docker push ${MYREG}/${MYIMAGE}
@@ -37,4 +54,8 @@ then
 else
         echo 'No image name provided'
 fi
+
+
+
+
 

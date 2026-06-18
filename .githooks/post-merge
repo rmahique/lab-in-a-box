@@ -1,0 +1,11 @@
+#!/bin/bash
+# Expand __LABVERSION__ placeholders with the per-file last commit hash after merge/pull
+
+_repo_root=$(git rev-parse --show-toplevel)
+
+while IFS= read -r -d '' _file; do
+    grep -q '__LABVERSION__' "${_repo_root}/${_file}" || continue
+    _hash=$(git log -1 --format='%h' -- "${_file}")
+    [[ -n "${_hash}" ]] || continue
+    sed -i "s/__LABVERSION__/${_hash}/" "${_repo_root}/${_file}"
+done < <(git ls-files -z -- 'scripts/')

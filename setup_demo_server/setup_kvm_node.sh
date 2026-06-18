@@ -19,28 +19,58 @@ function show_nicer_messages() {
 }
 
 
+# check which OS are we in
+if [[ -f /etc/os-release ]]
+then
+  _os="`cat /etc/os-release | sed -n -e 's/^ID="\([-a-zA-Z].*\)"/\1/p'`"
+  _version_id="`cat /etc/os-release | sed -n -e 's/^VERSION_ID="\([-a-zA-Z0-9].*\)"/\1/p'`"
+  _arch="`arch`"
+fi
+
+# Fail if not os detected
+if [[ "$_os" == "" ]]
+then
+   echo -e '\033ERROR\033[0m: OS type not detected'
+   exit 1
+elif [[ "$_os" == "opensuse-leap" ]]
+then
+  _pkg_mgr="zypper "
+  _pkgs="libvirt podman docker cri-tools minikube-bash-completion kubectl-who-can kubevirt-virtctl kubernetes1.28-client gpgme-devel device-mapper-devel libbtrfs-devel git-core mc bridge-utils tcpdump sensors ftsteutates-sensors netcat-openbsd gptfdisk libvirt-daemon-qemu qemu-tools virt-install libguestfs"
+  zypper install -y https://download.opensuse.org/repositories/utilities/${_version_id}/${_arch}/yq-4.44.6-lp156.42.1.${_arch}.rpm
+elif [[ "$_os" == "sles" ]]
+then
+  _pkg_mgr="zypper "
+  _register_suse="1"
+  _products="PackageHub sle-module-containers sle-module-basesystem sle-module-legacy"
+  _pkgs="libvirt podman docker cri-tools minikube-bash-completion kubectl-who-can kubevirt-virtctl kubernetes1.28-client gpgme-devel device-mapper-devel libbtrfs-devel git-core mc bridge-utils tcpdump sensors ftsteutates-sensors netcat-openbsd gptfdisk"
+  zypper install -y https://download.opensuse.org/repositories/utilities/${_version_id}/${_arch}/yq-4.44.6-lp156.42.1.${_arch}.rpm
+fi
+echo "- Installing in `cat /etc/os-release | sed -n -e 's/^PRETTY_NAME="\([-a-zA-Z0-9].*\)"/\1/p'`"
+
+
 function do_it_all() {
         if [[ ! -f setup_lab_automation.sh ]]
         then
-                echo "Please download setup_lab_automation.sh script from the GIT repository"
+                echo "\033[1;31mERROR\033[0m: Missing script, please download setup_lab_automation.sh script from the GIT repository"
 		exit 1
         fi
-        _msg="Configure package repositories" show_nicer_messages
-        SUSEConnect --product PackageHub/15.5/x86_64
-        SUSEConnect --product sle-module-containers/15.5/x86_64
-        SUSEConnect --product sle-module-basesystem/15.5/x86_64
-#        SUSEConnect --product sle-module-development-tools/15.5/x86_64
-        SUSEConnect --product sle-module-legacy/15.5/x86_64
+        if [[ "${_register_suse}" != "" ]]
+        then
+          _msg="Configure package repositories" show_nicer_messages
+          for _product in ${_products}
+          do
+            SUSEConnect --product ${_product}/${_version_id}/${_arch}
+          done
+        fi
         _msg="Update all packages and install necessary ones" show_nicer_messages
-        zypper refresh
-        zypper update -y
-        zypper install -y libvirt podman docker cri-tools minikube-bash-completion kubectl-who-can kubevirt-virtctl kubernetes1.28-client gpgme-devel device-mapper-devel libbtrfs-devel git-core mc bridge-utils tcpdump sensors ftsteutates-sensors netcat-openbsd gptfdisk 
-
+        ${_pkg_mgr} refresh
+        ${_pkg_mgr} update -y
+        ${_pkg_mgr} install -y ${_pkgs}
 
         [[ -d /var/lib/libvirt/images/sources/ ]] || mkdir -p /var/lib/libvirt/images/sources/
 
         _msg="Download openSUSE Leap image to be used for the VM" show_nicer_messages
-        cd /var/lib/libvirt/images/sources/ && wget -nc https://download.opensuse.org/distribution/leap/15.5/appliances/openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2
+        cd /var/lib/libvirt/images/sources/ && wget -nc https://download.opensuse.org/distribution/leap/15.5/appliances/openSUSE-Leap-15.5-Minimal-VM.${_arch}-kvm-and-xen.qcow2
         cd -
 
         echo '<!--
@@ -69,8 +99,6 @@ or other application using the libvirt API.
         systemctl disable --now firewalld
 
         _msg="Start setup_lab_automation.sh script to create the automation VM" show_nicer_messages
-#        [ -d /var/tmp/${0//*\/}_${_currenttime}/ ] || mkdir -p /var/tmp/${0//*\/}_${_currenttime}/
-#        tmp_folder=/var/tmp/${0//*\/}_${_currenttime}/ 
          bash setup_lab_automation.sh
 
 }
@@ -83,7 +111,7 @@ then
         _msg="Loading configuration file lab.cfg" show_nicer_messages
 	. lab.cfg
 else
-        _msg="Missing configuratoin file lab.cfg" show_nicer_messages
+        _msg="\033ERROR\033[0m: Missing configuratoin file lab.cfg" show_nicer_messages
 	exit 1
 fi
 
@@ -95,7 +123,7 @@ then
 	        ssh-copy-id root@${_input}
 		if [[ "$?" != "0" ]]
 		then
-			echo "ERROR, we need an SSH key to continue, to generate one please run ssh-keygen -b 16384 -t rsa -a 100 -f ~/id_rsa_TESTTDELETEME -N ''"
+			echo "E\033[1;31mRROR\033[0m: we need an SSH key to continue, to generate one please run ssh-keygen -b 16384 -t rsa -a 100 -f ~/id_rsa_TESTTDELETEME -N ''"
 			exit 1
 		fi
 	        ssh root@${_input} "mkdir /var/tmp/$0_${_currenttime}"
@@ -105,7 +133,7 @@ then
 	then
 		do_it_all
 	else
-		echo "ERROR: incorrect parameter \"${_input}\""
+		echo "E\033[1;31mRROR\033[0m: incorrect parameter \"${_input}\""
 	fi
 else
         read -p 'Are you sure? (yes/n): ' _response

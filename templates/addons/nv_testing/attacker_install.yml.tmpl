@@ -1,0 +1,22 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test
+  namespace: demo
+spec:
+  selector:
+    matchLabels:
+      app: test-pod
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: test-pod
+    spec:
+      containers:
+      - name: test-pod
+        image: centos
+        command: ["/bin/sh"]
+        args: ["-c","while true; do ping -c 1 www.google.com; curl http://nginx-webui/; sleep 15; done"]
+...

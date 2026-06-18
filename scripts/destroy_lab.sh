@@ -1,5 +1,5 @@
 #!/bin/bash
-# Part of lab-in-a-box, it will install mariadb
+# Part of lab-in-a-box, it will destroy all VMs defined in a lab JSON file
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
@@ -25,53 +25,18 @@ else
         exit 1
 fi
 
-# Load primary functions
+# Load primary functions (also validates inputFile, loads lab_creation.cfg and the main lib)
 . ${_primary_funtions} || exit 1
 
-# load Kubernetes functions
-. ${_lib_path}/k8s_functions.bash
 
+lab_name="$(jq -r '.common.lab_name' < "${inputFile}" 2>/dev/null)"
 
-# Load mariadb related variables.
-function load_mariadb_vars() {
-       _section="mariadb"
-       _load_vars
-}
-
-
-
-# Setup mariadb
-function setup_mariadb() {
-             
-                $ssh_command "kubectl delete -n ${mariadb_ns:-db} deployment.apps/${mariadb_name:-mariadb} service/${mariadb_name:-mariadb}"
-		template_file=${_templ_addons_loc}/mariadb/install.yml.tmpl
-                process_templates | $ssh_command "kubectl apply -f -"
-}
-
-
-# load cluster vars
-load_kclu_vars
-
-# load rancher variables
-load_rancher_vars
-
-# load neuvector variables
-load_nv_vars
-
-# load mariadb variables
-load_mariadb_vars
-
-
-
-# find a server node or API url
-for _vm_name in $(jq -r '.nodes | to_entries[].key' < ${inputFile} |xargs)
+_msg="Destroy lab \"\e[1;91m${lab_name}\e[0m\"" show_nicer_messages
+((_lvl++))
+for _vm_name in $(jq -r '.nodes | to_entries[].key' < "${inputFile}" | xargs)
 do
-	load_vm_vars
-	ssh_command="ssh  -o StrictHostKeyChecking=accept-new -q  root@${_vm_name}"
-	echo "# Using node: $_vm_name"
-	setup_mariadb
-	sleep 60
-	exit 1
+        _msg="Node: \e[1;91m${_vm_name}\e[0m" show_nicer_messages
+        ssh-keygen -f ~/.ssh/known_hosts -R "${_vm_name}"
+        destroy_vm.sh "${inputFile}" "${_vm_name}"
 done
-
-
+((_lvl--))

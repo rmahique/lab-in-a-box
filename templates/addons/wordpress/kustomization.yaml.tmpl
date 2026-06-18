@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${wordpress_ns:-wordpress}
+...
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+secretGenerator:
+- name: mysql-pass
+  literals:
+  - password=${wordpress_mysql_pass:-admin123}
+...

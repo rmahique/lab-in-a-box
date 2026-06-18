@@ -1,0 +1,24 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${struts_demo_name:-struts}
+  namespace: ${struts_demo_ns:-struts}
+  labels:
+    app: ${struts_demo_name:-struts}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${struts_demo_name:-struts}
+  template:
+    metadata:
+      labels:
+        app: ${struts_demo_name:-struts}
+    spec:
+      containers:
+      - name: ${struts_demo_name:-struts}
+        image: skywalke34/struts
+        ports:
+        - containerPort: 8080
+...

@@ -1,0 +1,13 @@
+network:
+  version: 2
+  ethernets:
+    id0:
+      match:
+        macaddress: "${mymac}"
+      addresses:
+        - ${myip}
+      gateway4: ${mygw}
+      nameservers:
+        search: [${mydomain}]
+        addresses: [${mydns}]
+

@@ -1,0 +1,19 @@
+#!/bin/bash
+# Restore __LABVERSION__ placeholder in any staged scripts before committing
+# Prevents expanded commit hashes from being stored in the repository
+
+_repo_root=$(git rev-parse --show-toplevel)
+_changed=0
+
+while IFS= read -r _file; do
+    [[ -f "${_repo_root}/${_file}" ]] || continue
+    if grep -q '_VERSION="[0-9a-f]\{7,\}"' "${_repo_root}/${_file}"; then
+        sed -i 's/_VERSION="[0-9a-f]\{7,\}"/_VERSION="__LABVERSION__"/' "${_repo_root}/${_file}"
+        git add "${_repo_root}/${_file}"
+        _changed=1
+    fi
+done < <(git diff --cached --name-only | grep '^scripts/')
+
+if [[ ${_changed} -eq 1 ]]; then
+    echo "info: restored __LABVERSION__ placeholder in staged scripts"
+fi
