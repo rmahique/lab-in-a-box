@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+# lab_schema — parse a lab-in-a-box install script and emit its option schema.
+# Part of lab-in-a-box
+# Author/s: Raul Mahiques
+# License: GPLv3
+#
+# Usage:
+#   lab_schema <script_path> [json|yaml]
+#
+# Reads the structured comment block starting at "JSON section:" in the given
+# script and outputs a machine-readable schema of every configurable option.
+# Requires python3; YAML output additionally requires pyyaml (pip install pyyaml).
+
+import json
+import re
+import sys
+from pathlib import Path
+
+SCHEMA_VERSION = "1.0"
+
+# Infer field type from its name suffix
+def _infer_type(name):
+    if re.search(r'_ns$|_namespace$', name):        return "namespace"
+    if re.search(r'_version$|_ver$', name):          return "version"
+    if re.search(r'_repo_url$|_url$', name):         return "url"
+    if re.search(r'_port$', name):                   return "port"
+    if re.search(r'_pass$|_pwd$|_password$', name):  return "password"
+    if re.search(r'_super_privileged$|_enabled$', name): return "boolean"
+    if re.search(r'_replicas$|_pg_version$', name):  return "integer"
+    return "string"
+
+def parse_script(path):
+    """
+    Extract the JSON section comment block from a lab-in-a-box install script.
+    Returns a dict ready for JSON/YAML serialisation.
+    """
+    text = Path(path).read_text(errors="replace")
+    lines = text.splitlines()
+
+    addon = section = description = ""
+    fields = []
+    in_block = False
+    in_mandatory = False
+    current = None      # field currently accumulating continuation lines
+
+    for line in lines:
+        # ── Find section header ─────────────────────────────────────────────
+        if not in_block:
+            if "JSON section:" in line:
+                m = re.search(r'["“]([^"”]+)["”]', line)
+                if m:
+                    section = addon = m.group(1)
+                # Description: everything after the closing quote + optional decorators
+                desc_part = re.sub(r'^.*["”]\s*[─—–\-]*\s*', '', line)
+                desc_part = re.sub(r'^#\s*', '', desc_part)
+                desc_part = re.sub(r'\s*[─]+\s*$', '', desc_part).strip()
+                description = desc_part
+                in_block = True
+            continue
+
+        # ── Stop at first non-comment line ──────────────────────────────────
+        if line and not line.startswith("#"):
+            break
+
+        # ── Track MANDATORY / OPTIONAL / EXPERIMENTAL block headers ─────────
+        stripped = line.lstrip("#").strip()
+        if re.match(r'MANDATORY\b', stripped):
+            in_mandatory = True
+            current = None
+            continue
+        if re.match(r'(OPTIONAL|EXPERIMENTAL)\b', stripped):
+            in_mandatory = False
+            current = None
+            continue
+
+        # ── Parse field lines: "#   field_name  : … (default: val)" ────────
+        m = re.match(r'^#   ([A-Za-z_][A-Za-z0-9_-]*)\s*:(.*)', line)
+        if m:
+            current = {
+                "name":         m.group(1),
+                "_in_mandatory": in_mandatory,
+                "_rest":        m.group(2).strip(),
+            }
+            fields.append(current)
+            continue
+
+        # ── Blank comment line ends the current field's accumulation ────────
+        if stripped == "":
+            current = None
+            continue
+
+        # ── Continuation line: append to the current field's raw text ───────
+        # (free-standing prose outside any field — e.g. NOTE blocks — is ignored)
+        if current is not None:
+            current["_rest"] = f'{current["_rest"]} {stripped}'.strip()
+
+    # ── Finalise: split each field's joined raw text into required/default/desc
+    for f in fields:
+        rest = re.sub(r'\s+', ' ', f.pop("_rest")).strip()
+        required = f.pop("_in_mandatory") or bool(re.search(r'\[MANDATORY\]', rest))
+        rest = re.sub(r'\[(OPTIONAL|MANDATORY)\]\s*', '', rest)
+
+        default = ""
+        dm = re.search(r'\(default:\s*([^)]+)\)', rest)
+        if dm:
+            default = dm.group(1).strip()
+            rest = re.sub(r'\s*\(default:[^)]+\)', '', rest)
+
+        f["required"]    = required
+        f["default"]     = default
+        f["type"]        = _infer_type(f["name"])
+        f["description"] = rest.strip()
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "addon":          addon,
+        "section":        section,
+        "description":    description,
+        "fields":         fields,
+    }
+
+
+def base_lab_schema():
+    """
+    Schema of the base lab definition (common / nodes / kclusters).
+
+    Single source of truth: `setup_lab.sh --schema` emits this via `lab_schema
+    --base`, and the web builder imports it directly. `nodes` and `kclusters`
+    are keyed maps (hostname / cluster name -> settings), marked "repeatable"
+    so a consumer knows to collect one-or-more instances rather than a single
+    object.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "component": "lab-definition",
+        "description": "lab-in-a-box lab definition file — passed as the first "
+                       "argument to setup_lab.sh and setup_vm.sh",
+        "sections": {
+            "common": {
+                "description": "Shared settings applied to every VM in the lab",
+                "fields": [
+                    {"name": "ISO_IMAGE", "required": True, "type": "string", "description": "Source QCOW2 image filename (must exist in ISO_LOC on the hypervisor)"},
+                    {"name": "VM_MEM", "required": True, "type": "integer", "description": "RAM in MiB (e.g. 8192)"},
+                    {"name": "VM_DSK", "required": True, "type": "integer", "description": "Disk size in GiB (e.g. 80)"},
+                    {"name": "VM_CPU", "required": True, "type": "integer", "description": "vCPU count"},
+                    {"name": "mymask", "required": False, "type": "integer", "description": "Network prefix length (default: auto-detected from host)"},
+                    {"name": "mygw", "required": False, "type": "string", "description": "Default gateway IP (default: auto-detected)"},
+                    {"name": "mydns", "required": False, "type": "string", "description": "DNS server IP (default: auto-detected)"},
+                    {"name": "mynet_reverse", "required": False, "type": "string", "description": "Reverse DNS zone prefix e.g. 88.168.192 (default: derived from first node IP)"},
+                    {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: derived from automation VM hostname)"},
+                    {"name": "VM_BOOT", "required": False, "type": "string", "default": "uefi", "description": "virt-install boot mode: uefi, firmware=bios, bios, uefi=off, hd"},
+                    {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "description": "Disk bus type for the primary disk: virtio, scsi, sata, usb, ide"},
+                    {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "description": "NIC device model: virtio, e1000, e1000e, rtl8139, vmxnet3, ne2k_pci"},
+                    {"name": "VM_OSVARIANT", "required": False, "type": "string", "default": "slem5.4", "description": "OS variant for virt-install (osinfo-query os)"},
+                    {"name": "config_method", "required": False, "type": "string", "default": "", "description": "Provisioning method: empty = Ignition+Combustion, cloud-init, virt_customize, install_iso"},
+                    {"name": "install_type", "required": False, "type": "string", "default": "", "description": "For install_iso only: autoyast, kickstart, or preseed (auto-detected from ISO_IMAGE name if omitted)"},
+                    {"name": "VM_ROOT_PASS", "required": False, "type": "string", "default": "", "description": "Plaintext root password for virt_customize; omit to reuse ROOT_PWD_HASH from lab_creation.cfg (same as cloud-init/Ignition)"},
+                    {"name": "lab_name", "required": False, "type": "string", "description": "Human-readable lab name shown in log output"},
+                ],
+            },
+            "nodes": {
+                "description": "Map of fully-qualified VM hostname to per-node settings. Keys override common values.",
+                "repeatable": True,
+                "key_label": "hostname (FQDN)",
+                "fields": [
+                    {"name": "myip", "required": True, "type": "string", "description": "VM IP address"},
+                    {"name": "mymac", "required": False, "type": "string", "description": "VM MAC address (generated and conflict-checked if omitted)"},
+                    {"name": "kcluster", "required": False, "type": "string", "description": "kcluster name this node belongs to (must exist in kclusters)"},
+                    {"name": "INSTALL_RKE2_TYPE", "required": False, "type": "string", "default": "server", "description": "Node role: server or agent"},
+                    {"name": "addons", "required": False, "type": "array", "description": "List of VM-level addon names (install_<addon> scripts)"},
+                    {"name": "extra_dsk", "required": False, "type": "string", "description": "Additional disk paths or UUID=… entries (space-separated); per-disk bus: /dev/sdb,bus=scsi"},
+                    {"name": "config_method", "required": False, "type": "string", "description": "Overrides common.config_method for this node only"},
+                    {"name": "ISO_IMAGE", "required": False, "type": "string", "description": "Overrides common.ISO_IMAGE for this node only"},
+                    {"name": "kvm_host", "required": False, "type": "string", "description": "Pin this VM to a specific KVM host from KVM_HOSTS; omit to auto-select by resource availability"},
+                ],
+            },
+            "kclusters": {
+                "description": "Map of cluster name to Kubernetes cluster configuration",
+                "repeatable": True,
+                "key_label": "cluster name",
+                "fields": [
+                    {"name": "clu_type", "required": True, "type": "string", "description": "Cluster type: rke2 or k3s"},
+                    {"name": "clu_rel", "required": True, "type": "string", "description": "Release channel: stable, latest, or a version string"},
+                    {"name": "mydomain", "required": True, "type": "string", "description": "DNS domain for this cluster (e.g. mydemo.lab)"},
+                    {"name": "addons", "required": False, "type": "array", "description": "List of cluster-level addon names (install_<addon> scripts)"},
+                    {"name": "mgm_node", "required": False, "type": "string", "description": "Hostname of the node that runs addon installers (default: first server node)"},
+                ],
+            },
+        },
+    }
+
+
+def _emit(schema, fmt):
+    if fmt == "json":
+        print(json.dumps(schema, indent=2, ensure_ascii=False))
+    else:
+        try:
+            import yaml
+        except ImportError:
+            print("ERROR: pyyaml is required for YAML output (pip install pyyaml)", file=sys.stderr)
+            sys.exit(1)
+        print(yaml.dump(schema, default_flow_style=False, allow_unicode=True, sort_keys=False))
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: {Path(sys.argv[0]).name} <script_path>|--base [json|yaml]", file=sys.stderr)
+        sys.exit(1)
+
+    # --base emits the base lab-definition schema (common/nodes/kclusters)
+    if sys.argv[1] == "--base":
+        fmt = sys.argv[2] if len(sys.argv) > 2 else "json"
+        if fmt not in ("json", "yaml"):
+            print(f"ERROR: format must be 'json' or 'yaml', got '{fmt}'", file=sys.stderr)
+            sys.exit(1)
+        _emit(base_lab_schema(), fmt)
+        return
+
+    script_path = sys.argv[1]
+    fmt         = sys.argv[2] if len(sys.argv) > 2 else "json"
+
+    if fmt not in ("json", "yaml"):
+        print(f"ERROR: format must be 'json' or 'yaml', got '{fmt}'", file=sys.stderr)
+        sys.exit(1)
+
+    if not Path(script_path).is_file():
+        print(f"ERROR: file not found: {script_path}", file=sys.stderr)
+        sys.exit(1)
+
+    _emit(parse_script(script_path), fmt)
+
+
+if __name__ == "__main__":
+    main()

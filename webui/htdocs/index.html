@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lab-in-a-box · lab builder</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▚</span>
+      <div>
+        <h1>lab&#8209;in&#8209;a&#8209;box · lab builder</h1>
+        <p class="sub">Forms generated live from each component's <code>--schema</code>. Nothing here is hard&#8209;coded.</p>
+      </div>
+    </div>
+    <div class="count-pill" id="countPill" title="Components discovered at runtime">
+      <span id="countNum">…</span> <span class="count-label">components</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- component catalogue -->
+    <aside class="panel catalogue">
+      <div class="panel-head">
+        <h2>Components</h2>
+        <input id="filter" type="search" placeholder="filter…" autocomplete="off">
+      </div>
+      <ul id="componentList" class="component-list" aria-live="polite"></ul>
+      <p class="src-note" id="srcNote"></p>
+    </aside>
+
+    <!-- schema-driven form -->
+    <section class="panel form-area">
+      <div class="panel-head">
+        <h2 id="formTitle">Select a component</h2>
+        <button id="addBtn" class="btn primary" disabled>Add to lab</button>
+      </div>
+      <p id="formDesc" class="form-desc"></p>
+      <form id="schemaForm" autocomplete="off"></form>
+      <div id="formEmpty" class="empty-state">
+        <p>Pick a component on the left to build its configuration.</p>
+      </div>
+    </section>
+
+    <!-- assembled lab -->
+    <aside class="panel lab-area">
+      <div class="panel-head">
+        <h2>lab.json</h2>
+        <span class="badge" id="sectionCount">0 sections</span>
+      </div>
+      <pre id="labPreview" class="lab-preview">{}</pre>
+      <div id="validateResult" class="validate-result" hidden></div>
+      <div class="lab-actions">
+        <input id="labName" type="text" value="lab" spellcheck="false" aria-label="lab file name">
+        <button id="validateBtn" class="btn">Validate</button>
+        <button id="downloadBtn" class="btn">Download</button>
+        <button id="saveBtn" class="btn">Save to server</button>
+      </div>
+      <p class="hint">Validation and save run through the project's own Python libraries on the server.</p>
+    </aside>
+  </main>
+
+  <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>__LABVERSION__</code></footer>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
