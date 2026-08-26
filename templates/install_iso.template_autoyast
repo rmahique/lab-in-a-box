@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<!DOCTYPE profile>
+<profile xmlns="http://www.suse.com/1.0/yast2ns"
+         xmlns:config="http://www.suse.com/1.0/configns">
+
+  <general>
+    <mode>
+      <confirm config:type="boolean">false</confirm>
+      <reboot_timeout config:type="integer">10</reboot_timeout>
+    </mode>
+  </general>
+
+  <networking>
+    <managed config:type="boolean">false</managed>
+    <interfaces config:type="list">
+      <interface>
+        <bootproto>static</bootproto>
+        <ipaddr>$myip</ipaddr>
+        <prefixlen>$mymask</prefixlen>
+        <startmode>auto</startmode>
+      </interface>
+    </interfaces>
+    <routing>
+      <ipv4_forward config:type="boolean">false</ipv4_forward>
+      <routes config:type="list">
+        <route>
+          <destination>default</destination>
+          <gateway>$mygw</gateway>
+          <netmask>-</netmask>
+        </route>
+      </routes>
+    </routing>
+    <dns>
+      <hostname>$_vm_name</hostname>
+      <domain>$mydomain</domain>
+      <nameservers config:type="list">
+        <nameserver>$mydns</nameserver>
+      </nameservers>
+    </dns>
+  </networking>
+
+  <users config:type="list">
+    <user>
+      <username>root</username>
+      <user_password>$ROOT_PWD_HASH</user_password>
+      <encrypted config:type="boolean">true</encrypted>
+    </user>
+  </users>
+
+  <sshd_config>
+    <PermitRootLogin>yes</PermitRootLogin>
+  </sshd_config>
+
+  <services-manager>
+    <services>
+      <enable config:type="list">
+        <service>sshd</service>
+      </enable>
+    </services>
+  </services-manager>
+
+  <scripts>
+    <post-scripts config:type="list">
+      <script>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[#!/bin/sh
+mkdir -p /root/.ssh
+echo "$ROOT_SSH_KEY" >> /root/.ssh/authorized_keys
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+]]></source>
+      </script>
+    </post-scripts>
+  </scripts>
+
+</profile>
