@@ -1,0 +1,37 @@
+{
+  "harvester_version": "v1.7.1",
+  "token": "XYZ REPLACE ME",
+  "ssh_authorized_keys": [
+    "ssh-rsa AAAA... XYZ REPLACE ME"
+  ],
+  "password_hash": "$6$XYZ REPLACE ME",
+  "management_interface": "ens3",
+  "netmask": "255.255.255.0",
+  "gateway": "192.168.88.1",
+  "_comment_dns": "REQUIRED for static IP -- Harvester's own installer refuses to proceed without it",
+  "dns_nameservers": ["192.168.88.73"],
+  "_comment_pxe_bridge": "REQUIRED: the interface AS SEEN FROM THIS AUTOMATION VM ITSELF (dnsmasq's PXE service runs here, not on the hypervisor) -- confirmed live 2026-08-30: when the automation VM is itself a nested VM, its own interface name (e.g. \"eth1\") is NOT the hypervisor's bridge name (e.g. \"br0\") even though both sit on the same L2 segment; check with `ip -o link show` on the automation VM, not on the hypervisor",
+  "pxe_bridge": "eth1",
+  "_comment_hypervisor": "hypervisor_bridge is the bridge name ON THE HYPERVISOR that virt-install attaches the new VM's network device to (default \"br0\") -- a DIFFERENT value from pxe_bridge above even though both sit on the same L2 segment. omit hypervisor_host/hypervisor_virt_srv/vm_img_loc to fall back to lab_creation.cfg's REMOTE_HOST/VIRT_SRV/VM_IMG_LOC",
+  "hypervisor_bridge": "br0",
+  "hypervisor_host": "nuc6.mydemo.lab",
+  "hypervisor_virt_srv": "qemu+ssh://root@nuc6.mydemo.lab/system?keyfile=.ssh/id_rsa",
+  "_comment_dhcp": "proxy (default) is safe on a bridge shared with a real LAN/DHCP server; only set dhcp_mode to \"full\" (plus dhcp_range_start/end) on a genuinely isolated bridge with no other DHCP server",
+  "dhcp_mode": "proxy",
+  "dhcp_proxy_subnet": "192.168.88.0",
+  "vip": "192.168.88.142",
+  "vip_mode": "static",
+  "device": "/dev/vda",
+  "persistent_partition_size": "150Gi",
+  "automation_ip": "192.168.88.73",
+  "_comment_large_assets": "release assets are multi-GB (the ISO alone is ~7-8GB) -- set web_root/http_base to point at a disk with real room if LAB_SETUP_PATH's disk doesn't have it; both default to LAB_SETUP_PATH/harvester/<version> when omitted",
+  "create_vms": true,
+  "vm_mem": 36864,
+  "vm_cpu": 12,
+  "vm_dsk": 260,
+  "os_variant": "generic",
+  "nodes": [
+    { "name": "harvester1.mydemo.lab", "mac": "52:54:00:ab:cd:e1", "ip": "192.168.88.143", "role": "create" },
+    { "name": "harvester2.mydemo.lab", "mac": "52:54:00:ab:cd:e2", "ip": "192.168.88.144", "role": "join" }
+  ]
+}

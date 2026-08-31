@@ -7,6 +7,12 @@ Portable local dev server for the lab-builder web UI — no Apache required.
 
 Serves htdocs/ statically and routes /api to the same dispatch the CGI uses.
 Stdlib only; works anywhere Python 3 runs.
+
+Set LABBUILDER_TLS_CERT and LABBUILDER_TLS_KEY (both must be set) to serve
+HTTPS instead of plain HTTP, using that cert/key pair — this is how
+install_automation_node_scripts.sh's _webui_mode=service wires up HTTPS by
+default; a bare manual `python3 run-local.py` (no env vars) keeps serving
+plain HTTP exactly as before.
 """
 import json
 import os
@@ -75,8 +81,20 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8677
-    print("lab-builder dev server → http://localhost:%d/  (Ctrl-C to stop)" % port)
+    httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+
+    tls_cert = os.environ.get("LABBUILDER_TLS_CERT")
+    tls_key = os.environ.get("LABBUILDER_TLS_KEY")
+    scheme = "http"
+    if tls_cert and tls_key:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=tls_cert, keyfile=tls_key)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        scheme = "https"
+
+    print("lab-builder dev server → %s://localhost:%d/  (Ctrl-C to stop)" % (scheme, port))
     try:
-        ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+        httpd.serve_forever()
     except KeyboardInterrupt:
         pass

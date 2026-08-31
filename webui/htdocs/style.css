@@ -41,6 +41,26 @@ h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mu
   display:grid;grid-template-columns:290px 1fr 380px;gap:1rem;
   padding:1rem;align-items:start;max-width:1500px;margin:0 auto;
 }
+
+/* hypervisor status panel (read-only) */
+.muted{color:var(--muted)}
+.status-panel{max-width:1500px;margin:1rem auto 0;padding:0}
+.status-body{padding:.8rem 1rem;display:flex;flex-wrap:wrap;gap:1.4rem;font-size:.85rem}
+.status-hosts{display:flex;flex-wrap:wrap;gap:.6rem}
+.host-card{
+  border:1px solid var(--line);border-radius:8px;padding:.5rem .7rem;
+  background:var(--code);min-width:180px;
+}
+.host-card .host-name{font-weight:700}
+.host-card.host-error{border-color:var(--danger)}
+.host-card .host-error-msg{color:var(--danger);font-size:.78rem}
+.status-config{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.status-chip{
+  background:var(--code);border-radius:6px;padding:.2rem .55rem;font-size:.78rem;
+  white-space:nowrap;
+}
+.status-chip .k{color:var(--muted)}
+.status-chip .v{font-weight:600}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
 .panel-head{
   display:flex;align-items:center;justify-content:space-between;gap:.5rem;
@@ -63,6 +83,11 @@ h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mu
 .ci-desc{color:var(--muted);font-size:.78rem;margin-top:.1rem;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ci-meta{color:var(--accent);font-size:.72rem;font-weight:600}
+.ci-layers{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.3rem}
+.layer-badge{
+  background:var(--code);border-radius:6px;padding:.1rem .5rem;font-size:.68rem;
+  font-weight:600;color:var(--muted);white-space:nowrap;
+}
 .src-note{color:var(--muted);font-size:.72rem;padding:.5rem 1rem;border-top:1px solid var(--line);margin:0}
 
 /* form */
@@ -85,6 +110,19 @@ h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mu
 }
 .field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 .field .type-tag{float:right;font-size:.7rem;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+.field select option.opt-default{font-weight:700}
+
+/* "required only" toggle */
+.opt-toggle{
+  display:flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--muted);
+  white-space:nowrap;cursor:pointer;user-select:none;
+}
+.opt-toggle input{cursor:pointer}
+#schemaForm.hide-optional .field-optional{display:none}
+
+/* schema-driven live validation */
+.field input.invalid,.field select.invalid{border-color:var(--danger)}
+.field-error{color:var(--danger);font-size:.78rem;margin-top:.25rem}
 
 /* repeatable groups (nodes / kclusters) */
 .component-list li.pinned{border:1px dashed var(--accent)}

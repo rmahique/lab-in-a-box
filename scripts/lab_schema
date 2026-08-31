@@ -106,10 +106,52 @@ def parse_script(path):
             default = dm.group(1).strip()
             rest = re.sub(r'\s*\(default:[^)]+\)', '', rest)
 
+        # Optional explicit "(options: a, b, c)" annotation — a fixed set of
+        # valid values for this field, driving a dropdown in the web UI
+        # instead of free text. Not inferred from free-form description
+        # prose (too easy to false-positive on unrelated quoted examples);
+        # an addon author opts in by adding this annotation explicitly.
+        enum = None
+        om = re.search(r'\(options:\s*([^)]+)\)', rest)
+        if om:
+            enum = [v.strip() for v in om.group(1).split(",") if v.strip()]
+            rest = re.sub(r'\s*\(options:[^)]+\)', '', rest)
+
+        # Optional explicit "(pattern: regex)" annotation for format
+        # validation in the web UI (e.g. an IP/MAC shape). Same opt-in
+        # rationale as "(options: ...)" above. NOTE: the capture is
+        # `[^)]+` — a pattern containing a literal ")" isn't supported by
+        # this simple annotation syntax.
+        pattern = None
+        pm = re.search(r'\(pattern:\s*([^)]+)\)', rest)
+        if pm:
+            pattern = pm.group(1).strip()
+            rest = re.sub(r'\s*\(pattern:[^)]+\)', '', rest)
+
+        # Optional explicit "(min: N)" / "(max: N)" annotations for numeric
+        # range validation in the web UI.
+        min_val = max_val = None
+        mnm = re.search(r'\(min:\s*(-?\d+)\)', rest)
+        if mnm:
+            min_val = int(mnm.group(1))
+            rest = re.sub(r'\s*\(min:-?\d+\)', '', rest)
+        mxm = re.search(r'\(max:\s*(-?\d+)\)', rest)
+        if mxm:
+            max_val = int(mxm.group(1))
+            rest = re.sub(r'\s*\(max:-?\d+\)', '', rest)
+
         f["required"]    = required
         f["default"]     = default
         f["type"]        = _infer_type(f["name"])
         f["description"] = rest.strip()
+        if enum:
+            f["enum"] = enum
+        if pattern:
+            f["pattern"] = pattern
+        if min_val is not None:
+            f["min"] = min_val
+        if max_val is not None:
+            f["max"] = max_val
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -134,28 +176,37 @@ def base_lab_schema():
         "schema_version": SCHEMA_VERSION,
         "component": "lab-definition",
         "description": "lab-in-a-box lab definition file — passed as the first "
-                       "argument to setup_lab.sh and setup_vm.sh",
+                       "argument to setup_lab.py and setup_vm.py",
         "sections": {
             "common": {
                 "description": "Shared settings applied to every VM in the lab",
                 "fields": [
                     {"name": "ISO_IMAGE", "required": True, "type": "string", "description": "Source QCOW2 image filename (must exist in ISO_LOC on the hypervisor)"},
-                    {"name": "VM_MEM", "required": True, "type": "integer", "description": "RAM in MiB (e.g. 8192)"},
-                    {"name": "VM_DSK", "required": True, "type": "integer", "description": "Disk size in GiB (e.g. 80)"},
-                    {"name": "VM_CPU", "required": True, "type": "integer", "description": "vCPU count"},
+                    {"name": "VM_MEM", "required": True, "type": "integer", "min": 256, "description": "RAM in MiB (e.g. 8192)"},
+                    {"name": "VM_DSK", "required": True, "type": "integer", "min": 1, "description": "Disk size in GiB (e.g. 80)"},
+                    {"name": "VM_CPU", "required": True, "type": "integer", "min": 1, "description": "vCPU count"},
                     {"name": "mymask", "required": False, "type": "integer", "description": "Network prefix length (default: auto-detected from host)"},
-                    {"name": "mygw", "required": False, "type": "string", "description": "Default gateway IP (default: auto-detected)"},
-                    {"name": "mydns", "required": False, "type": "string", "description": "DNS server IP (default: auto-detected)"},
+                    {"name": "mygw", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "Default gateway IP (default: auto-detected)"},
+                    {"name": "mydns", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "DNS server IP (default: auto-detected)"},
                     {"name": "mynet_reverse", "required": False, "type": "string", "description": "Reverse DNS zone prefix e.g. 88.168.192 (default: derived from first node IP)"},
                     {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: derived from automation VM hostname)"},
-                    {"name": "VM_BOOT", "required": False, "type": "string", "default": "uefi", "description": "virt-install boot mode: uefi, firmware=bios, bios, uefi=off, hd"},
-                    {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "description": "Disk bus type for the primary disk: virtio, scsi, sata, usb, ide"},
-                    {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "description": "NIC device model: virtio, e1000, e1000e, rtl8139, vmxnet3, ne2k_pci"},
+                    {"name": "VM_BOOT", "required": False, "type": "string", "default": "uefi", "enum": ["uefi", "firmware=bios", "bios", "uefi=off", "hd"], "description": "virt-install boot mode"},
+                    {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Disk bus type for the primary disk"},
+                    {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "NIC device model"},
                     {"name": "VM_OSVARIANT", "required": False, "type": "string", "default": "slem5.4", "description": "OS variant for virt-install (osinfo-query os)"},
-                    {"name": "config_method", "required": False, "type": "string", "default": "", "description": "Provisioning method: empty = Ignition+Combustion, cloud-init, virt_customize, install_iso"},
-                    {"name": "install_type", "required": False, "type": "string", "default": "", "description": "For install_iso only: autoyast, kickstart, or preseed (auto-detected from ISO_IMAGE name if omitted)"},
+                    {"name": "config_method", "required": False, "type": "string", "default": "",
+                     "enum": [{"value": "", "label": "(default) Ignition+Combustion"}, "cloud-init", "virt_customize", "install_iso"],
+                     "description": "Provisioning method"},
+                    {"name": "network_renderer", "required": False, "type": "string", "default": "NetworkManager",
+                     "enum": ["NetworkManager", "networkd"],
+                     "description": "cloud-init network-config's \"renderer\" value (config_method=cloud-init only) — the default matches SLE Micro/SLES/Leap's own default network stack; set to \"networkd\" for guests whose distro defaults to systemd-networkd instead (e.g. Ubuntu Server), or their static IP is silently never applied"},
+                    {"name": "install_type", "required": False, "type": "string", "default": "",
+                     "enum": [{"value": "", "label": "(default) auto-detect from ISO_IMAGE name"}, "autoyast", "kickstart", "preseed", "autoinstall"],
+                     "description": "For install_iso only"},
                     {"name": "VM_ROOT_PASS", "required": False, "type": "string", "default": "", "description": "Plaintext root password for virt_customize; omit to reuse ROOT_PWD_HASH from lab_creation.cfg (same as cloud-init/Ignition)"},
                     {"name": "lab_name", "required": False, "type": "string", "description": "Human-readable lab name shown in log output"},
+                    {"name": "backend", "required": False, "type": "string", "default": "libvirt", "enum": ["libvirt", "harvester"], "description": "Compute backend for every node in this lab, unless overridden per-node"},
+                    {"name": "services", "required": False, "type": "array", "description": "Lab-support services to configure+enable before VMs are created: dns, http (both already running from the automation VM bootstrap; listing them is a no-op today), pxe (see the top-level \"pxe\" section), portforward (DNAT-forwards each node's own \"forwarded_ports\" field from the KVM host's real IP — see that per-node field). Omit for today's default (nothing extra runs)."},
                 ],
             },
             "nodes": {
@@ -163,15 +214,24 @@ def base_lab_schema():
                 "repeatable": True,
                 "key_label": "hostname (FQDN)",
                 "fields": [
-                    {"name": "myip", "required": True, "type": "string", "description": "VM IP address"},
-                    {"name": "mymac", "required": False, "type": "string", "description": "VM MAC address (generated and conflict-checked if omitted)"},
+                    {"name": "myip", "required": True, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "VM IP address"},
+                    {"name": "mymac", "required": False, "type": "string", "pattern": r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", "description": "VM MAC address (generated and conflict-checked if omitted)"},
                     {"name": "kcluster", "required": False, "type": "string", "description": "kcluster name this node belongs to (must exist in kclusters)"},
-                    {"name": "INSTALL_RKE2_TYPE", "required": False, "type": "string", "default": "server", "description": "Node role: server or agent"},
+                    {"name": "INSTALL_RKE2_TYPE", "required": False, "type": "string", "default": "server", "enum": ["server", "agent"], "description": "Node role"},
                     {"name": "addons", "required": False, "type": "array", "description": "List of VM-level addon names (install_<addon> scripts)"},
                     {"name": "extra_dsk", "required": False, "type": "string", "description": "Additional disk paths or UUID=… entries (space-separated); per-disk bus: /dev/sdb,bus=scsi"},
                     {"name": "config_method", "required": False, "type": "string", "description": "Overrides common.config_method for this node only"},
+                    {"name": "network_renderer", "required": False, "type": "string", "enum": ["NetworkManager", "networkd"],
+                     "description": "Overrides common.network_renderer for this node only — set per-node when a lab mixes guest OSes (e.g. SLE Micro nodes on NetworkManager, an Ubuntu node on networkd)"},
                     {"name": "ISO_IMAGE", "required": False, "type": "string", "description": "Overrides common.ISO_IMAGE for this node only"},
                     {"name": "kvm_host", "required": False, "type": "string", "description": "Pin this VM to a specific KVM host from KVM_HOSTS; omit to auto-select by resource availability"},
+                    {"name": "existing", "required": False, "type": "boolean", "description": "Pre-provisioned host (baremetal or already-running VM) — the tool will not create or destroy it, only SSH to it; omit for today's default (a VM this tool creates)"},
+                    {"name": "backend", "required": False, "type": "string", "enum": ["libvirt", "harvester"], "description": "Compute backend for this node; omit to use common.backend or the configured default"},
+                    {"name": "pxe_kernel", "required": False, "type": "string", "description": "PXE boot kernel path for this node (only used when the \"pxe\" service is enabled via common.services); omit to skip generating a PXE boot entry for this node"},
+                    {"name": "pxe_initrd", "required": False, "type": "string", "description": "PXE boot initrd path for this node (pxe service only)"},
+                    {"name": "pxe_append", "required": False, "type": "string", "description": "PXE boot kernel command-line arguments for this node (pxe service only)"},
+                    {"name": "forwarded_ports", "required": False, "type": "array",
+                     "description": "Ports to DNAT-forward from the KVM host's real IP to this node's own myip (only used when the \"portforward\" service is enabled via common.services — meant for nodes on a NAT'd network, see lab.cfg's _network_mode). Each entry is \"<external>:<internal>/<protocol>\", e.g. \"8080:80/TCP\"."},
                 ],
             },
             "kclusters": {
@@ -179,11 +239,28 @@ def base_lab_schema():
                 "repeatable": True,
                 "key_label": "cluster name",
                 "fields": [
-                    {"name": "clu_type", "required": True, "type": "string", "description": "Cluster type: rke2 or k3s"},
+                    {"name": "clu_type", "required": True, "type": "string", "enum": ["rke2", "k3s"], "description": "Cluster type"},
                     {"name": "clu_rel", "required": True, "type": "string", "description": "Release channel: stable, latest, or a version string"},
                     {"name": "mydomain", "required": True, "type": "string", "description": "DNS domain for this cluster (e.g. mydemo.lab)"},
                     {"name": "addons", "required": False, "type": "array", "description": "List of cluster-level addon names (install_<addon> scripts)"},
                     {"name": "mgm_node", "required": False, "type": "string", "description": "Hostname of the node that runs addon installers (default: first server node)"},
+                ],
+            },
+            "pxe": {
+                "description": "Optional TFTP/PXE-boot/DHCP service config, used only when \"pxe\" is listed in common.services. Runs as one small podman container on the automation VM.",
+                "fields": [
+                    {"name": "pxe_bridge", "required": False, "type": "string", "default": "br0", "description": "Bridge interface the PXE service binds to"},
+                    {"name": "pxe_dhcp_mode", "required": False, "type": "string", "default": "off",
+                     "enum": [
+                         {"value": "off", "label": "(default) off — no DHCP; an external DHCP server must already supply PXE boot options itself"},
+                         {"value": "proxy", "label": "proxy — PXE proxyDHCP; leases still come from an external DHCP server, this only answers the PXE-specific options"},
+                         {"value": "full", "label": "full — this service is the DHCP server"},
+                     ],
+                     "description": "DHCP role"},
+                    {"name": "pxe_dhcp_range_start", "required": False, "type": "string", "description": "DHCP range start — required when pxe_dhcp_mode is \"full\""},
+                    {"name": "pxe_dhcp_range_end", "required": False, "type": "string", "description": "DHCP range end — required when pxe_dhcp_mode is \"full\""},
+                    {"name": "pxe_dhcp_lease", "required": False, "type": "string", "default": "12h", "description": "DHCP lease time — \"full\" mode only"},
+                    {"name": "pxe_boot_filename", "required": False, "type": "string", "default": "lpxelinux.0", "description": "PXE boot filename handed out to clients (override for UEFI/iPXE chainloading)"},
                 ],
             },
         },

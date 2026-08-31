@@ -5,7 +5,7 @@ Python equivalent of lab_creation.bash.
 
 Typical usage:
     from lab_creation import (
-        ssh_run, ssh_output, wait_for_ssh,
+        ssh_run, ssh_output, check_ssh_conn,
         load_vm_vars, section_vars,
         add_to_dns, del_from_dns,
         setup_helm, helm_repo_add,
@@ -18,9 +18,11 @@ Typical usage:
 
 import base64
 import os
+import random
 import re
+import shlex
+import shutil
 import socket
-import string
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,8 @@ from pathlib import Path
 
 _RED    = "\033[1;91m"
 _YELLOW = "\033[1;33m"
+_GREEN  = "\033[1;92m"
+_WHITE  = "\033[1;97m"
 _RESET  = "\033[0m"
 
 _level = 0  # current indentation depth (mirrors $_lvl in bash)
@@ -52,6 +56,464 @@ def die(msg):
     """Print a red error and exit (mirrors fail_with_error)."""
     print("{}ERROR:{} {}".format(_RED, _RESET, msg), file=sys.stderr)
     raise SystemExit(1)
+
+
+# ── Lab definition preflight validation ───────────────────────────────────────
+
+def _jq_or(value, default=""):
+    """Mirrors jq's `//` operator: only None/False count as absent (empty string is truthy)."""
+    return default if value is None or value is False else value
+
+
+def _empty(value):
+    """Mirrors bash `[[ -z "$val" ]]` applied to a jq `// ""`-defaulted value."""
+    return value is None or value is False or value == ""
+
+
+def resolve_install_type(install_type, iso_image):
+    """
+    Auto-detect the installer flavour from the ISO filename when install_type is
+    blank. Mirrors _resolve_install_type (bash).
+    """
+    itype = install_type or ""
+    if not itype:
+        iso_lower = (iso_image or "").lower()
+        if re.search(r"sles|suse|opensuse|sl-micro|sle-micro", iso_lower):
+            itype = "autoyast"
+        elif re.search(r"rhel|centos|rocky|almalinux|fedora", iso_lower):
+            itype = "kickstart"
+        elif re.search(r"ubuntu", iso_lower):
+            itype = "autoinstall"
+        elif re.search(r"debian", iso_lower):
+            itype = "preseed"
+        else:
+            itype = "autoyast"
+    return itype
+
+
+def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None, vm_img_loc=None):
+    """
+    Preflight-validate an already-loaded lab definition. Mirrors
+    validate_lab_definition (bash), generalized to resolve a KVM host per
+    node (new in the python port — bash only ever had one hypervisor).
+
+    Call before setup_lab.py / setup_vm.py begins work. Prints a full issue
+    report (errors + warnings) and returns True iff there were no errors —
+    mirrors the bash function's 0/1 return code (warnings never block).
+
+    Args:
+        definition     : the lab definition, already loaded by the caller
+                          (primary.load_definition()) — a LabDefinition (see
+                          primary.py), so it already knows its own source
+                          path (definition.source_path), used below for the
+                          preflight banner and for delegating to each
+                          addon's own `install_<addon> --validate <path>`
+                          subprocess (a separate process, which necessarily
+                          re-reads the file itself — that's unrelated to,
+                          and not fixed by, this function not re-reading it
+                          in-process). No separate path parameter needed:
+                          this function validates definition's CONTENT and
+                          never re-reads or re-parses the file itself (the
+                          bash version re-read it here since it had no
+                          in-memory representation to reuse; the python
+                          port doesn't need to repeat that I/O, or even
+                          accept the path twice over).
+        config         : lab_creation.cfg dict (REMOTE_HOST, VIRT_SRV, KVM_HOSTS, …) —
+                          used to resolve_kvm_host() each node, same resolution
+                          that will place it when actually created.
+        iso_loc         : source image directory on the hypervisor (ISO_LOC) —
+                          identical path on every KVM host, by design.
+        lab_setup_path  : ignition/combustion/cloud-init/install_iso template tree
+                          on the automation VM (LAB_SETUP_PATH).
+        target_node     : optional single VM hostname to restrict per-node/per-
+                          kcluster checks to (mirrors the optional 2nd bash arg).
+        vm_img_loc      : passed through to resolve_kvm_host()'s select_kvm_host()
+                          resource probing when KVM_HOSTS has more than one host.
+
+    NOTE: the bash version also computes a `_known_addons` list (via `command -v
+    install_rancher` + a directory listing, falling back to `compgen -c`) that
+    is assigned but never read anywhere in the function — verified with grep,
+    dropped here as dead code with no behavioural effect.
+
+    NOTE: the bash version iterates nodes/kclusters via `while read <<< "$var"`
+    (a here-string), which runs the loop body once with an empty value even
+    when $var is empty — bash:117 lacked the `[[ -z ... ]] && continue` guard
+    the other two here-string loops in this function already had, so a lab
+    with an empty "nodes" object would get a spurious "nodes.: 'myip' is
+    required" error. Fixed in both bash (added the guard) and here (a plain
+    Python loop over an empty list simply doesn't iterate).
+    """
+    issues = []
+    counts = {"errors": 0, "warnings": 0}
+
+    def err(msg):
+        issues.append("  [ERROR] {}".format(msg))
+        counts["errors"] += 1
+
+    def warn(msg):
+        issues.append("  [WARN]  {}".format(msg))
+        counts["warnings"] += 1
+
+    if target_node:
+        print("{}── Preflight: validating '{}' for node '{}' ──{}".format(
+            _WHITE, definition.source_path, target_node, _RESET))
+    else:
+        print("{}── Preflight: validating '{}' ──{}".format(_WHITE, definition.source_path, _RESET))
+
+    # ── 1. Required top-level sections ────────────────────────────────────────
+    if "nodes" not in definition:
+        err("Missing required section: 'nodes'")
+    if "common" not in definition:
+        err("Missing required section: 'common'")
+
+    common = definition.get("common") or {}
+    nodes = definition.get("nodes") or {}
+    kclusters = definition.get("kclusters") or {}
+
+    # ── 2. common: required fields ────────────────────────────────────────────
+    iso = _jq_or(common.get("ISO_IMAGE"))
+    if _empty(iso):
+        err("common.ISO_IMAGE is required")
+
+    for req in ("VM_MEM", "VM_DSK", "VM_CPU"):
+        if _empty(_jq_or(common.get(req))):
+            err("common.{} is required".format(req))
+
+    dsk_bus = _jq_or(common.get("VM_DSK_BUS"))
+    if not _empty(dsk_bus) and dsk_bus not in ("virtio", "scsi", "sata", "usb", "ide"):
+        err("common.VM_DSK_BUS '{}' is invalid — must be one of: virtio, scsi, sata, usb, ide".format(dsk_bus))
+
+    net_model = _jq_or(common.get("VM_NET_MODEL"))
+    if not _empty(net_model) and net_model not in ("virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"):
+        err("common.VM_NET_MODEL '{}' is invalid — must be one of: virtio, e1000, e1000e, rtl8139, vmxnet3, ne2k_pci".format(net_model))
+
+    from backends import BACKENDS
+    common_backend = _jq_or(common.get("backend"))
+    if not _empty(common_backend) and common_backend not in BACKENDS:
+        err("common.backend '{}' is invalid — must be one of: {}".format(
+            common_backend, ", ".join(sorted(BACKENDS))))
+
+    # ── 3. Per-node checks ─────────────────────────────────────────────────────
+    seen_ips = set()
+    seen_macs = set()
+    kclusters_defined = set(kclusters.keys())
+
+    nodes_to_check = [target_node] if target_node else list(nodes.keys())
+
+    # Resolved lazily per node and cached — section 7 (image checks) reuses
+    # the same resolution. A die() from resolve_kvm_host()/select_kvm_host()
+    # (no host has enough resources, or bad config) is caught here rather
+    # than aborting validation outright, so it can be reported as one more
+    # preflight error alongside everything else.
+    node_hosts = {}
+
+    def resolved_host_for(node):
+        if node not in node_hosts:
+            try:
+                node_hosts[node] = resolve_kvm_host(definition, node, config, vm_img_loc)
+            except SystemExit:
+                node_hosts[node] = (None, None)
+        return node_hosts[node]
+
+    for node in nodes_to_check:
+        node_cfg = nodes.get(node) or {}
+        myip = _jq_or(node_cfg.get("myip"))
+        mymac = _jq_or(node_cfg.get("mymac"))
+        kcluster = _jq_or(node_cfg.get("kcluster"))
+
+        if _empty(myip):
+            err("nodes.{}: 'myip' is required".format(node))
+
+        if not _empty(myip):
+            if myip in seen_ips:
+                err("nodes.{}: IP {} is already assigned to another node".format(node, myip))
+            else:
+                seen_ips.add(myip)
+
+        if not _empty(mymac):
+            mymac_l = str(mymac).lower()
+            if mymac_l in seen_macs:
+                err("nodes.{}: MAC {} is duplicated within this JSON".format(node, mymac))
+            else:
+                seen_macs.add(mymac_l)
+
+        if not _empty(kcluster) and kcluster not in kclusters_defined:
+            err("nodes.{}: references kcluster '{}' which is not defined in 'kclusters'".format(node, kcluster))
+
+        node_backend = _jq_or(node_cfg.get("backend"))
+        if not _empty(node_backend) and node_backend not in BACKENDS:
+            err("nodes.{}: backend '{}' is invalid — must be one of: {}".format(
+                node, node_backend, ", ".join(sorted(BACKENDS))))
+
+        # Existing (pre-provisioned) nodes are never created/destroyed by
+        # this tool, so hypervisor-existence and image checks don't apply —
+        # the only thing that matters is that the host is actually reachable.
+        # See targets.py's module docstring for why "existing" covers both
+        # baremetal and an already-running VM this tool didn't create.
+        from targets import is_existing_node, check_ssh_only_reachability
+        if is_existing_node(node_cfg):
+            if not _empty(myip) and not check_ssh_only_reachability(node):
+                err("nodes.{}: marked \"existing\" but not reachable via SSH".format(node))
+            continue
+
+        # Hypervisor: VM name must not already exist on the host it would be
+        # (re)created on
+        node_host, node_virt_srv = resolved_host_for(node)
+        if node_virt_srv:
+            dominfo = run_libvirt_tool(
+                "virsh", node_host, node_virt_srv, ["dominfo", node],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if dominfo.returncode == 0:
+                warn("nodes.{}: a VM with this name already exists on KVM host '{}' "
+                     "(will be destroyed and recreated)".format(node, node_host))
+
+        # IP reachability (informational)
+        if not _empty(myip):
+            ping = subprocess.run(["ping", "-c1", "-W1", str(myip)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if ping.returncode == 0:
+                warn("nodes.{}: IP {} is currently responding to ping — "
+                     "something may already be using it".format(node, myip))
+
+    # ── 4. kcluster checks ─────────────────────────────────────────────────────
+    if target_node:
+        node_kcluster = _jq_or((nodes.get(target_node) or {}).get("kcluster"))
+        clusters_to_check = [] if _empty(node_kcluster) else [node_kcluster]
+    else:
+        clusters_to_check = list(kclusters.keys())
+
+    for clu in clusters_to_check:
+        clu_cfg = kclusters.get(clu) or {}
+        ctype = _jq_or(clu_cfg.get("clu_type"))
+        crel = _jq_or(clu_cfg.get("clu_rel"))
+        cdomain = _jq_or(clu_cfg.get("mydomain"))
+
+        if _empty(ctype):
+            err("kclusters.{}: 'clu_type' is required (rke2 or k3s)".format(clu))
+        if _empty(crel):
+            err("kclusters.{}: 'clu_rel' is required (e.g. stable)".format(clu))
+        if _empty(cdomain):
+            err("kclusters.{}: 'mydomain' is required".format(clu))
+
+        for addon in clu_cfg.get("addons") or []:
+            if shutil.which("install_{}".format(addon)) is None:
+                err("kclusters.{}: addon '{}' — script 'install_{}' not found in PATH".format(clu, addon, addon))
+                continue
+            from apps import load_plugin, requirement_issue
+            from targets import TARGET_CONTAINER
+            issue = requirement_issue(load_plugin(addon), TARGET_CONTAINER, clu_type=ctype)
+            if issue:
+                err("kclusters.{}: addon '{}' {}".format(clu, addon, issue))
+
+    # Per-VM addon scripts must also be present
+    for node in nodes_to_check:
+        node_cfg = nodes.get(node) or {}
+        for addon in node_cfg.get("addons") or []:
+            if shutil.which("install_{}".format(addon)) is None:
+                err("nodes.{}: addon '{}' — script 'install_{}' not found in PATH".format(node, addon, addon))
+                continue
+            from apps import load_plugin, requirement_issue
+            from targets import node_kind
+            issue = requirement_issue(load_plugin(addon), node_kind(definition, node))
+            if issue:
+                err("nodes.{}: addon '{}' {}".format(node, addon, issue))
+
+    # ── 5. Per-addon field validation — delegate to each install script ───────
+    # Each install_* script supports --validate <json> and exits non-zero
+    # with [ERROR] lines if its own fields are invalid or missing.
+    if target_node:
+        node_kcluster = _jq_or((nodes.get(target_node) or {}).get("kcluster"))
+        addon_list = list((nodes.get(target_node) or {}).get("addons") or [])
+        if not _empty(node_kcluster):
+            addon_list += list((kclusters.get(node_kcluster) or {}).get("addons") or [])
+    else:
+        addon_list = []
+        for clu_cfg in kclusters.values():
+            addon_list += list((clu_cfg or {}).get("addons") or [])
+        for node_cfg in nodes.values():
+            addon_list += list((node_cfg or {}).get("addons") or [])
+    all_addons = sorted(set(addon_list))
+
+    for addon in all_addons:
+        exe = shutil.which("install_{}".format(addon))
+        if not exe:
+            continue
+        result = subprocess.run([exe, "--validate", str(definition.source_path)], capture_output=True, text=True)
+        if result.returncode != 0:
+            combined = (result.stdout or "") + (result.stderr or "")
+            for line in combined.splitlines():
+                err("addon '{}': {}".format(addon, re.sub(r"^\[ERROR\]\s*", "", line)))
+
+    # ── 6. Hypervisor: source image exists ────────────────────────────────────
+    # Per-node/per-host: with multiple KVM hosts a node's image needs to
+    # exist on the specific host it resolves to (ISO_LOC is the same path on
+    # every host by design, but the file itself only needs to be there via
+    # setup_kvm_node's storage-sharing step — checked per host, not assumed).
+    if _empty(iso_loc):
+        err("ISO_LOC is not set — check /etc/lab_creation.defaults")
+
+    hv_ssh_ok = {}  # host -> bool, cached so each distinct host is only SSH-tested once
+
+    def hv_reachable(host):
+        if host not in hv_ssh_ok:
+            ssh_test = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+                 "-o", "ConnectTimeout=5", "-q", "root@{}".format(host), "echo ok"],
+                capture_output=True, text=True,
+            )
+            ok = (ssh_test.stdout or "").strip() == "ok"
+            if not ok:
+                err("Cannot reach KVM host '{}' via SSH — image checks skipped ({})".format(
+                    host, ((ssh_test.stdout or "") + (ssh_test.stderr or "")).strip()))
+            hv_ssh_ok[host] = ok
+        return hv_ssh_ok[host]
+
+    def check_image_on_hv(img, label, host):
+        if _empty(img) or _empty(iso_loc) or not host or not hv_reachable(host):
+            return
+        test = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=5", "-q", "root@{}".format(host),
+             "test -f '{}/{}'".format(iso_loc, img)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if test.returncode != 0:
+            avail_proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-q",
+                 "root@{}".format(host),
+                 "ls '{}/'*.qcow2 2>/dev/null | xargs -n1 basename".format(iso_loc)],
+                capture_output=True, text=True,
+            )
+            avail = "  ".join((avail_proc.stdout or "").splitlines()[:10])
+            suffix = " — available: {}".format(avail) if avail else ""
+            err("{}: image '{}' not found at {}:{}/{}{}".format(label, img, host, iso_loc, img, suffix))
+
+    from targets import is_existing_node as _is_existing_node
+
+    def _uses_libvirt(node):
+        # ISO_IMAGE existence only means anything against a libvirt
+        # hypervisor's own ISO_LOC — non-libvirt backends (e.g. Harvester)
+        # resolve images by name inside their own cluster instead and never
+        # touch this path at all. Confirmed live (2026-08-29): without this,
+        # a Harvester-backed node failed preflight over an ISO_IMAGE that
+        # was never supposed to exist on any KVM hypervisor's filesystem.
+        node_backend = _jq_or((nodes.get(node) or {}).get("backend")) or _jq_or(common.get("backend"))
+        return _empty(node_backend) or node_backend == "libvirt"
+
+    created_nodes_to_check = [n for n in nodes_to_check if not _is_existing_node(nodes.get(n) or {})]
+    libvirt_nodes_to_check = [n for n in created_nodes_to_check if _uses_libvirt(n)]
+
+    if not _empty(iso_loc):
+        hosts_used = {resolved_host_for(node)[0] for node in libvirt_nodes_to_check} - {None}
+        if hosts_used:
+            for host in hosts_used:
+                check_image_on_hv(iso, "common.ISO_IMAGE", host)
+        for node in libvirt_nodes_to_check:
+            node_host, _ = resolved_host_for(node)
+            node_iso = _jq_or((nodes.get(node) or {}).get("ISO_IMAGE"))
+            if not _empty(node_iso):
+                check_image_on_hv(node_iso, "nodes.{}.ISO_IMAGE".format(node), node_host)
+
+    # ── 7. Local: provisioning templates ──────────────────────────────────────
+    # Only check the config methods actually used in this definition
+    needs_ign_cmb = False
+    needs_cloud_init = False
+    needs_install_iso = False
+    for node_cfg in nodes.values():
+        cm = _jq_or((node_cfg or {}).get("config_method"))
+        if cm == "cloud-init":
+            needs_cloud_init = True
+        elif cm == "install_iso":
+            needs_install_iso = True
+        elif cm in ("virt_customize", "iso-cloud-init"):
+            pass
+        else:
+            needs_ign_cmb = True
+
+    if needs_ign_cmb:
+        if not Path("{}/ignition/template".format(lab_setup_path)).is_file():
+            err("Ignition template not found: {}/ignition/template".format(lab_setup_path))
+        if not Path("{}/combustion/template".format(lab_setup_path)).is_file():
+            err("Combustion template not found: {}/combustion/template".format(lab_setup_path))
+
+    if needs_cloud_init:
+        for tpl in ("user-data", "network-config", "meta-data"):
+            if not Path("{}/cloud-init/template_{}".format(lab_setup_path, tpl)).is_file():
+                err("cloud-init template not found: {}/cloud-init/template_{}".format(lab_setup_path, tpl))
+
+    if needs_install_iso:
+        itype = _jq_or(common.get("install_type"))
+        if not _empty(itype) and itype not in ("autoyast", "kickstart", "preseed", "autoinstall"):
+            err("common.install_type '{}' is invalid — must be: autoyast, kickstart, preseed, or autoinstall".format(itype))
+        eff_itype = resolve_install_type("" if _empty(itype) else itype, iso)
+        if not Path("{}/install_iso/template_{}".format(lab_setup_path, eff_itype)).is_file():
+            err("install_iso template not found: {}/install_iso/template_{}".format(lab_setup_path, eff_itype))
+
+    # ── Report ─────────────────────────────────────────────────────────────────
+    if issues:
+        print("\n".join(issues))
+
+    if counts["errors"] > 0:
+        print("{}✗ Preflight FAILED{} — {} error(s), {} warning(s). Fix the above before proceeding.".format(
+            _RED, _RESET, counts["errors"], counts["warnings"]))
+        return False
+    else:
+        print("{}✓ Preflight passed{} — 0 errors, {} warning(s).".format(_GREEN, _RESET, counts["warnings"]))
+        return True
+
+
+# ── MAC address handling ────────────────────────────────────────────────────
+
+def _list_domain_macs(virt_srv, remote_host=None):
+    """
+    Returns (all_domain_lines, mac_by_domain) for the hypervisor at virt_srv.
+    Thin wrapper — body moved to backends.LibvirtBackend.list_used_macs().
+
+    remote_host is optional and defaults to None for backward compatibility
+    with every existing caller — it's only actually needed by
+    run_libvirt_tool()'s SSH fallback, when no local virsh binary exists
+    (see its own docstring); every environment with a local virsh (the bare
+    automation VM host, unchanged) never touches it.
+    """
+    from backends import LibvirtBackend
+    return LibvirtBackend(virt_srv, remote_host=remote_host).list_used_macs()
+
+
+def _generate_unused_mac(used_macs):
+    """
+    Generate a random locally-administered unicast MAC not present in used_macs
+    (an iterable of lower-case MAC strings). Mirrors _generate_unused_mac (bash).
+
+    NOTE: uses Python's random module rather than bash's $RANDOM — different
+    PRNG, but the same algorithm (byte0 = random & 0xFC | 0x02, bytes 1-5
+    uniform random) and the same guarantee (result not in used_macs). Bit-exact
+    output parity between bash and python runs was never possible here since
+    they use unrelated PRNGs; functional parity (a valid, unused, locally-
+    administered MAC) is what's preserved.
+    """
+    used = set(used_macs)
+    while True:
+        b0 = "{:02x}".format((random.randint(0, 255) & 0xFC) | 0x02)
+        candidate = "{}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}".format(
+            b0, random.randint(0, 255), random.randint(0, 255),
+            random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),
+        )
+        if candidate not in used:
+            return candidate
+
+
+def vm_is_reusable(virt_srv, vm_name, mymac, myip, remote_host=None):
+    """
+    Returns True when the VM should be kept, False when it must be destroyed
+    and recreated. Thin wrapper — body moved to
+    backends.LibvirtBackend.vm_is_reusable().
+
+    remote_host: see _list_domain_macs()'s docstring — optional, only needed
+    by the SSH fallback.
+    """
+    from backends import LibvirtBackend
+    return LibvirtBackend(virt_srv, remote_host=remote_host).vm_is_reusable(vm_name, mymac, myip)
 
 
 # ── SSH helpers ───────────────────────────────────────────────────────────────
@@ -95,23 +557,89 @@ def ssh_output(hostname, cmd):
     return ssh_run(hostname, cmd, capture=True).stdout.strip()
 
 
-def wait_for_ssh(hostname, timeout=300, interval=5):
-    """
-    Poll TCP port 22 on hostname until it accepts a connection (mirrors check_ssh_conn).
+def _has_local_binary(binary):
+    """Thin shutil.which() wrapper so tests can force run_libvirt_tool()'s
+    local-vs-SSH-fallback branch deterministically (patch this one name)
+    instead of depending on whether the test container happens to have
+    virsh/virt-install installed."""
+    return shutil.which(binary) is not None
 
-    Raises RuntimeError if the timeout is exceeded.
+
+def run_libvirt_tool(binary, remote_host, virt_srv, args, **kwargs):
     """
-    log("Waiting for {}{}{} to come online …".format(_RED, hostname, _RESET))
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            s = socket.create_connection((hostname, 22), timeout=3)
-            s.close()
-            log("{}{}{} is online".format(_RED, hostname, _RESET))
-            return
-        except OSError:
-            time.sleep(interval)
-    raise RuntimeError("Timeout ({}s) exceeded waiting for {}".format(timeout, hostname))
+    Run `<binary> --connect <virt_srv> <args...>` — binary is "virsh" or
+    "virt-install". Prefers the local binary, exactly today's behavior
+    everywhere it's already installed (the bare automation VM host always
+    has it — zero change there). Falls back to plain SSH to `remote_host`,
+    running the same command against the hypervisor's own local libvirt
+    socket (qemu:///system), when no local binary exists.
+
+    Why this exists: confirmed live (2026-08-29) that a thin ssh+rsync-only
+    runtime (the MCP endpoint's container) can't just `zypper install
+    libvirt-client virt-install` its way to parity — virt-install pulls a
+    genuinely heavy GTK/libvirt-python dependency tree that filled the
+    automation VM's own disk mid-build, and SUSE's minimal BCI repos don't
+    carry these packages at all. This project's own philosophy is already
+    "reach remote hosts over SSH" (ssh_run() everywhere else) — a thin
+    client shouldn't need a full local libvirt stack just to reach a
+    hypervisor it already talks to over SSH for every other operation, so
+    this gives virsh/virt-install the same SSH-first treatment instead of
+    forcing every runtime environment to carry one.
+
+    Mirrors subprocess.run's kwarg surface (capture_output/text/stdout=
+    PIPE-or-DEVNULL/check) and returns a subprocess.CompletedProcess (or
+    ssh_run's equivalent), so it drops in unchanged at any existing
+    subprocess.run([binary, "--connect", virt_srv, ...], **kwargs) call
+    site.
+    """
+    if _has_local_binary(binary):
+        return subprocess.run([binary, "--connect", virt_srv] + list(args), **kwargs)
+    if not remote_host:
+        raise RuntimeError("no local {} and no remote_host to reach it via SSH".format(binary))
+    capture = kwargs.pop("capture_output", False) or kwargs.pop("stdout", None) == subprocess.PIPE
+    kwargs.pop("stderr", None)
+    kwargs.pop("text", None)
+    check = kwargs.pop("check", False)
+    cmd = "{} --connect qemu:///system {}".format(binary, " ".join(shlex.quote(str(a)) for a in args))
+    return ssh_run(remote_host, cmd, check=check, capture=capture)
+
+
+def check_ssh_conn(vm_name, tcp_port=22, retry_interval=2, retry_limit=100):
+    """
+    Poll a host's TCP port until it accepts a connection. Mirrors check_ssh_conn (bash).
+
+    Defaults match bash exactly: 2s between retries, 100 retries (~200s total),
+    port 22 — i.e. _tcp_port/_retry_interval/_retry_limit's bash defaults.
+    Calls die() (mirrors fail_with_error, which exits the whole process) if the
+    retry limit is exceeded — this never returns a failure value, same as bash.
+
+    NOTE: bash used `nc -z -w 2 host port` for the probe (2s connect timeout);
+    here a raw socket connect with the same 2s timeout is used instead — same
+    observable result without depending on netcat being installed. bash's
+    'ERROR - Netcat(nc) not installed' branch (exit code 127) has no equivalent
+    since this doesn't shell out to nc.
+    """
+    global _level
+    _level += 1
+    log("Waiting for {}{}{} to come online".format(_RED, vm_name, _RESET))
+    count = 0
+    _level += 1
+    try:
+        while True:
+            count += 1
+            time.sleep(retry_interval)
+            try:
+                s = socket.create_connection((vm_name, tcp_port), timeout=2)
+                s.close()
+                log("{}{}{} is online".format(_RED, vm_name, _RESET))
+                return
+            except OSError:
+                pass
+            if count > retry_limit:
+                die("retry limit ( {} ) exceeded waiting for {}{}{} to boot.".format(
+                    retry_limit, _RED, vm_name, _RESET))
+    finally:
+        _level -= 2
 
 
 # ── Variable loading ──────────────────────────────────────────────────────────
@@ -173,97 +701,249 @@ def load_vm_vars(definition, vm_name, config=None):
         vars["mydomain"] = _detect_domain()
     if not vars.get("mynet_reverse") and vars.get("myip"):
         vars["mynet_reverse"] = _reverse_ip(vars["myip"])
+    if not vars.get("mymask"):
+        vars["mymask"] = _detect_netmask()
 
     return vars
 
 
+def total_lab_resources(definition):
+    """
+    Sums VM_CPU / VM_MEM (MiB) / VM_DSK (GiB) across every node in a lab
+    definition — a per-node value overrides common's, exactly the
+    common-then-per-node precedence every other field in this project
+    follows, without load_vm_vars()'s auto-detection side effects (real
+    gateway/DNS/domain lookups), which this has no use for. Pure function,
+    no I/O.
+
+    Two independent uses: sizing the USB-delivery lab-host VM (has to be
+    big enough to nest every one of these VMs inside it), and an
+    informational "this lab needs N vCPU / M MiB RAM / G GiB disk" message
+    on an ordinary setup_lab.py run — unrelated to USB delivery.
+
+    Returns (total_cpu, total_mem_mib, total_disk_gib) as ints. A node with
+    neither its own value nor a common default contributes 0 for that field.
+    """
+    common = definition.get("common", {}) or {}
+    total_cpu = 0
+    total_mem = 0
+    total_disk = 0
+    for node in (definition.get("nodes", {}) or {}).values():
+        node = node or {}
+        total_cpu += int(node.get("VM_CPU", common.get("VM_CPU", 0)) or 0)
+        total_mem += int(node.get("VM_MEM", common.get("VM_MEM", 0)) or 0)
+        total_disk += int(node.get("VM_DSK", common.get("VM_DSK", 0)) or 0)
+    return total_cpu, total_mem, total_disk
+
+
+# ── Multi-host selection ───────────────────────────────────────────────────────
+#
+# New in the python port — bash only ever supported one hypervisor
+# (REMOTE_HOST/VIRT_SRV as flat globals). KVM_HOSTS is an optional cfg key
+# (space-separated, like REMOTE_DNS_SERVERS); when absent or single-valued,
+# resolve_kvm_host() never calls select_kvm_host()'s SSH probing at all, so
+# existing single-host setups are unaffected.
+
+def _host_resources(host, vm_img_loc):
+    """
+    Query free vCPUs, free memory (MiB), and free disk (MiB) on vm_img_loc for
+    one candidate KVM host, over SSH. Raises RuntimeError/ValueError on any
+    query failure — the caller treats that host as disqualified rather than
+    letting the whole selection blow up.
+
+    Thin wrapper — body moved to backends.LibvirtBackend.host_resources().
+    Used by select_kvm_host() to probe CANDIDATE hosts before one is chosen,
+    so (unlike the other wrappers here) it builds its own throwaway backend
+    from a host name rather than an already-resolved virt_srv.
+    """
+    from backends import LibvirtBackend
+    virt_srv = "qemu+ssh://root@{}/system?keyfile=.ssh/id_rsa".format(host)
+    return LibvirtBackend(virt_srv, remote_host=host, vm_img_loc=vm_img_loc).host_resources()
+
+
+def select_kvm_host(hosts, vm_cpu, vm_mem, vm_dsk, vm_img_loc):
+    """
+    Pick a KVM host from `hosts` with enough free CPU/memory/disk for a VM
+    requesting vm_cpu vCPUs, vm_mem MiB RAM, and vm_dsk GiB disk on
+    vm_img_loc (identical path on every host by design — see
+    resolve_kvm_host). Among hosts with enough of all three, picks the one
+    with the most free memory — simplest single tiebreaker, since memory is
+    the usual bottleneck for these labs.
+
+    Dies (via die()) listing each host's shortfall if none qualify.
+    """
+    candidates = []
+    shortfalls = []
+    for host in hosts:
+        try:
+            free_cpu, free_mem, free_disk = _host_resources(host, vm_img_loc)
+        except (RuntimeError, ValueError) as e:
+            shortfalls.append("{}: could not query resources ({})".format(host, e))
+            continue
+
+        missing = []
+        if free_cpu < int(vm_cpu):
+            missing.append("{} free vCPUs < {} requested".format(free_cpu, vm_cpu))
+        if free_mem < int(vm_mem):
+            missing.append("{} MiB free RAM < {} requested".format(free_mem, vm_mem))
+        if free_disk < int(vm_dsk) * 1024:
+            missing.append("{} MiB free disk < {} GiB requested".format(free_disk, vm_dsk))
+
+        if missing:
+            shortfalls.append("{}: {}".format(host, "; ".join(missing)))
+        else:
+            candidates.append((free_mem, host))
+
+    if not candidates:
+        die("No KVM host in [{}] has enough free resources for this VM "
+            "({} vCPU, {} MiB RAM, {} GiB disk):\n  {}".format(
+                ", ".join(hosts), vm_cpu, vm_mem, vm_dsk, "\n  ".join(shortfalls)))
+
+    candidates.sort(reverse=True)  # most free memory first
+    return candidates[0][1]
+
+
+def _configured_hosts(config):
+    """Returns (hosts, default_host): KVM_HOSTS split, or [REMOTE_HOST] when unset."""
+    default_host = config.get("REMOTE_HOST", "")
+    hosts_raw = config.get("KVM_HOSTS") or default_host
+    hosts = hosts_raw.split() if hosts_raw else []
+    return hosts, default_host
+
+
+def _virt_srv_for_host(host, default_host, config):
+    """
+    libvirt connection URI for `host`. Reuses config["VIRT_SRV"] verbatim
+    when `host` is the configured default REMOTE_HOST (preserving any
+    customization — different keyfile, extra URI params — an existing
+    single-host cfg might have); for any other host it's derived
+    programmatically, since there's no per-host VIRT_SRV to reuse.
+    """
+    if host == default_host and config.get("VIRT_SRV"):
+        return config["VIRT_SRV"]
+    return "qemu+ssh://root@{}/system?keyfile=.ssh/id_rsa".format(host)
+
+
+def resolve_kvm_host(definition, vm_name, config, vm_img_loc=None):
+    """
+    Resolve which KVM host a NEW VM should be created on, and its libvirt
+    URI. For operations on an EXISTING VM (destroy, reboot), use
+    locate_kvm_host() instead — see its docstring for why the two must not
+    share one implementation.
+
+    Precedence: an explicit nodes[vm_name].kvm_host override wins; otherwise
+    select_kvm_host() picks one from KVM_HOSTS. With zero or one configured
+    host (today's single-hypervisor setups, or KVM_HOSTS unset), no
+    selection logic runs at all — the sole host is used directly, same as
+    before this feature existed.
+
+    Returns (remote_host, virt_srv).
+    """
+    node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
+    explicit_host = node_cfg.get("kvm_host")
+
+    hosts, default_host = _configured_hosts(config)
+
+    if explicit_host:
+        host = explicit_host
+    elif len(hosts) <= 1:
+        host = hosts[0] if hosts else default_host
+    else:
+        common_cfg = definition.get("common", {}) or {}
+        vm_cpu = node_cfg.get("VM_CPU", common_cfg.get("VM_CPU", 0))
+        vm_mem = node_cfg.get("VM_MEM", common_cfg.get("VM_MEM", 0))
+        vm_dsk = node_cfg.get("VM_DSK", common_cfg.get("VM_DSK", 0))
+        host = select_kvm_host(hosts, vm_cpu, vm_mem, vm_dsk, vm_img_loc or "/var/lib/libvirt/images/")
+
+    return host, _virt_srv_for_host(host, default_host, config)
+
+
+def locate_kvm_host(definition, vm_name, config):
+    """
+    Find which KVM host an EXISTING VM currently lives on, for destroy/
+    reboot/reusability-check operations. Deliberately NOT the same code
+    path as resolve_kvm_host(): a VM's host is never recorded anywhere
+    after creation (kvm_host is optional and intentionally not written
+    back to the JSON), so re-running resource-based selection here could
+    return a different host than the one the VM actually runs on — the
+    only reliable way to find it again is to ask each host directly.
+
+    Precedence: an explicit nodes[vm_name].kvm_host override wins; with
+    zero or one configured host, no probing happens (same as
+    resolve_kvm_host() in that case). Otherwise queries each host with
+    `virsh dominfo <vm_name>` and returns the first one that has it. Dies
+    if no configured host has a domain by this name.
+    """
+    node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
+    explicit_host = node_cfg.get("kvm_host")
+
+    hosts, default_host = _configured_hosts(config)
+
+    if explicit_host:
+        host = explicit_host
+        return host, _virt_srv_for_host(host, default_host, config)
+    if len(hosts) <= 1:
+        host = hosts[0] if hosts else default_host
+        return host, _virt_srv_for_host(host, default_host, config)
+
+    for host in hosts:
+        virt_srv = _virt_srv_for_host(host, default_host, config)
+        result = run_libvirt_tool(
+            "virsh", host, virt_srv, ["dominfo", vm_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return host, virt_srv
+
+    die("VM '{}' not found on any configured KVM host: {}".format(vm_name, ", ".join(hosts)))
+
+
 # ── VM management ─────────────────────────────────────────────────────────────
 
-def copy_vm_image(remote_host, iso_loc, iso_image, vm_img_loc, vm_name, vm_dsk_gb):
+def copy_vm_image(remote_host, iso_loc, iso_image, vm_img_loc, vm_name, vm_dsk_gb, config_method=""):
     """
-    Copy a QCOW2 source image and resize it on the hypervisor (mirrors copy_vm_img).
+    Copy a QCOW2 source image and resize it on the hypervisor. Thin wrapper —
+    body moved to backends.LibvirtBackend.copy_vm_image().
     """
-    log("Copying image for VM '{}'".format(vm_name))
-    _remote(remote_host, "cp {}/{} {}/{}.qcow2".format(iso_loc, iso_image, vm_img_loc, vm_name))
-    log("Resizing to {}G".format(vm_dsk_gb))
-    _remote(remote_host, "qemu-img resize -f qcow2 {}/{}.qcow2 {}G".format(vm_img_loc, vm_name, vm_dsk_gb))
+    from backends import LibvirtBackend
+    backend = LibvirtBackend(None, remote_host=remote_host, iso_loc=iso_loc, vm_img_loc=vm_img_loc)
+    backend.copy_vm_image(iso_image, vm_name, vm_dsk_gb, config_method=config_method)
 
 
 def create_vm(
-    virt_srv, vm_name, vm_cpu, vm_mem, vm_dsk_gb, vm_img_loc, network,
+    virt_srv, vm_name, vm_cpu, vm_mem, vm_dsk_gb, vm_img_loc, network, remote_host,
     os_variant="slem5.4", boot="uefi", config_method="",  # boot: "uefi", "firmware=bios", "hd", …
     lab_setup_path="/srv/www/htdocs/lab_creation",
-    extra_disks=None, extra_filesystems=None,
+    extra_disks=None, extra_filesystems=None, vm_dsk_bus="virtio",
     ign_file=None, com_file=None, salt_states="",
+    install_type="", iso_image="", iso_loc="", mydns="",
+    vcluster="",
 ):
     """
-    Create a VM on a KVM hypervisor via virt-install (mirrors create_vm).
-
-    config_method:
-        ""           → Ignition + Combustion (SLE Micro default)
-        "cloud-init" → cloud-init ISO
+    Create a VM on a KVM hypervisor via virt-install, covering all 6
+    config_method branches (see backends.LibvirtBackend.create_vm for the
+    full branch-by-branch description). Thin wrapper — body moved there.
     """
-    log("Creating VM '{}'".format(vm_name))
-
-    # Normalise boot flag: "uefi=off" / "bios" / "legacy" → "firmware=bios"
-    _BIOS_ALIASES = {"uefi=off", "bios", "legacy"}
-    boot_flag = "firmware=bios" if boot in _BIOS_ALIASES else boot
-
-    extra_disk_args = []
-    for dsk in (extra_disks or []):
-        extra_disk_args += ["--disk", "path={}".format(dsk.split(",")[0])]
-
-    extra_fs_args = []
-    for fs in (extra_filesystems or []):
-        extra_fs_args += ["--filesystem", fs]
-
-    base_args = [
-        "virt-install", "--connect", virt_srv,
-        "--name", vm_name, "--autostart",
-        "--boot", boot_flag, "--vcpus", str(vm_cpu), "--memory", str(vm_mem),
-        "--os-variant", os_variant, "--import",
-        "--disk", "size={},path={}/{}.qcow2,sparse=no,boot.order=1".format(
-            vm_dsk_gb, vm_img_loc, vm_name),
-        "--graphics", "spice,listen=0.0.0.0",
-        "--network", network, "--noautoconsole",
-    ] + extra_fs_args + extra_disk_args
-
-    if not config_method:
-        ign = ign_file or vm_name
-        com = com_file or vm_name
-        qemu_args = (
-            "-fw_cfg name=opt/com.coreos/config,"
-            "file={}/ignition/{} "
-            "-fw_cfg name=opt/org.opensuse.combustion/script,"
-            "file={}/combustion/{}".format(lab_setup_path, ign, lab_setup_path, com)
-        )
-        _run(base_args + ["--qemu-commandline", qemu_args],
-             "virt-install failed for '{}'".format(vm_name))
-
-    elif config_method == "cloud-init":
-        ci_iso = "{}/{}_ci.iso".format(vm_img_loc, vm_name)
-        _run(base_args + ["--disk", "{},device=cdrom".format(ci_iso)],
-             "virt-install (cloud-init) failed for '{}'".format(vm_name))
-
-        log("Waiting 3 minutes for cloud-init …")
-        time.sleep(180)
-
-        if salt_states:
-            setup_salt(vm_name, salt_states, lab_setup_path)
-
-        subprocess.run(["virsh", "--connect", virt_srv,
-                        "change-media", vm_name, "--eject", ci_iso], check=False)
-        subprocess.run(["virsh", "--connect", virt_srv, "reboot", vm_name], check=False)
+    from backends import LibvirtBackend
+    backend = LibvirtBackend(virt_srv, remote_host=remote_host, iso_loc=iso_loc,
+                              vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+    backend.create_vm(
+        vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        os_variant=os_variant, boot=boot, config_method=config_method,
+        extra_disks=extra_disks, extra_filesystems=extra_filesystems, vm_dsk_bus=vm_dsk_bus,
+        ign_file=ign_file, com_file=com_file, salt_states=salt_states,
+        install_type=install_type, iso_image=iso_image, iso_loc=iso_loc, mydns=mydns,
+        vcluster=vcluster,
+    )
 
 
 def delete_vm(virt_srv, vm_name):
-    """Remove a VM and all its storage from the hypervisor (mirrors delete_vm)."""
-    log("Deleting VM '{}'".format(vm_name))
-    subprocess.run(["virsh", "-c", virt_srv, "destroy", vm_name],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    subprocess.run(["virsh", "-c", virt_srv, "undefine", vm_name,
-                    "--nvram", "--remove-all-storage"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    """
+    Remove a VM and all its storage from the hypervisor. Thin wrapper — body
+    moved to backends.LibvirtBackend.delete_vm().
+    """
+    from backends import LibvirtBackend
+    LibvirtBackend(virt_srv).delete_vm(vm_name)
 
 
 def clean_ssh_keys(vm_name, myip):
@@ -274,94 +954,109 @@ def clean_ssh_keys(vm_name, myip):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
+def ensure_lab_ssh_key(lab_host_ip, key_path="/root/.ssh/id_lab_ed25519", key_comment="lab-in-a-box"):
+    """
+    Idempotently generates ONE ed25519 SSH keypair ON lab_host_ip itself —
+    never locally, never per-VM. A USB-delivered lab is meant to be reached
+    entirely through its own lab-host VM, so one keypair, generated and
+    kept there, is what makes "SSH into any VM in this lab" easy for
+    whoever receives it: not the operator's own key, and not a separate key
+    per node.
+
+    Returns the public key's content (a single line: "ssh-ed25519 <b64> <comment>").
+    """
+    exists = ssh_run(lab_host_ip, "test -f {}.pub".format(shlex.quote(key_path)), check=False).returncode == 0
+    if exists:
+        log("- Lab-wide SSH keypair already exists on {} — reusing it".format(lab_host_ip))
+    else:
+        ssh_run(lab_host_ip, "ssh-keygen -t ed25519 -N '' -C {} -f {}".format(
+            shlex.quote(key_comment), shlex.quote(key_path)))
+        log("- Generated a new lab-wide SSH keypair on {}".format(lab_host_ip))
+    return ssh_output(lab_host_ip, "cat {}.pub".format(shlex.quote(key_path)))
+
+
+def distribute_lab_ssh_key(lab_host_ip, pubkey, target_ips):
+    """
+    Installs `pubkey` (from ensure_lab_ssh_key()) into every target VM's
+    authorized_keys — idempotent (skips a target that already has the exact
+    line).
+
+    Run FROM lab_host_ip, not from wherever this function itself executes:
+    the lab-host VM already has SSH access to each nested VM (it just
+    created them), while the orchestrator has no direct network
+    reachability into whatever internal NAT range those VMs live on. Each
+    call is a two-hop SSH (lab_host_ip -> target_ip).
+
+    The key content is passed through stdin at every hop rather than
+    embedded in a quoted shell string — a pubkey is a single line with no
+    shell metacharacters, but nesting it through two remote shells via
+    string interpolation is exactly the kind of thing that's easy to get
+    subtly wrong; piping it through avoids the question entirely. POSIX
+    `sh`-compatible throughout (no bash-only `<<<`), matching this
+    project's general portability stance.
+    """
+    for target_ip in target_ips:
+        remote_cmd = (
+            "key=$(cat); "
+            "printf '%s' \"$key\" | ssh -o StrictHostKeyChecking=accept-new root@{ip} "
+            "'key=$(cat); grep -qxF \"$key\" ~/.ssh/authorized_keys 2>/dev/null "
+            "|| echo \"$key\" >> ~/.ssh/authorized_keys'"
+        ).format(ip=shlex.quote(target_ip))
+        ssh_run(lab_host_ip, remote_cmd, input_text=pubkey)
+        log("- Lab SSH key installed on {}".format(target_ip))
+
+
 def prepare_local_as_kubeclient():
     """Ensure ~/.kube exists for kubeconfig storage (mirrors prepare_local_as_kubeclient)."""
     (Path.home() / ".kube").mkdir(parents=True, exist_ok=True)
 
 
+def copy_to_hypervisor(remote_host, lab_setup_path, vm_name, config_method="", vm_img_loc=None):
+    """
+    Copy the provisioning materials needed for the install to the hypervisor.
+    Thin wrapper — body moved to backends.LibvirtBackend.push_provisioning_files().
+    """
+    from backends import LibvirtBackend
+    backend = LibvirtBackend(None, remote_host=remote_host, lab_setup_path=lab_setup_path, vm_img_loc=vm_img_loc)
+    backend.push_provisioning_files(vm_name, config_method=config_method, vm_img_loc=vm_img_loc)
+
+
 # ── DNS management ────────────────────────────────────────────────────────────
-
-NAMED_ZONE_DIR = Path("/var/lib/named")
-
+#
+# Bodies moved to services.DNSService — these are thin back-compat wrappers,
+# a fresh DNSService() per call (it holds no state). Kept because 9 addon
+# scripts + setup_vm.py/destroy_vm.py/k8s.py import these names directly.
 
 def add_to_dns(vm_name, myip, mydomain, mynet_reverse, remote_dns_servers=None):
-    """
-    Add forward (A) and reverse (PTR) DNS records for a VM (mirrors add_to_dns).
-    Modifies BIND zone files locally and on any remote DNS servers listed.
-    """
-    log("Adding DNS entry for '{}' → {}".format(vm_name, myip))
-    short      = vm_name.split(".")[0]
-    last_octet = myip.split(".")[-1]
-    a_record   = "{}         IN  A       {}".format(short, myip)
-    ptr_record = "{}      IN  PTR     {}.".format(last_octet, vm_name)
-
-    for server in (remote_dns_servers or []):
-        _remote_dns_add(server, "{}/{}.lan".format(NAMED_ZONE_DIR, mydomain), a_record)
-        _remote_dns_add(server, "{}/{}.db".format(NAMED_ZONE_DIR, mynet_reverse), ptr_record)
-        _remote(server, "systemctl restart named")
-
-    _dns_add_line(NAMED_ZONE_DIR / "{}.lan".format(mydomain), a_record, short)
-    _dns_add_line(NAMED_ZONE_DIR / "{}.db".format(mynet_reverse), ptr_record, last_octet)
-    restart_named()
+    """Add forward (A) and reverse (PTR) DNS records for a VM."""
+    from services import DNSService
+    DNSService().add_to_dns(vm_name, myip, mydomain, mynet_reverse, remote_dns_servers=remote_dns_servers)
 
 
 def del_from_dns(vm_name, myip, mydomain, mynet_reverse, remote_dns_servers=None):
-    """Remove forward and reverse DNS records for a VM (mirrors del_from_dns)."""
-    log("Removing DNS entry for '{}'".format(vm_name))
-    short      = vm_name.split(".")[0]
-    last_octet = myip.split(".")[-1]
-
-    for server in (remote_dns_servers or []):
-        _remote(server, "sed '/{}/d' -i {}/{}.db".format(last_octet, NAMED_ZONE_DIR, mynet_reverse))
-        _remote(server, "sed '/{}/d' -i {}/{}.lan".format(short, NAMED_ZONE_DIR, mydomain))
-        _remote(server, "systemctl restart named")
-
-    _dns_remove_line(NAMED_ZONE_DIR / "{}.db".format(mynet_reverse), last_octet)
-    _dns_remove_line(NAMED_ZONE_DIR / "{}.lan".format(mydomain), short)
-    restart_named()
+    """Remove forward and reverse DNS records for a VM."""
+    from services import DNSService
+    DNSService().del_from_dns(vm_name, myip, mydomain, mynet_reverse, remote_dns_servers=remote_dns_servers)
 
 
 def add_service_dns(definition, clu_name, clu_type, dns_entry, mydomain, remote_dns_servers=None):
-    """
-    Add round-robin A records for a cluster service DNS entry (mirrors add_service_dns).
-    Prefers agent nodes; falls back to all cluster nodes if no agents exist.
-    """
-    nodes       = definition.get("nodes", {})
-    install_key = "INSTALL_{}_TYPE".format(clu_type.upper())
-
-    agent_nodes = [
-        (name, cfg["myip"])
-        for name, cfg in nodes.items()
-        if cfg.get(install_key) == "agent" and cfg.get("kcluster") == clu_name and "myip" in cfg
-    ]
-
-    targets = agent_nodes or [
-        (name, cfg["myip"])
-        for name, cfg in nodes.items()
-        if cfg.get("kcluster") == clu_name and "myip" in cfg
-    ]
-
-    msg = "agent" if agent_nodes else "all"
-    log("DNS '{}' added pointing to {} nodes of cluster '{}'".format(dns_entry, msg, clu_name))
-
-    zone_file = NAMED_ZONE_DIR / "{}.lan".format(mydomain)
-    for _, ip in targets:
-        record = "{}\tIN A  {}".format(dns_entry, ip)
-        for server in (remote_dns_servers or []):
-            _remote(server, "sed '/{}\tIN A  {}/d' -i {}".format(dns_entry, ip, zone_file))
-            _remote(server, "echo -e '{}' >> {}".format(record, zone_file))
-            _remote(server, "systemctl restart named")
-        _dns_remove_line(zone_file, "{}\tIN A  {}".format(dns_entry, ip))
-        _dns_append_line(zone_file, record)
-
-    restart_named()
+    """Add round-robin A records for a cluster service DNS entry."""
+    from services import DNSService
+    DNSService().add_service_dns(definition, clu_name, clu_type, dns_entry, mydomain,
+                                  remote_dns_servers=remote_dns_servers)
 
 
 def restart_named(remote_servers=None):
     """Restart the local BIND named service and optionally on remote servers."""
-    for server in (remote_servers or []):
-        _remote(server, "systemctl restart named", check=False)
-    subprocess.run(["systemctl", "restart", "named"], check=False)
+    from services import DNSService
+    DNSService().restart_named(remote_servers=remote_servers)
+
+
+def add_dns_to_named_rr(definition, dns_entry, node_name, mydomain, remote_dns_servers=None):
+    """Add a single round-robin A record (dns_entry -> node_name's own myip)."""
+    from services import DNSService
+    DNSService().add_dns_to_named_rr(definition, dns_entry, node_name, mydomain,
+                                      remote_dns_servers=remote_dns_servers)
 
 
 # ── Provisioning files ────────────────────────────────────────────────────────
@@ -372,18 +1067,26 @@ def prepare_ignition_combustion(
     suse_email="", suse_regcode="", suse_url="",
 ):
     """
-    Create Ignition + Combustion provisioning files for a VM
-    (mirrors prepare_ign_and_cmb).
+    Create Ignition + Combustion provisioning files for a VM. Mirrors
+    prepare_ign_and_cmb (bash).
+
+    NOTE: bash substitutes ROOT_SSH_KEY differently in the two output files —
+    ignition.ign gets the LOCAL machine's own pubkey (`cat /root/.ssh/id_rsa.pub`,
+    read fresh on every call), while combustion gets the `$ROOT_SSH_KEY` config
+    variable (the `root_ssh_key` argument here). These can genuinely be
+    different values, so both are preserved rather than collapsed into one.
     """
     base = Path(lab_setup_path)
-    log("Creating Ignition + Combustion files for '{}'".format(vm_name))
+    log("- Create ignition and combustion files for \"{}{}{}\"".format(_RED, vm_name, _RESET))
+
+    root_pub_key = Path("/root/.ssh/id_rsa.pub").read_text().strip()
 
     ign_out = base / "ignition" / "{}.ign".format(vm_name)
     text = (base / "ignition" / "template").read_text()
     text = (text
             .replace("TEMPLATE_HN", vm_name)
             .replace("ROOT_PWD_HASH", root_pwd_hash)
-            .replace("ROOT_SSH_KEY", root_ssh_key))
+            .replace("ROOT_SSH_KEY", root_pub_key))
     ign_out.write_text(text)
 
     cmb_out = base / "combustion" / vm_name
@@ -400,195 +1103,106 @@ def prepare_ignition_combustion(
 
 def prepare_cloud_init(vm_name, lab_setup_path, variables):
     """
-    Create cloud-init user-data, network-config, and meta-data files
-    (mirrors prepare_cloud-init).
+    Create cloud-init user-data, network-config, and meta-data files. Mirrors
+    prepare_cloud-init (bash).
 
-    variables : dict of values to substitute into the template files.
+    variables : dict of values available to the templates via process_template
+                (mirrors the shell variables visible during bash's eval/
+                heredoc expansion). ROOT_SSH_KEY is always overridden with the
+                local machine's own pubkey here — mirrors bash's local
+                `ROOT_SSH_KEY=$(cat /root/.ssh/id_rsa.pub)` reassignment inside
+                this function, which shadows whatever ROOT_SSH_KEY held before.
+                network_renderer defaults to "NetworkManager" (SLE Micro/SLES/
+                Leap's own default network stack) when the lab JSON doesn't set
+                it — confirmed live 2026-08-30 that hardcoding NetworkManager
+                here silently produced a guest with ZERO configured interfaces
+                (not even DHCP fallback) on an Ubuntu Server guest, which
+                defaults to systemd-networkd instead; template_network-config
+                now takes the renderer from this variable instead of a literal.
+
+                An empty/omitted `myip` selects template_network-config-dhcp
+                instead of the static-addressing template — every existing
+                lab node always sets myip, so this is purely additive; it
+                exists for the USB-delivery lab-host VM, whose own IP is
+                unknown at build time (unlike every other node this project
+                creates, provisioned with a real, known address baked in).
     """
     base = Path(lab_setup_path) / "cloud-init"
-    log("Creating cloud-init files for '{}'".format(vm_name))
+    log("- Create cloud-init files for \"{}{}{}\"".format(_RED, vm_name, _RESET))
+    render_vars = dict(variables)
+    render_vars["ROOT_SSH_KEY"] = Path("/root/.ssh/id_rsa.pub").read_text().strip()
+    render_vars["network_renderer"] = render_vars.get("network_renderer") or "NetworkManager"
+    dhcp = not (render_vars.get("myip") or "").strip()
     for kind in ("user-data", "network-config", "meta-data"):
-        tmpl = base / "template_{}".format(kind)
+        tmpl_name = "network-config-dhcp" if (kind == "network-config" and dhcp) else kind
+        tmpl = base / "template_{}".format(tmpl_name)
         out  = base / "{}_{}".format(vm_name, kind)
-        out.write_text(process_template(str(tmpl), variables))
+        out.write_text(process_template(str(tmpl), render_vars))
 
 
 # ── virt-customize ───────────────────────────────────────────────────────────
+#
+# NOTE: an earlier, local-execution design (_virt_ls/_virt_cat/_vc_detect_net_type/
+# _vc_detect_iface/_vc_net_config, using virt-ls/virt-cat directly from the
+# automation VM) lived here and was removed — verified via grep that none of
+# them were called anywhere (not even from prepare_virt_customize below, and
+# not from webui/). It was superseded by the current design, which generates a
+# fully self-contained script (embedding its own vls/vcat/detect_net/etc.) and
+# runs it entirely on the hypervisor over SSH, since virt-customize/virt-ls
+# need to run where the qcow2 image actually lives.
 
-def _virt_ls(img, path):
-    """List entries inside a guest image path. Returns [] on failure."""
-    r = subprocess.run(["virt-ls", "-a", img, path],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return r.stdout.decode("utf-8", "replace").splitlines() if r.returncode == 0 else []
-
-
-def _virt_cat(img, path):
-    """Read a file from inside a guest image. Returns '' on failure."""
-    r = subprocess.run(["virt-cat", "-a", img, path],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else ""
-
-
-def _vc_detect_net_type(img):
-    if any(f.endswith((".yaml", ".yml")) for f in _virt_ls(img, "/etc/netplan")):
-        return "netplan"
-    nm_conns = _virt_ls(img, "/etc/NetworkManager/system-connections")
-    if any(not f.startswith(".") for f in nm_conns):
-        return "nm-keyfile"
-    if subprocess.run(["virt-ls", "-a", img, "/etc/sysconfig/network"],
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode == 0:
-        return "wicked"
-    ns = _virt_ls(img, "/etc/sysconfig/network-scripts")
-    if any(f.startswith("ifcfg-") and f != "ifcfg-lo" for f in ns):
-        return "network-scripts"
-    if "interfaces" in _virt_ls(img, "/etc/network"):
-        return "ifupdown"
-    if any(f.endswith(".network") for f in _virt_ls(img, "/etc/systemd/network")):
-        return "systemd-networkd"
-    return "unknown"
-
-
-def _vc_detect_iface(img, net_type, mac):
-    """Return the interface name to configure, matched by MAC where possible."""
-    mac_lower = mac.lower() if mac else ""
-    mac_upper = mac.upper() if mac else ""
-
-    if net_type == "wicked":
-        ifcfg = [f for f in _virt_ls(img, "/etc/sysconfig/network")
-                 if f.startswith("ifcfg-") and f != "ifcfg-lo"]
-        if mac_lower:
-            for f in ifcfg:
-                c = _virt_cat(img, "/etc/sysconfig/network/{}".format(f))
-                if "LLADDR" in c.upper() and mac_lower in c.lower():
-                    return f[len("ifcfg-"):]
-        return ifcfg[0][len("ifcfg-"):] if ifcfg else "lab"
-
-    if net_type == "network-scripts":
-        ifcfg = [f for f in _virt_ls(img, "/etc/sysconfig/network-scripts")
-                 if f.startswith("ifcfg-") and f != "ifcfg-lo"]
-        if mac_upper:
-            for f in ifcfg:
-                c = _virt_cat(img, "/etc/sysconfig/network-scripts/{}".format(f))
-                if "HWADDR" in c.upper() and mac_upper in c.upper():
-                    return f[len("ifcfg-"):]
-        return ifcfg[0][len("ifcfg-"):] if ifcfg else "eth0"
-
-    if net_type == "nm-keyfile":
-        conns = [f for f in _virt_ls(img, "/etc/NetworkManager/system-connections")
-                 if not f.startswith(".")]
-        c = conns[0]; return c[:-len(".nmconnection")] if c.endswith(".nmconnection") else c
-
-    if net_type == "ifupdown":
-        for line in _virt_cat(img, "/etc/network/interfaces").splitlines():
-            parts = line.split()
-            if parts[:1] == ["iface"] and len(parts) >= 2 and parts[1] != "lo":
-                return parts[1]
-        return "eth0"
-
-    if net_type == "systemd-networkd":
-        nets = [f for f in _virt_ls(img, "/etc/systemd/network") if f.endswith(".network")]
-        if nets:
-            for line in _virt_cat(img, "/etc/systemd/network/{}".format(nets[0])).splitlines():
-                if line.startswith("Name="):
-                    return line.split("=", 1)[1].strip()
-        return "eth0"
-
-    if net_type == "netplan":
-        yamls = [f for f in _virt_ls(img, "/etc/netplan")
-                 if f.endswith((".yaml", ".yml"))]
-        if yamls:
-            in_eth = False
-            for line in _virt_cat(img, "/etc/netplan/{}".format(yamls[0])).splitlines():
-                if "ethernets:" in line:
-                    in_eth = True
-                    continue
-                if in_eth and line.startswith("    ") and not line.startswith("     "):
-                    return line.strip().rstrip(":")
-        return "eth0"
-
-    return "eth0"
-
-
-def _vc_net_config(net_type, iface, mac, ip, prefix, gw, dns, domain):
-    """Return (dest, content, chmod_str_or_None, extra_files).
-
-    extra_files: list of (dest, content) tuples for wicked routes.
+def prepare_virt_customize_for_vm(
+    remote_host, vm_img_loc, vm_name, myip, mymask, mygw, mydns, mydomain, mymac,
+    vm_root_pass=None, root_pwd_hash=None, root_ssh_key_path=None,
+):
     """
-    extra = []
-    chmod = None
+    Resolve the root password and SSH pubkey, then delegate to
+    prepare_virt_customize(). Mirrors the bash-level prepare_virt_customize
+    function (bash:605-669), which only computed these derived values and
+    bridged into this same python function via `python3 -c` + env vars +
+    base64 — that bridge is unnecessary here since this already runs
+    in-process.
 
-    if net_type == "wicked":
-        lines = ["STARTMODE='auto'", "BOOTPROTO='static'",
-                 "IPADDR='{}/{}'".format(ip, prefix)]
-        if mac:
-            lines.append("LLADDR='{}'".format(mac))
-        if domain:
-            lines.append("DOMAIN='{}'".format(domain))
-        if gw:
-            extra.append(("/etc/sysconfig/network/routes",
-                          "default {} - -\n".format(gw)))
-        return ("/etc/sysconfig/network/ifcfg-{}".format(iface),
-                "\n".join(lines) + "\n", chmod, extra)
+    Password fallback chain (identical to bash):
+      VM_ROOT_PASS set   → plain password
+      else ROOT_PWD_HASH → crypted hash
+      else               → plain password "linux" (with a warning)
 
-    if net_type == "network-scripts":
-        lines = ["DEVICE={}".format(iface), "TYPE=Ethernet",
-                 "BOOTPROTO=none", "ONBOOT=yes"]
-        if mac:
-            lines.append("HWADDR={}".format(mac))
-        lines += ["IPADDR={}".format(ip), "PREFIX={}".format(prefix)]
-        if gw:     lines.append("GATEWAY={}".format(gw))
-        if dns:    lines.append("DNS1={}".format(dns))
-        if domain: lines.append("DOMAIN={}".format(domain))
-        return ("/etc/sysconfig/network-scripts/ifcfg-{}".format(iface),
-                "\n".join(lines) + "\n", chmod, extra)
+    Pubkey fallback chain (identical to bash):
+      ROOT_SSH_KEY set (a private-key PATH) and "<path>.pub" exists → that pubkey
+      else ~/.ssh/id_rsa.pub if it exists
+      else no key injected
 
-    if net_type == "nm-keyfile":
-        lines = ["[connection]", "id={}".format(iface), "type=ethernet",
-                 "interface-name={}".format(iface), "autoconnect=true",
-                 "", "[ethernet]"]
-        if mac: lines.append("mac-address={}".format(mac))
-        lines += ["", "[ipv4]", "method=manual",
-                  "addresses={}/{}".format(ip, prefix)]
-        if gw:     lines.append("gateway={}".format(gw))
-        if dns:    lines.append("dns={};".format(dns))
-        if domain: lines.append("dns-search={};".format(domain))
-        lines += ["", "[ipv6]", "method=disabled", ""]
-        return ("/etc/NetworkManager/system-connections/{}.nmconnection".format(iface),
-                "\n".join(lines), "0600", extra)
+    NOTE: bash's own `|| fail_with_error` around this call is redundant here —
+    prepare_virt_customize() already calls die() itself on failure (same
+    message, mentioning vm_name), so there's nothing left for this wrapper
+    to catch.
+    """
+    img = "{}/{}.qcow2".format(vm_img_loc, vm_name)
+    prefix = mymask or "24"
 
-    if net_type == "ifupdown":
-        lines = ["auto lo", "iface lo inet loopback", "",
-                 "auto {}".format(iface), "iface {} inet static".format(iface),
-                 "    address {}/{}".format(ip, prefix)]
-        if gw:     lines.append("    gateway {}".format(gw))
-        if dns:    lines.append("    dns-nameservers {}".format(dns))
-        if domain: lines.append("    dns-search {}".format(domain))
-        return ("/etc/network/interfaces", "\n".join(lines) + "\n", chmod, extra)
+    if vm_root_pass:
+        pass_type, pass_val = "plain", vm_root_pass
+    elif root_pwd_hash:
+        pass_type, pass_val = "crypted", root_pwd_hash
+    else:
+        pass_type, pass_val = "plain", "linux"
+        log("WARNING: neither VM_ROOT_PASS nor ROOT_PWD_HASH is set — using default password 'linux'")
 
-    if net_type == "systemd-networkd":
-        lines = ["[Match]",
-                 "MACAddress={}".format(mac) if mac else "Name={}".format(iface),
-                 "", "[Network]", "Address={}/{}".format(ip, prefix)]
-        if gw:     lines.append("Gateway={}".format(gw))
-        if dns:    lines.append("DNS={}".format(dns))
-        if domain: lines.append("Domains={}".format(domain))
-        return ("/etc/systemd/network/10-{}.network".format(iface),
-                "\n".join(lines) + "\n", chmod, extra)
+    pubkey = None
+    if root_ssh_key_path and Path(root_ssh_key_path + ".pub").is_file():
+        pubkey = Path(root_ssh_key_path + ".pub").read_text().strip()
+    elif Path.home().joinpath(".ssh", "id_rsa.pub").is_file():
+        pubkey = Path.home().joinpath(".ssh", "id_rsa.pub").read_text().strip()
 
-    if net_type == "netplan":
-        yamls = [f for f in _virt_ls("", "/etc/netplan")
-                 if f.endswith((".yaml", ".yml"))]
-        npfile = yamls[0] if yamls else "50-lab.yaml"
-        lines = ["network:", "  version: 2", "  ethernets:",
-                 "    {}:".format(iface), "      dhcp4: no",
-                 "      addresses:", "        - {}/{}".format(ip, prefix)]
-        if gw: lines.append("      gateway4: {}".format(gw))
-        lines.append("      nameservers:")
-        if dns:    lines.append("        addresses: [{}]".format(dns))
-        if domain: lines.append("        search: [{}]".format(domain))
-        return ("/etc/netplan/{}".format(npfile), "\n".join(lines) + "\n", chmod, extra)
+    log("- Customising '{}' via virt-customize ({}/{})".format(vm_name, myip, prefix))
 
-    return (None, None, None, extra)
+    prepare_virt_customize(
+        remote_host=remote_host, img_path=img, vm_name=vm_name,
+        ip=myip, prefix=prefix, gw=mygw or "", dns=mydns or "",
+        domain=mydomain or "", mac=mymac or "",
+        pass_type=pass_type, pass_val=pass_val, pubkey=pubkey,
+    )
 
 
 def prepare_virt_customize(
@@ -952,6 +1566,19 @@ with tempfile.TemporaryDirectory(prefix="vc_") as tmp:
         vc += ["--run-command", "mkdir -p /etc/cloud"]
         vc += ["--upload", "{}:/etc/cloud/cloud-init.disabled".format(ci_dis_f)]
 
+    # SUSE JeOS appliance images (confirmed live 2026-08-29 on
+    # SLES-16.0-Minimal-VM.x86_64-kvm-and-xen-GM.qcow2) ship an interactive
+    # jeos-firstboot wizard (keyboard layout, locale, etc.) that runs on the
+    # console on first boot and BLOCKS there indefinitely in any headless,
+    # unattended deployment — there's no one at the console to answer it.
+    # Confirmed via a live screenshot: the VM never reached multi-user.target
+    # (SSH kept rejecting with "System is booting up") because it was stuck
+    # showing a "Select keyboard layout" dialog. Disabled unconditionally,
+    # like cloud-init above — harmless (`|| true`) on any image that doesn't
+    # ship these units at all.
+    vc += ["--run-command",
+           "systemctl disable jeos-firstboot.service jeos-firstboot-snapshot.service 2>/dev/null || true"]
+
     if "config" in vls("/etc/selinux"):
         vc += ["--selinux-relabel"]
 
@@ -971,14 +1598,134 @@ with tempfile.TemporaryDirectory(prefix="vc_") as tmp:
         die("virt-customize failed for '{}'".format(vm_name))
 
 
+def prepare_install_iso(
+    vm_name, lab_setup_path, install_type, iso_image,
+    mymac, myip, mymask, mygw, mydns, mydomain,
+    root_pwd_hash, root_ssh_key=None,
+):
+    """
+    Render the answer file (AutoYaST/Kickstart/Preseed/autoinstall) for a VM.
+    Mirrors prepare_install_iso (bash).
+
+    The rendered file is written to lab_setup_path/install_iso/, already
+    served over HTTP by the automation VM's web server — nothing needs to be
+    copied to the hypervisor.
+
+    NOTE on ROOT_SSH_KEY vs ROOT_SSH_PUBKEY (a pre-existing bash inconsistency,
+    preserved as-is since it isn't actually broken): `lab_creation.cfg`
+    documents ROOT_SSH_KEY as the literal pubkey CONTENT (see
+    templates/lab_creation.cfg.example: "REPLACE ME with cat ~/.ssh/<key>.pub"),
+    and that's exactly how the kickstart/autoyast templates use it
+    ($ROOT_SSH_KEY echoed straight into authorized_keys). But this function
+    (and prepare_virt_customize_for_vm) ALSO probes "${ROOT_SSH_KEY}.pub" as if
+    it were a file PATH — which, given ROOT_SSH_KEY normally holds key
+    content rather than a path, is never actually a real file, so that branch
+    is always false in practice and this always falls through to
+    ~/.ssh/id_rsa.pub for ROOT_SSH_PUBKEY (used by the preseed template).
+    Since admins are instructed to set ROOT_SSH_KEY to their id_rsa.pub
+    content anyway, both end up injecting the same key in practice — kept
+    faithful to bash rather than "fixed", since nothing is actually corrupted.
+
+    NOTE on ROOT_PWD_HASH: bash used to escape '$' in the hash before this
+    point — verified empirically (see lab_creation.bash's prepare_install_iso)
+    that this corrupted the hash. Fixed in bash; the raw hash is used
+    directly here, with no escaping needed at all.
+    """
+    itype = resolve_install_type(install_type, iso_image)
+
+    root_ssh_pubkey = ""
+    if root_ssh_key and Path(root_ssh_key + ".pub").is_file():
+        root_ssh_pubkey = Path(root_ssh_key + ".pub").read_text().strip()
+    elif Path.home().joinpath(".ssh", "id_rsa.pub").is_file():
+        root_ssh_pubkey = Path.home().joinpath(".ssh", "id_rsa.pub").read_text().strip()
+
+    log("- Rendering {} answer file for \"{}{}{}\"".format(itype, _RED, vm_name, _RESET))
+
+    if itype == "autoinstall":
+        # Ubuntu 22+ subiquity autoinstall — written directly (not via
+        # process_template/eval) to keep this well away from any shell
+        # re-interpretation of the password hash.
+        out_dir = Path(lab_setup_path) / "install_iso" / vm_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        user_data = (
+            "#cloud-config\n"
+            "autoinstall:\n"
+            "  version: 1\n"
+            "  locale: en_US.UTF-8\n"
+            "  keyboard:\n"
+            "    layout: us\n"
+            "  network:\n"
+            "    network:\n"
+            "      version: 2\n"
+            "      ethernets:\n"
+            "        id0:\n"
+            "          match:\n"
+            "            macaddress: {mymac}\n"
+            "          set-name: eth0\n"
+            "          dhcp4: no\n"
+            "          addresses:\n"
+            "            - {myip}/{mymask}\n"
+            "          gateway4: {mygw}\n"
+            "          nameservers:\n"
+            "            addresses: [{mydns}]\n"
+            "            search: [{mydomain}]\n"
+            "  storage:\n"
+            "    layout:\n"
+            "      name: lvm\n"
+            "  user-data:\n"
+            "    disable_root: false\n"
+            "    ssh_pwauth: true\n"
+            "    users:\n"
+            "      - name: root\n"
+            "        lock_passwd: false\n"
+            "        hashed_passwd: \"{root_pwd_hash}\"\n"
+            "        ssh_authorized_keys:\n"
+            "          - \"{root_ssh_pubkey}\"\n"
+            "  ssh:\n"
+            "    install-server: true\n"
+            "    allow-pw: true\n"
+            "  late-commands:\n"
+            "    - mkdir -p /target/etc/ssh/sshd_config.d\n"
+            "    - printf 'PermitRootLogin yes\\nPasswordAuthentication yes\\n' > /target/etc/ssh/sshd_config.d/99-lab.conf\n"
+        ).format(
+            mymac=mymac, myip=myip, mymask=mymask, mygw=mygw, mydns=mydns, mydomain=mydomain,
+            root_pwd_hash=root_pwd_hash, root_ssh_pubkey=root_ssh_pubkey,
+        )
+        (out_dir / "user-data").write_text(user_data)
+        (out_dir / "meta-data").write_text(
+            "instance-id: {}\nlocal-hostname: {}\n".format(vm_name, vm_name))
+    else:
+        ext = {"autoyast": "xml", "kickstart": "ks", "preseed": "preseed"}.get(itype)
+        tpl = Path(lab_setup_path) / "install_iso" / "template_{}".format(itype)
+        out = Path(lab_setup_path) / "install_iso" / "{}.{}".format(vm_name, ext)
+        if not tpl.is_file():
+            die("install_iso template not found: {}".format(tpl))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(process_template(str(tpl), {
+            "ROOT_PWD_HASH": root_pwd_hash,
+            "ROOT_SSH_KEY": root_ssh_key or "",
+            "ROOT_SSH_PUBKEY": root_ssh_pubkey,
+            "_vm_name": vm_name,
+            "myip": myip, "mymask": mymask, "mygw": mygw,
+            "mydns": mydns, "mydomain": mydomain, "mymac": mymac,
+        }))
+
+
 # ── Helm ──────────────────────────────────────────────────────────────────────
 
-def setup_helm(hostname, clu_name, online=True, automation_host="automation"):
+def setup_helm(hostname, clu_name, online=False, automation_host="automation"):
     """
     Install Helm on a remote K8s node (mirrors setup_helm).
 
     online=True  → downloads directly from GitHub.
     online=False → downloads from a local automation VM.
+
+    NOTE: default is False (offline/automation-VM path) to match bash's real
+    default — bash checks `[[ "$online" == "1" ]]`, and the `online` JSON
+    field is absent from every real lab config found in this repo, so an
+    unset bash variable (empty string) takes the offline branch. An earlier
+    version of this function defaulted to True, inverting that behaviour for
+    any caller that didn't explicitly pass online=.
     """
     log("Setting up Helm on cluster '{}'".format(clu_name))
     if online:
@@ -999,19 +1746,43 @@ def helm_repo_add(hostname, repo_name, repo_url):
 
 def process_template(template_file, variables):
     """
-    Expand $VAR and ${VAR} placeholders in a template file (mirrors process_templates).
+    Render a template file exactly as bash's process_templates does:
+    `eval "cat <<EOF\n$(cat template_file)\nEOF\n"` — i.e. full unquoted-heredoc
+    expansion: $VAR / ${VAR} substitution AND $(...) / `...` command
+    substitution, using the given variables as environment.
 
-    Uses Python's string.Template with safe_substitute so unknown variables are
-    left as-is rather than raising an error.
+    Shells out to bash to run that exact construct rather than hand-porting
+    heredoc/eval semantics in Python. This matters: some templates (e.g.
+    cloud-init.template_user-data, install_iso.template_kickstart) use $(...)
+    command substitution, which Python's string.Template cannot express at
+    all — a previous version of this function used string.Template and would
+    have silently left those command substitutions un-expanded. Shelling out
+    is the only way to guarantee identical output without a way to test this
+    live.
 
     Args:
-        template_file : Path to the template file.
-        variables     : Dict of variable names to values.
+        template_file : path to the template file.
+        variables     : dict of variable name -> value, exported into the
+                         subshell's environment for the expansion.
 
-    Returns the expanded string.
+    Returns the expanded text.
     """
-    text = Path(template_file).read_text()
-    return string.Template(text).safe_substitute(variables)
+    script = 'eval "cat <<EOF\n$(cat {})\nEOF\n"'.format(shlex.quote(str(template_file)))
+    env = os.environ.copy()
+    env.update({k: "" if v is None else str(v) for k, v in variables.items()})
+    # stdout=PIPE/stderr=PIPE/universal_newlines=True, not capture_output=/
+    # text= (both Python 3.7+ only): confirmed live 2026-08-30 that this
+    # function had never actually been exercised by any test until
+    # 30_setup_harvester_cluster_test.py's template-rendering checks —
+    # tests/run_tests.sh's own container python3 is 3.6.15 (see
+    # 09_spacecmd_common_test.py's mock.call notes for the same interpreter),
+    # so capture_output/text raised TypeError there even though real
+    # production (python3.11 everywhere) was never affected.
+    result = subprocess.run(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             universal_newlines=True, env=env)
+    if result.returncode != 0:
+        die("process_template failed on '{}': {}".format(template_file, result.stderr.strip()))
+    return result.stdout
 
 
 # ── Salt ──────────────────────────────────────────────────────────────────────
@@ -1064,11 +1835,46 @@ def find_os():
     return os_id, version_id, arch
 
 
+def boot_packages_for(os_id):
+    """
+    Return the space-separated BOOT_PACKAGES list for a detected OS id, or
+    raise via die() for unsupported OSes. Mirrors install_packages (bash).
+
+    NOTE: bash's install_packages only ever assigns the BOOT_PACKAGES variable
+    — nothing in the bash codebase reads it afterwards (verified with grep);
+    it's effectively dead code today. Kept here as a pure function (returning
+    the value bash would have assigned) rather than a no-op, since a future
+    caller may still want it and there's no behavioural risk either way.
+    """
+    if os_id == "sles":
+        return "vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git"
+    elif os_id == "sle-micro":
+        return "vim-small iptables NetworkManager-cloud-setup wget git"
+    elif os_id == "opensuse-leap":
+        return "vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git"
+    else:
+        die("ERROR - OS not supported yet")
+
+
 # ── Misc ──────────────────────────────────────────────────────────────────────
 
 def check_exists(needle, haystack):
     """Return True if needle is a whole word in the space-separated haystack (mirrors check_exists)."""
     return " {} ".format(needle) in " {} ".format(haystack)
+
+
+def reboot_vm(virt_srv, vm_name, remote_host=None):
+    """
+    Reboot a VM, forcing a power cycle if it doesn't respond within 120s.
+    Thin wrapper — body moved to backends.LibvirtBackend.reboot_vm().
+
+    remote_host: see _list_domain_macs()'s docstring — optional, only needed
+    by the SSH fallback (and only reached at all when the guest isn't
+    reachable over SSH directly, in which case this same host is exactly
+    where a virsh fallback would need to reach anyway).
+    """
+    from backends import LibvirtBackend
+    LibvirtBackend(virt_srv, remote_host=remote_host).reboot_vm(vm_name)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -1089,18 +1895,42 @@ def _remote_dns_add(server, zone_file, record):
                 record, zone_file, record, zone_file))
 
 
-def _dns_add_line(zone_file, record, dedup_key):
+def _dns_add_line(zone_file, record):
+    """
+    Append `record` to zone_file unless a line exactly equal to it already
+    exists. Mirrors the intent of bash's `grep -qi <pattern> || echo <record>
+    >> zone_file` dedup checks in add_to_dns/add_dns_to_named_rr.
+
+    NOTE: an earlier version of this took a separate `dedup_key` substring
+    (e.g. just the short hostname or the last IP octet) and checked whether
+    that fragment appeared ANYWHERE in the file — which is a real false-
+    positive risk given this project's hostnames (node1/node10/node101,
+    n1/n10/n11, …): adding "node1" would wrongly be skipped as a duplicate
+    once "node10" was already present, since "node1" is a substring of
+    "node10". This project's actual bash also had a related but different
+    bug here (see lab_creation.bash's add_to_dns — a stray quote character
+    meant the PTR dedup check never matched anything, causing duplicates
+    instead of false-skips). Exact-line matching on the full record avoids
+    both failure modes.
+    """
     zone_file = Path(zone_file)
     zone_file.touch()
-    text = zone_file.read_text()
-    if dedup_key not in text:
-        zone_file.write_text(text.rstrip() + "\n" + record + "\n")
+    lines = zone_file.read_text().splitlines()
+    if record not in lines:
+        zone_file.write_text("\n".join(lines + [record]) + "\n")
 
 
-def _dns_remove_line(zone_file, pattern):
+def _dns_remove_line(zone_file, record):
+    """
+    Remove any line exactly equal to `record` from zone_file. Mirrors bash's
+    `sed "/<full record text>/d"` calls in del_from_dns/add_service_dns, which
+    always passed the complete record text as the delete pattern (not a bare
+    hostname/octet fragment) — exact-line matching here preserves that same
+    precision, avoiding substring false-positives (see _dns_add_line's note).
+    """
     zone_file = Path(zone_file)
     if zone_file.exists():
-        lines = [l for l in zone_file.read_text().splitlines() if pattern not in l]
+        lines = [l for l in zone_file.read_text().splitlines() if l != record]
         zone_file.write_text("\n".join(lines) + "\n")
 
 
@@ -1142,3 +1972,29 @@ def _detect_domain():
 def _reverse_ip(ip):
     parts = ip.split(".")
     return ".".join(reversed(parts[:-1])) if len(parts) == 4 else ""
+
+
+def _detect_netmask():
+    """
+    Return the CIDR prefix length of the default-route network device.
+    Mirrors load_vm_vars' mymask auto-detect (bash used `ip -o -f inet addr
+    show ${_default_dev} | egrep ... | ipcalc -p ... | cut -d= -f2` — same
+    end result via a shorter path: the device is the same one carrying the
+    default route, already needed for _detect_gateway, and its prefix length
+    is directly in `ip -o addr show` output, no ipcalc round-trip needed).
+    """
+    route = subprocess.run(
+        ["ip", "route", "list", "to", "default"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        universal_newlines=True, check=False,
+    ).stdout
+    dev_match = re.search(r"\bdev\s+(\S+)", route)
+    if not dev_match:
+        return ""
+    addr = subprocess.run(
+        ["ip", "-o", "-f", "inet", "addr", "show", dev_match.group(1)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        universal_newlines=True, check=False,
+    ).stdout
+    m = re.search(r"inet\s+[\d.]+/(\d{1,2})", addr)
+    return m.group(1) if m else ""

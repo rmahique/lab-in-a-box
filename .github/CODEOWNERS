@@ -1,0 +1,3 @@
+# See https://docs.github.com/articles/about-codeowners for syntax.
+# Default owner for everything not matched more specifically below.
+*       @rmahique

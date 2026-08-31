@@ -20,6 +20,16 @@
     </div>
   </header>
 
+  <!-- read-only hypervisor status; secrets always shown masked, never
+       partially revealed — see webui/lib/discovery.py's status() -->
+  <section class="panel status-panel" id="statusPanel">
+    <div class="panel-head">
+      <h2>Hypervisor status</h2>
+      <span class="badge" id="statusFreshness"></span>
+    </div>
+    <div id="statusBody" class="status-body"><p class="muted">Loading…</p></div>
+  </section>
+
   <main class="layout">
     <!-- component catalogue -->
     <aside class="panel catalogue">
@@ -35,9 +45,13 @@
     <section class="panel form-area">
       <div class="panel-head">
         <h2 id="formTitle">Select a component</h2>
+        <label class="opt-toggle" title="Hide every field that isn't required, to build a minimal lab faster">
+          <input type="checkbox" id="requiredOnlyToggle"> Required only
+        </label>
         <button id="addBtn" class="btn primary" disabled>Add to lab</button>
       </div>
       <p id="formDesc" class="form-desc"></p>
+      <div id="formLayers" class="ci-layers"></div>
       <form id="schemaForm" autocomplete="off"></form>
       <div id="formEmpty" class="empty-state">
         <p>Pick a component on the left to build its configuration.</p>
