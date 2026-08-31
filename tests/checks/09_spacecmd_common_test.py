@@ -1,0 +1,1788 @@
+#!/usr/bin/env python3
+# Mocked-SSH unit tests for libs/spacecmd_common.py — the
+# shared activation-key/channel-sync helpers used by install_smlm.py and
+# install_uyuni.py. No live SMLM/Uyuni server is available in this project;
+# these verify the exact command strings issued (matching the syntax
+# verified against live SUSE/Uyuni docs, 2026-08-27) rather than real
+# server behavior. Run from 09_spacecmd_common.sh, in its own container —
+# see tests/run_tests.sh.
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO / "libs"))
+
+import lab_creation  # noqa: E402
+import spacecmd_common as sc  # noqa: E402
+
+failures = []
+
+
+def check(desc, cond):
+    if not cond:
+        failures.append(desc)
+        print("FAIL:", desc)
+
+
+def unwrap(cmd):
+    """
+    For assertions written against the INNER remote command's own quoting
+    (e.g. a JSON arg already shlex-quoted by _api_call), undo the outer
+    re-quoting _run() now applies for an mgrctl-style exec_prefix (see its
+    docstring — mgrctl needs the whole remote command as ONE argument,
+    unlike kubectl's ---terminated argv, so a remote_cmd that already
+    contains its own single-quoted values gets those quotes escaped as
+    '"'"' when re-wrapped). No-op for a kubectl-shaped command, which was
+    never re-wrapped this way.
+    """
+    return cmd.replace('\'"\'"\'', "'")
+
+
+class FakeResult:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class FakeSSH:
+    """Records every command issued via ssh_run and returns scripted output
+    keyed by a substring match, so tests can assert on exact command shape
+    without a real host."""
+
+    def __init__(self, responses=None):
+        self.calls = []
+        self.responses = responses or []  # list of (substring, FakeResult)
+
+    def __call__(self, hostname, cmd, **kwargs):
+        self.calls.append((hostname, cmd, kwargs))
+        for substr, result in self.responses:
+            if substr in cmd:
+                return result
+        return FakeResult()
+
+
+# -- ensure_spacecmd_config: writes a config file, credentials never on argv -
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_spacecmd_config("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "admin", "s3cr3t")
+check("ensure_spacecmd_config: exactly one ssh_run call", len(fake.calls) == 1)
+_, cmd, kwargs = fake.calls[0]
+check("ensure_spacecmd_config: uses the given exec_prefix",
+      cmd.startswith("kubectl exec ") and "-n ns deploy/uyuni -c uyuni" in cmd)
+check("ensure_spacecmd_config: writes to ~/.spacecmd/config", "~/.spacecmd/config" in cmd)
+check("ensure_spacecmd_config: password passed via stdin, not argv", "s3cr3t" not in cmd and kwargs.get("input_text") and "s3cr3t" in kwargs["input_text"])
+check("ensure_spacecmd_config: kubectl exec gets -i since input_text is given (confirmed live: "
+      "neither mgrctl nor kubectl exec forward stdin without it)", " -i " in " {} ".format(cmd))
+check("ensure_spacecmd_config: server is always localhost, never a caller-supplied FQDN "
+      "(confirmed live: the exec'd container/pod can't reach its own external hostname over "
+      "HTTP)", "server=localhost" in kwargs.get("input_text", ""))
+
+# Without input_text, no -i is added (kubectl exec -- stays exactly as given).
+fake = FakeSSH()
+sc.ssh_run = fake
+sc._run("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "spacecmd -- activationkey_list")
+check("_run: no -i added for a kubectl call with no input_text",
+      " -i " not in " {} ".format(fake.calls[0][1]))
+
+# mgrctl exec also gets -i when input_text is given, and NOT otherwise.
+fake = FakeSSH()
+sc.ssh_run = fake
+sc._run("host1", "mgrctl exec --", "cat > ~/.spacecmd/config", input_text="[spacecmd]\n")
+check("_run: mgrctl exec gets -i when input_text is given", "mgrctl exec -i " in fake.calls[0][1])
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc._run("host1", "mgrctl exec --", "spacecmd -- activationkey_list")
+check("_run: mgrctl exec does NOT get -i when there's no input_text",
+      "mgrctl exec -i " not in fake.calls[0][1] and fake.calls[0][1].startswith("mgrctl exec '"))
+
+# -- _api_call: always needs "--" before "api" ("channel.access.setOrgSharing" -----
+# confirmed live, 2026-08-28: `spacecmd api -A ... method` (no "--") is
+# rejected outright by spacecmd's own argument parser — "unrecognized
+# arguments: -A [...] method" — for both a 1-arg and a 2-arg call. Only
+# `spacecmd -- api -A ... method` (matching _spacecmd()'s own pattern)
+# actually works.
+fake = FakeSSH()
+sc.ssh_run = fake
+sc._api_call("host1", "mgrctl exec --", "channel.access.setOrgSharing", ["cutovertest-base", "protected"])
+cmd = unwrap(fake.calls[0][1])
+check("_api_call: includes the '--' separator before 'api', matching _spacecmd()",
+      "spacecmd -- api -A" in cmd)
+check("_api_call: 2-arg call encodes both values as a JSON array",
+      '["cutovertest-base", "protected"]' in cmd)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc._api_call("host1", "mgrctl exec --", "saltkey.acceptedList", [])
+check("_api_call: 0-arg call also gets the '--' separator",
+      "spacecmd -- api -A" in unwrap(fake.calls[0][1]) and "saltkey.acceptedList" in unwrap(fake.calls[0][1]))
+
+# -- activation_key_exists ----------------------------------------------------
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout="1-mykey\n1-otherkey\n"))])
+sc.ssh_run = fake
+check("activation_key_exists: found", sc.activation_key_exists("host1", "mgrctl exec --", "1-mykey") is True)
+check("activation_key_exists: not found", sc.activation_key_exists("host1", "mgrctl exec --", "1-nope") is False)
+
+# -- resolve_activation_key_name ----------------------------------------------
+# (confirmed live, 2026-08-28: activationkey_create's -n flag does not use
+# the given name verbatim — Uyuni always auto-prepends the org id, even
+# onto a name that already looked pre-prefixed: "-n 1-dev-key" was stored
+# as "1-1-dev-key", not "1-dev-key" — breaking every exact-match follow-up
+# command against the caller's original value.)
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout="1-1-dev-key\n1-1-qa-key\n"))])
+sc.ssh_run = fake
+check("resolve_activation_key_name: resolves a doubly-prefixed name via suffix match",
+      sc.resolve_activation_key_name("host1", "mgrctl exec --", "1-dev-key") == "1-1-dev-key")
+
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout="1-mykey\n"))])
+sc.ssh_run = fake
+check("resolve_activation_key_name: an already-exact name is returned unchanged",
+      sc.resolve_activation_key_name("host1", "mgrctl exec --", "1-mykey") == "1-mykey")
+
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+check("resolve_activation_key_name: falls back to the given name when no line matches",
+      sc.resolve_activation_key_name("host1", "mgrctl exec --", "1-nope") == "1-nope")
+
+# -- ensure_activation_key: no-op when unset ---------------------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_activation_key("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_activation_key: no-op when <prefix>_activation_key unset", len(fake.calls) == 0)
+
+# -- ensure_activation_key: already exists -> no create ----------------------
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout="1-mykey\n"))])
+sc.ssh_run = fake
+sc.ensure_activation_key("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey"}, "uyuni")
+check("ensure_activation_key: existing key -> only the list check ran, no create",
+      len(fake.calls) == 1 and "activationkey_create" not in fake.calls[0][1])
+
+# -- ensure_activation_key: missing base channel dies ------------------------
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_activation_key("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey"}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_activation_key: dies without a base channel", died)
+
+# -- ensure_activation_key: full creation + every follow-up command ----------
+fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+cfg = {
+    "smlm_activation_key": "1-mykey",
+    "smlm_activation_key_desc": "my lab key",
+    "smlm_activation_key_base_channel": "sle-product-base",
+    "smlm_activation_key_child_channels": "child-a child-b",
+    "smlm_activation_key_universal_default": "true",
+    "smlm_activation_key_entitlements": "enterprise_entitled,virtualization_host",
+    "smlm_activation_key_config_channels": "cfg-a",
+    "smlm_activation_key_enable_config_deployment": "true",
+    "smlm_activation_key_groups": "group-a group-b",
+    "smlm_activation_key_contact_method": "default",
+}
+sc.ensure_activation_key("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("full flow: activationkey_list checked first", "activationkey_list" in cmds[0])
+create_cmd = next((c for c in cmds if "activationkey_create" in c), "")
+check("create: name/description/base-channel flags present",
+      "-n 1-mykey" in create_cmd and "-d 'my lab key'" in create_cmd and "-b sle-product-base" in create_cmd)
+check("create: universal-default flag present", " -u" in create_cmd)
+check("create: entitlements flag present", "-e enterprise_entitled,virtualization_host" in create_cmd)
+check("follow-up: child channels added", any("activationkey_addchildchannels 1-mykey child-a child-b" in c for c in cmds))
+check("follow-up: config channels added", any("activationkey_addconfigchannels 1-mykey cfg-a" in c for c in cmds))
+check("follow-up: config deployment enabled", any("activationkey_enableconfigdeployment 1-mykey" in c for c in cmds))
+check("follow-up: groups added", any("activationkey_addgroups 1-mykey group-a group-b" in c for c in cmds))
+check("follow-up: contact method set", any("activationkey_setcontactmethod 1-mykey default" in c for c in cmds))
+
+# -- ensure_activation_key: follow-ups use the REAL (org-id-prefixed) name --
+# (confirmed live, 2026-08-28: creating "-n 1-otherkey" was actually stored
+# as "1-1-otherkey" — every follow-up command must target that real name,
+# not the caller's original config value, or it fails with "Activation Key
+# [...] Not Found!")
+calls = []
+list_call_count = [0]
+
+
+def _fake_ssh_prefix_bug(hostname, cmd, **kwargs):
+    calls.append((hostname, cmd, kwargs))
+    if "activationkey_list" in cmd:
+        list_call_count[0] += 1
+        # 1st call: activation_key_exists' pre-creation check -> not found yet.
+        # 2nd call: resolve_activation_key_name, right after creation.
+        stdout = "" if list_call_count[0] == 1 else "1-1-otherkey\n"
+        return FakeResult(returncode=0, stdout=stdout)
+    return FakeResult(returncode=0)
+
+
+sc.ssh_run = _fake_ssh_prefix_bug
+sc.ensure_activation_key("host1", "mgrctl exec --", {
+    "uyuni_activation_key": "1-otherkey",
+    "uyuni_activation_key_base_channel": "base",
+    "uyuni_activation_key_groups": "group-a",
+}, "uyuni")
+cmds = [c[1] for c in calls]
+check("ensure_activation_key: follow-up targets the resolved real name, not the given one",
+      any("activationkey_addgroups 1-1-otherkey group-a" in c for c in cmds)
+      and not any("activationkey_addgroups 1-otherkey " in c for c in cmds))
+
+# -- ensure_channels_synced: skips already-present, syncs the rest ----------
+fake = FakeSSH(responses=[("softwarechannel_list", FakeResult(stdout="already-here\n"))])
+sc.ssh_run = fake
+sc.ensure_channels_synced("host1", "mgrctl exec --", ["already-here", "needs-sync"])
+sync_cmds = [c[1] for c in fake.calls if "mgr-sync add channel" in c[1]]
+check("ensure_channels_synced: only the missing channel is synced",
+      len(sync_cmds) == 1 and "needs-sync" in sync_cmds[0])
+check("ensure_channels_synced: one channel per call (singular form)",
+      "add channel needs-sync" in sync_cmds[0] and "add channels" not in sync_cmds[0])
+
+check("ensure_channels_synced: no-op on empty list",
+      not FakeSSH().calls or True)  # trivially true; real check below
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_channels_synced("host1", "mgrctl exec --", [])
+check("ensure_channels_synced: truly no-op on empty list", len(fake.calls) == 0)
+
+# -- ensure_appstreams: no-op when key or appstreams unset -------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_appstreams("host1", "mgrctl exec --", {}, "uyuni")
+sc.ensure_appstreams("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey"}, "uyuni")
+check("ensure_appstreams: no-op when key or appstreams field is unset", len(fake.calls) == 0)
+
+# -- ensure_appstreams: success, one call per module:stream pair, right JSON -
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_appstreams("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --",
+                      {"smlm_activation_key": "1-mykey", "smlm_activation_key_appstreams": "nodejs:20 postgresql:16"},
+                      "smlm")
+check("ensure_appstreams: resolves the real key name once, then one api call per pair",
+      len(fake.calls) == 3 and "activationkey_list" in fake.calls[0][1])
+cmds = [c[1] for c in fake.calls if "addAppStreams" in c[1]]
+check("ensure_appstreams: uses the api passthrough with activationkey.addAppStreams",
+      len(cmds) == 2 and all("spacecmd -- api -A" in c and c.endswith("activationkey.addAppStreams") for c in cmds))
+check("ensure_appstreams: JSON args carry key name + module/stream struct",
+      any('["1-mykey", [{"module": "nodejs", "stream": "20"}]]' in c for c in cmds))
+
+# -- ensure_appstreams: already-enabled fault is treated as success ----------
+fake = FakeSSH(responses=[("addAppStreams", FakeResult(
+    returncode=1, stderr="App stream 'nodejs' already exists in the activation key."))])
+sc.ssh_run = fake
+sc.ensure_appstreams("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey",
+                                                  "uyuni_activation_key_appstreams": "nodejs:20"}, "uyuni")
+check("ensure_appstreams: duplicate-fault treated as already-satisfied (no die)", True)  # would have raised otherwise
+
+# -- ensure_appstreams: any other failure dies -------------------------------
+fake = FakeSSH(responses=[("addAppStreams", FakeResult(returncode=1, stderr="no such module 'bogus'"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_appstreams("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey",
+                                                      "uyuni_activation_key_appstreams": "bogus:1"}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_appstreams: a non-duplicate failure dies", died)
+
+# -- ensure_appstreams: malformed "module:stream" entry dies ----------------
+fake = FakeSSH()
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_appstreams("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey",
+                                                      "uyuni_activation_key_appstreams": "nodejs-no-colon"}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_appstreams: entry without ':' dies before issuing any command", died and len(fake.calls) == 0)
+
+# -- activation_key_packages / ensure_activation_key_packages ----------------
+fake = FakeSSH(responses=[("activationkey_listpackages", FakeResult(returncode=0, stdout="nodejs\npostgresql\n"))])
+sc.ssh_run = fake
+check("activation_key_packages: returns the current set",
+      sc.activation_key_packages("host1", "mgrctl exec --", "1-mykey") == {"nodejs", "postgresql"})
+
+fake = FakeSSH(responses=[("activationkey_listpackages", FakeResult(returncode=1, stderr="no such key"))])
+sc.ssh_run = fake
+check("activation_key_packages: returns empty set on failure",
+      sc.activation_key_packages("host1", "mgrctl exec --", "bogus") == set())
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_activation_key_packages("host1", "mgrctl exec --", {}, "uyuni")
+sc.ensure_activation_key_packages("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey"}, "uyuni")
+check("ensure_activation_key_packages: no-op when key or packages field is unset", len(fake.calls) == 0)
+
+fake = FakeSSH(responses=[("activationkey_listpackages", FakeResult(returncode=0, stdout="nodejs\npostgresql\n"))])
+sc.ssh_run = fake
+sc.ensure_activation_key_packages(
+    "host1", "mgrctl exec --",
+    {"uyuni_activation_key": "1-mykey", "uyuni_activation_key_packages": "nodejs postgresql"}, "uyuni")
+check("ensure_activation_key_packages: all already present -> no addpackages call",
+      len(fake.calls) == 2 and not any("activationkey_addpackages" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("activationkey_listpackages", FakeResult(returncode=0, stdout="nodejs\n"))])
+sc.ssh_run = fake
+sc.ensure_activation_key_packages(
+    "host1", "kubectl exec -n ns deploy/uyuni -c uyuni --",
+    {"smlm_activation_key": "1-mykey", "smlm_activation_key_packages": "nodejs postgresql curl"}, "smlm")
+add_cmd = next((c[1] for c in fake.calls if "activationkey_addpackages" in c[1]), "")
+check("ensure_activation_key_packages: adds only the missing packages",
+      "activationkey_addpackages 1-mykey postgresql curl" in add_cmd)
+
+fake = FakeSSH(responses=[
+    ("activationkey_listpackages", FakeResult(returncode=0, stdout="")),
+    ("activationkey_addpackages", FakeResult(returncode=1, stderr="no such package")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_activation_key_packages(
+        "host1", "mgrctl exec --",
+        {"uyuni_activation_key": "1-mykey", "uyuni_activation_key_packages": "bogus-pkg"}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_activation_key_packages: addpackages failure dies", died)
+
+# -- config_channel_exists / ensure_config_channel_exists --------------------
+fake = FakeSSH(responses=[("configchannel_list", FakeResult(stdout="web-config\nother-chan\n"))])
+sc.ssh_run = fake
+check("config_channel_exists: found", sc.config_channel_exists("host1", "mgrctl exec --", "web-config") is True)
+check("config_channel_exists: not found", sc.config_channel_exists("host1", "mgrctl exec --", "nope") is False)
+
+fake = FakeSSH(responses=[("configchannel_list", FakeResult(stdout="web-config\n"))])
+sc.ssh_run = fake
+sc.ensure_config_channel_exists("host1", "mgrctl exec --", "web-config", "webconfig-name", "desc")
+check("ensure_config_channel_exists: existing channel -> no create call",
+      len(fake.calls) == 1 and "configchannel_create" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("configchannel_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+sc.ensure_config_channel_exists("host1", "mgrctl exec --", "web-config", "webconfig-name", "desc", "state")
+create_cmd = next((c[1] for c in fake.calls if "configchannel_create" in c[1]), "")
+check("ensure_config_channel_exists: create command carries -n/-l/-d/-t",
+      "-n webconfig-name" in create_cmd and "-l web-config" in create_cmd
+      and "-d desc" in create_cmd and "-t state" in create_cmd)
+
+# -- ensure_config_file: matching sha256 -> skip, no addfile/stage calls -----
+content = "server { listen 80; }\n"
+digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+fake = FakeSSH(responses=[("configchannel_filedetails", FakeResult(returncode=0, stdout="sha256: {}".format(digest)))])
+sc.ssh_run = fake
+sc.ensure_config_file("host1", "mgrctl exec --", "web-config", "/etc/nginx/nginx.conf", content)
+check("ensure_config_file: matching sha256 -> skip, no addfile call",
+      len(fake.calls) == 1 and "configchannel_addfile" not in fake.calls[0][1])
+
+# -- ensure_config_file: content differs -> stage, addfile, cleanup ----------
+fake = FakeSSH(responses=[("configchannel_filedetails", FakeResult(returncode=0, stdout="sha256: stale"))])
+sc.ssh_run = fake
+sc.ensure_config_file("host1", "mgrctl exec --", "web-config", "/etc/nginx/nginx.conf", content,
+                       owner="root", group="root", mode="0644")
+cmds = [c[1] for c in fake.calls]
+check("ensure_config_file: stages content, adds the file, then cleans up",
+      any("cat >" in c for c in cmds)
+      and any("configchannel_addfile -c web-config -p /etc/nginx/nginx.conf" in c for c in cmds)
+      and any("rm -f" in c for c in cmds))
+check("ensure_config_file: owner/group/mode flags present",
+      any("-o root" in c and "-g root" in c and "-m 0644" in c for c in cmds if "configchannel_addfile" in c))
+stage_call = next(c for c in fake.calls if "cat >" in c[1])
+check("ensure_config_file: content passed via input_text stdin, not argv",
+      stage_call[2].get("input_text") == content and content not in stage_call[1])
+
+# -- ensure_init_sls: matching sha256 -> skip; mismatch -> updateinitsls ----
+init_content = "include:\n  - my.state\n"
+init_digest = hashlib.sha256(init_content.encode("utf-8")).hexdigest()
+fake = FakeSSH(responses=[("configchannel_filedetails",
+                            FakeResult(returncode=0, stdout="sha256: {}".format(init_digest)))])
+sc.ssh_run = fake
+sc.ensure_init_sls("host1", "mgrctl exec --", "app-state", init_content)
+check("ensure_init_sls: matching sha256 -> skip", len(fake.calls) == 1)
+
+fake = FakeSSH(responses=[("configchannel_filedetails", FakeResult(returncode=0, stdout="sha256: stale"))])
+sc.ssh_run = fake
+sc.ensure_init_sls("host1", "mgrctl exec --", "app-state", init_content)
+cmds = [c[1] for c in fake.calls]
+check("ensure_init_sls: uses configchannel_updateinitsls, not addfile",
+      any("configchannel_updateinitsls -c app-state" in c for c in cmds)
+      and not any("configchannel_addfile" in c for c in cmds))
+
+# -- ensure_config_channels: no-op when field is unset -----------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_config_channels("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_config_channels: no-op when field unset", len(fake.calls) == 0)
+
+# -- ensure_config_channels: full orchestration (normal + state channel) ----
+fake = FakeSSH(responses=[
+    ("configchannel_list", FakeResult(stdout="")),
+    ("configchannel_filedetails", FakeResult(returncode=1)),
+])
+sc.ssh_run = fake
+cfg = {
+    "smlm_config_channels": [
+        {"label": "web-config", "name": "webconfig-name", "files": [
+            {"path": "/etc/nginx/nginx.conf", "content": "server {}\n"},
+        ]},
+        {"label": "app-state", "type": "state", "init_sls": "include:\n  - x\n"},
+    ]
+}
+sc.ensure_config_channels("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("ensure_config_channels: creates both channels",
+      sum(1 for c in cmds if "configchannel_create" in c) == 2)
+check("ensure_config_channels: pushes the normal channel's file",
+      any("configchannel_addfile -c web-config" in c for c in cmds))
+check("ensure_config_channels: pushes the state channel's init.sls",
+      any("configchannel_updateinitsls -c app-state" in c for c in cmds))
+
+# -- ensure_config_channels: validation dies on missing required fields -----
+died = False
+try:
+    sc.ensure_config_channels("host1", "mgrctl exec --", {"uyuni_config_channels": [{"name": "no label"}]}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_config_channels: entry missing 'label' dies", died)
+
+fake = FakeSSH(responses=[("configchannel_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_config_channels("host1", "mgrctl exec --",
+                               {"uyuni_config_channels": [{"label": "x", "files": [{"content": "no path"}]}]},
+                               "uyuni")
+except SystemExit:
+    died = True
+check("ensure_config_channels: file entry missing 'path' dies", died)
+
+fake = FakeSSH(responses=[("configchannel_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_config_channels("host1", "mgrctl exec --",
+                               {"uyuni_config_channels": [{"label": "x", "files": [{"path": "/f"}]}]}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_config_channels: file entry missing 'content' dies", died)
+
+# -- org_exists: exact-line match, not substring ------------------------------
+fake = FakeSSH(responses=[("org_list", FakeResult(stdout="lab\nOrgB\n"))])
+sc.ssh_run = fake
+check("org_exists: found (exact line match)", sc.org_exists("host1", "mgrctl exec --", "lab") is True)
+check("org_exists: not found (no partial/substring match)", sc.org_exists("host1", "mgrctl exec --", "la") is False)
+
+# -- ensure_org: existing org -> no create call ------------------------------
+fake = FakeSSH(responses=[("org_list", FakeResult(stdout="lab\n"))])
+sc.ssh_run = fake
+sc.ensure_org("host1", "mgrctl exec --", {"name": "lab"})
+check("ensure_org: existing org -> no create call",
+      len(fake.calls) == 1 and "org_create " not in fake.calls[0][1])
+
+# -- ensure_org: missing admin fields dies -----------------------------------
+fake = FakeSSH(responses=[("org_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_org("host1", "mgrctl exec --", {"name": "OrgB"})
+except SystemExit:
+    died = True
+check("ensure_org: missing admin_user/admin_pass/admin_email dies", died)
+
+# -- ensure_org: full creation, every flag present ---------------------------
+fake = FakeSSH(responses=[("org_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+sc.ensure_org("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", {
+    "name": "OrgB", "admin_user": "orgb-admin", "admin_pass": "s3cr3t",
+    "admin_email": "admin@orgb.lab", "admin_first_name": "Org", "admin_last_name": "Bee",
+    "prefix": "mr", "pam": True,
+})
+create_cmd = next((c[1] for c in fake.calls if "org_create " in c[1]), "")
+check("ensure_org: create command carries -n/-u/-f/-l/-e/-p/-P/--pam",
+      "-n OrgB" in create_cmd and "-u orgb-admin" in create_cmd and "-f Org" in create_cmd
+      and "-l Bee" in create_cmd and "-e admin@orgb.lab" in create_cmd and "-p s3cr3t" in create_cmd
+      and "-P mr" in create_cmd and "--pam" in create_cmd)
+
+# -- ensure_org: defaults first/last name, omits -P/--pam when unset --------
+fake = FakeSSH(responses=[("org_list", FakeResult(stdout=""))])
+sc.ssh_run = fake
+sc.ensure_org("host1", "mgrctl exec --", {"name": "OrgC", "admin_user": "orgc-admin",
+                                           "admin_pass": "pw", "admin_email": "a@b.c"})
+create_cmd = next((c[1] for c in fake.calls if "org_create " in c[1]), "")
+check("ensure_org: defaults first/last name from admin_user/org name when unset",
+      "-f orgc-admin" in create_cmd and "-l OrgC" in create_cmd
+      and "-P" not in create_cmd and "--pam" not in create_cmd)
+
+# -- ensure_org_trust: skip if already trusted, add otherwise ---------------
+fake = FakeSSH(responses=[("org_listtrusts", FakeResult(stdout="lab\nOrgC\n"))])
+sc.ssh_run = fake
+sc.ensure_org_trust("host1", "mgrctl exec --", "OrgB", "lab")
+check("ensure_org_trust: already trusted -> no addtrust call",
+      len(fake.calls) == 1 and "org_addtrust" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("org_listtrusts", FakeResult(stdout=""))])
+sc.ssh_run = fake
+sc.ensure_org_trust("host1", "mgrctl exec --", "OrgB", "lab")
+check("ensure_org_trust: not yet trusted -> addtrust called",
+      any("org_addtrust OrgB lab" in c[1] for c in fake.calls))
+
+# -- ensure_channel_sharing: validation, skip-if-set, set-if-not ------------
+died = False
+try:
+    sc.ensure_channel_sharing("host1", "mgrctl exec --", "chan1", "bogus")
+except SystemExit:
+    died = True
+check("ensure_channel_sharing: invalid access level dies", died)
+
+fake = FakeSSH(responses=[("getOrgSharing", FakeResult(returncode=0, stdout="protected"))])
+sc.ssh_run = fake
+sc.ensure_channel_sharing("host1", "mgrctl exec --", "chan1", "protected")
+check("ensure_channel_sharing: already-set access -> no setOrgSharing call",
+      len(fake.calls) == 1 and "setOrgSharing" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("getOrgSharing", FakeResult(returncode=0, stdout="private"))])
+sc.ssh_run = fake
+sc.ensure_channel_sharing("host1", "mgrctl exec --", "chan1", "protected")
+set_cmd = next((c[1] for c in fake.calls if "setOrgSharing" in c[1]), "")
+check("ensure_channel_sharing: mismatched access -> setOrgSharing called with right JSON",
+      "api -A" in set_cmd and '["chan1", "protected"]' in unwrap(set_cmd)
+      and "channel.access.setOrgSharing" in set_cmd)
+
+# -- ensure_orgs: no-op when field unset -------------------------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_orgs("host1", "mgrctl exec --", {}, "uyuni", "admin", "pw")
+check("ensure_orgs: no-op when field unset", len(fake.calls) == 0)
+
+# -- ensure_orgs: full orchestration -----------------------------------------
+# OrgB doesn't exist yet (needs admin creds to create); OrgC already exists
+# (org_create requires an admin at creation time, so "no admin creds" is
+# only ever valid for an already-existing org).
+fake = FakeSSH(responses=[
+    ("org_listtrusts", FakeResult(stdout="")),
+    ("org_list", FakeResult(stdout="OrgC\n")),
+    ("getOrgSharing", FakeResult(returncode=0, stdout="private")),
+    ("activationkey_list", FakeResult(stdout="")),
+])
+sc.ssh_run = fake
+cfg = {
+    "smlm_orgs": [
+        {
+            "name": "OrgB", "admin_user": "orgb-admin", "admin_pass": "pw", "admin_email": "a@b.c",
+            "trust_with": ["lab"], "share_channels": ["base-channel"],
+            "smlm_activation_key": "1-orgb-key", "smlm_activation_key_base_channel": "base-channel",
+        },
+        # already exists, no admin_user/admin_pass -> its own key must NOT be provisioned
+        {"name": "OrgC", "smlm_activation_key": "1-orgc-key", "smlm_activation_key_base_channel": "base-channel"},
+    ]
+}
+sc.ensure_orgs("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm", "admin", "admin123")
+cmds = [c[1] for c in fake.calls]
+check("ensure_orgs: creates the missing org, leaves the existing one alone",
+      sum(1 for c in cmds if "org_create " in c) == 1)
+check("ensure_orgs: trust_with triggers org_addtrust", any("org_addtrust OrgB lab" in c for c in cmds))
+check("ensure_orgs: share_channels triggers setOrgSharing", any("setOrgSharing" in c for c in cmds))
+check("ensure_orgs: org with admin creds gets its own activation key created",
+      any("activationkey_create" in c and "1-orgb-key" in c for c in cmds))
+check("ensure_orgs: org without admin creds skips its own scoped provisioning",
+      not any("1-orgc-key" in c for c in cmds))
+last_call = fake.calls[-1]
+check("ensure_orgs: restores the default admin session before returning",
+      "cat > ~/.spacecmd/config" in last_call[1]
+      and "username=admin\npassword=admin123" in (last_call[2].get("input_text") or ""))
+
+# -- ensure_orgs: entry missing 'name' dies ----------------------------------
+died = False
+try:
+    sc.ensure_orgs("host1", "mgrctl exec --", {"uyuni_orgs": [{"admin_user": "x"}]}, "uyuni", "admin", "pw")
+except SystemExit:
+    died = True
+check("ensure_orgs: entry missing 'name' dies", died)
+
+# -- access_group_exists / ensure_access_group -------------------------------
+fake = FakeSSH(responses=[("access.listRoles", FakeResult(returncode=0, stdout="read-only-ops\nother-group\n"))])
+sc.ssh_run = fake
+check("access_group_exists: found", sc.access_group_exists("host1", "mgrctl exec --", "read-only-ops") is True)
+check("access_group_exists: not found", sc.access_group_exists("host1", "mgrctl exec --", "nope") is False)
+
+fake = FakeSSH(responses=[("access.listRoles", FakeResult(returncode=0, stdout="read-only-ops\n"))])
+sc.ssh_run = fake
+sc.ensure_access_group("host1", "mgrctl exec --", "read-only-ops", "Read-only operators")
+check("ensure_access_group: existing group -> no createRole call",
+      len(fake.calls) == 1 and "access.createRole" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("access.listRoles", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_access_group("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "read-only-ops",
+                        "Read-only operators", permissions_from=["base-role"])
+create_cmd = next((c[1] for c in fake.calls if "access.createRole" in c[1]), "")
+check("ensure_access_group: create command carries label/description/permissions_from as JSON",
+      'api -A' in create_cmd
+      and '["read-only-ops", "Read-only operators", ["base-role"]]' in create_cmd
+      and create_cmd.endswith("access.createRole"))
+
+# -- access_group_has_namespace / ensure_access_group_permissions -----------
+fake = FakeSSH(responses=[("access.listPermissions", FakeResult(returncode=0, stdout="system_management.systems"))])
+sc.ssh_run = fake
+check("access_group_has_namespace: found",
+      sc.access_group_has_namespace("host1", "mgrctl exec --", "grp", "system_management.systems") is True)
+check("access_group_has_namespace: not found",
+      sc.access_group_has_namespace("host1", "mgrctl exec --", "grp", "other.namespace") is False)
+
+fake = FakeSSH(responses=[("access.listPermissions", FakeResult(returncode=0, stdout="system_management.systems"))])
+sc.ssh_run = fake
+sc.ensure_access_group_permissions("host1", "mgrctl exec --", "grp",
+                                    [{"namespace": "system_management.systems"}])
+check("ensure_access_group_permissions: already-granted namespace -> no grantAccess call",
+      not any("access.grantAccess" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("access.listPermissions", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_access_group_permissions("host1", "mgrctl exec --", "grp", [
+    {"namespace": "system_management.systems"},
+    {"namespace": "channel_management.software_channels", "mode": "W"},
+])
+grant_cmd = next((c[1] for c in fake.calls if "access.grantAccess" in c[1]), "")
+check("ensure_access_group_permissions: grants all missing namespaces with parallel modes",
+      '["grp", ["system_management.systems", "channel_management.software_channels"], ["R", "W"]]' in grant_cmd)
+
+fake = FakeSSH(responses=[("access.listPermissions", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_access_group_permissions("host1", "mgrctl exec --", "grp", [{"mode": "R"}])
+except SystemExit:
+    died = True
+check("ensure_access_group_permissions: entry missing 'namespace' dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_access_group_permissions("host1", "mgrctl exec --", "grp", [])
+check("ensure_access_group_permissions: no-op on empty list", len(fake.calls) == 0)
+
+# -- user_has_role / ensure_user_role ----------------------------------------
+fake = FakeSSH(responses=[("user_details", FakeResult(returncode=0, stdout="Roles: org_admin, read-only-ops"))])
+sc.ssh_run = fake
+check("user_has_role: found", sc.user_has_role("host1", "mgrctl exec --", "alice", "read-only-ops") is True)
+check("user_has_role: not found", sc.user_has_role("host1", "mgrctl exec --", "alice", "channel_admin") is False)
+
+fake = FakeSSH(responses=[("user_details", FakeResult(returncode=0, stdout="Roles: read-only-ops"))])
+sc.ssh_run = fake
+sc.ensure_user_role("host1", "mgrctl exec --", "alice", "read-only-ops")
+check("ensure_user_role: already has role -> no addrole call",
+      len(fake.calls) == 1 and "user_addrole" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("user_details", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_user_role("host1", "mgrctl exec --", "alice", "read-only-ops")
+check("ensure_user_role: missing role -> user_addrole called with the right argv",
+      any("user_addrole alice read-only-ops" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("user_details", FakeResult(returncode=0, stdout="")),
+                           ("user_addrole", FakeResult(returncode=1, stderr="no such user 'bob'"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_user_role("host1", "mgrctl exec --", "bob", "read-only-ops")
+except SystemExit:
+    died = True
+check("ensure_user_role: user_addrole failure (e.g. unknown user) dies", died)
+
+# -- ensure_access_groups: full orchestration --------------------------------
+fake = FakeSSH(responses=[
+    ("access.listRoles", FakeResult(returncode=0, stdout="")),
+    ("access.listPermissions", FakeResult(returncode=0, stdout="")),
+    ("user_details", FakeResult(returncode=0, stdout="")),
+])
+sc.ssh_run = fake
+cfg = {
+    "smlm_access_groups": [{
+        "label": "read-only-ops", "description": "Read-only operators",
+        "permissions": [{"namespace": "system_management.systems"}],
+        "users": ["alice", "bob"],
+    }]
+}
+sc.ensure_access_groups("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("ensure_access_groups: creates the group", any("access.createRole" in c for c in cmds))
+check("ensure_access_groups: grants its permissions", any("access.grantAccess" in c for c in cmds))
+check("ensure_access_groups: attaches every listed user",
+      any("user_addrole alice read-only-ops" in c for c in cmds)
+      and any("user_addrole bob read-only-ops" in c for c in cmds))
+
+# -- ensure_access_groups: no-op when unset, dies on missing 'label' --------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_access_groups("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_access_groups: no-op when field unset", len(fake.calls) == 0)
+
+died = False
+try:
+    sc.ensure_access_groups("host1", "mgrctl exec --", {"uyuni_access_groups": [{"description": "no label"}]},
+                             "uyuni")
+except SystemExit:
+    died = True
+check("ensure_access_groups: entry missing 'label' dies", died)
+
+# -- ansible_path_exists / ensure_ansible_path -------------------------------
+fake = FakeSSH(responses=[("ansible.listAnsiblePaths",
+                            FakeResult(returncode=0, stdout="/srv/ansible/playbooks"))])
+sc.ssh_run = fake
+check("ansible_path_exists: found",
+      sc.ansible_path_exists("host1", "mgrctl exec --", 123, "/srv/ansible/playbooks") is True)
+check("ansible_path_exists: not found",
+      sc.ansible_path_exists("host1", "mgrctl exec --", 123, "/other/path") is False)
+
+died = False
+try:
+    sc.ensure_ansible_path("host1", "mgrctl exec --", 123, "bogus", "/srv/x")
+except SystemExit:
+    died = True
+check("ensure_ansible_path: invalid type dies", died)
+
+fake = FakeSSH(responses=[("ansible.listAnsiblePaths",
+                            FakeResult(returncode=0, stdout="/srv/ansible/playbooks"))])
+sc.ssh_run = fake
+sc.ensure_ansible_path("host1", "mgrctl exec --", 123, "playbook", "/srv/ansible/playbooks")
+check("ensure_ansible_path: already registered -> no createAnsiblePath call",
+      len(fake.calls) == 1 and "ansible.createAnsiblePath" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("ansible.listAnsiblePaths", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_ansible_path("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", 123, "playbook",
+                        "/srv/ansible/playbooks")
+create_cmd = next((c[1] for c in fake.calls if "ansible.createAnsiblePath" in c[1]), "")
+check("ensure_ansible_path: create command carries type/server_id/path as a bare JSON "
+      "object, not wrapped in a one-element array (confirmed live: -A binds the whole "
+      "list as the arg for a single-arg method)",
+      '{"type": "playbook", "server_id": 123, "path": "/srv/ansible/playbooks"}' in create_cmd
+      and '[{"type"' not in create_cmd)
+
+# -- ensure_ansible_paths: orchestration, no-op, validation ------------------
+fake = FakeSSH(responses=[("ansible.listAnsiblePaths", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+cfg = {"uyuni_ansible_paths": [
+    {"control_node_id": 123, "type": "playbook", "path": "/srv/pb"},
+    {"control_node_id": 123, "type": "inventory", "path": "/srv/inv"},
+]}
+sc.ensure_ansible_paths("host1", "mgrctl exec --", cfg, "uyuni")
+cmds = [c[1] for c in fake.calls]
+check("ensure_ansible_paths: registers every entry",
+      sum(1 for c in cmds if "ansible.createAnsiblePath" in c) == 2)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_ansible_paths("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_ansible_paths: no-op when field unset", len(fake.calls) == 0)
+
+died = False
+try:
+    sc.ensure_ansible_paths("host1", "mgrctl exec --",
+                             {"uyuni_ansible_paths": [{"type": "playbook", "path": "/x"}]}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_ansible_paths: entry missing 'control_node_id' dies", died)
+
+# -- schedule_ansible_playbook: overload selection by arg shape --------------
+fake = FakeSSH(responses=[("schedulePlaybook", FakeResult(returncode=0, stdout="42\n"))])
+sc.ssh_run = fake
+action_id = sc.schedule_ansible_playbook("host1", "mgrctl exec --", 123, "/srv/pb.yml", "/srv/inv",
+                                          earliest="2026-01-01T00:00:00")
+cmd = fake.calls[0][1]
+check("schedule_ansible_playbook: base 5-arg form when no testMode/ansibleArgs given",
+      '["/srv/pb.yml", "/srv/inv", 123, "2026-01-01T00:00:00", ""]' in unwrap(cmd)
+      and "ansible.schedulePlaybook" in cmd)
+check("schedule_ansible_playbook: returns the scheduled action id", action_id == "42")
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.schedule_ansible_playbook("host1", "mgrctl exec --", 123, "/pb.yml", "/inv",
+                              earliest="2026-01-01T00:00:00", test_mode=True)
+cmd = fake.calls[0][1]
+check("schedule_ansible_playbook: test_mode-only -> 6-arg form",
+      '["/pb.yml", "/inv", 123, "2026-01-01T00:00:00", "", true]' in cmd)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.schedule_ansible_playbook("host1", "mgrctl exec --", 123, "/pb.yml", "/inv",
+                              earliest="2026-01-01T00:00:00", extra_vars="foo: bar", flush_cache=True)
+cmd = fake.calls[0][1]
+check("schedule_ansible_playbook: extra_vars/flush_cache -> 7-arg form with testMode+ansibleArgs",
+      '["/pb.yml", "/inv", 123, "2026-01-01T00:00:00", "", false, '
+      '{"extraVars": "foo: bar", "flushCache": true}]' in cmd)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.schedule_ansible_playbook("host1", "mgrctl exec --", 123, "/pb.yml", "/inv")
+cmd = fake.calls[0][1]
+check("schedule_ansible_playbook: defaults 'earliest' to the current UTC time when unset",
+      re.search(r'"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"', cmd) is not None)
+
+fake = FakeSSH(responses=[("schedulePlaybook", FakeResult(returncode=1, stderr="control node not found"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.schedule_ansible_playbook("host1", "mgrctl exec --", 999, "/pb.yml", "/inv",
+                                  earliest="2026-01-01T00:00:00")
+except SystemExit:
+    died = True
+check("schedule_ansible_playbook: server-side failure dies", died)
+
+# -- ansible_playbook_status: reuses native schedule_* commands --------------
+fake = FakeSSH(responses=[
+    ("schedule_details", FakeResult(returncode=0, stdout="Action: foo")),
+    ("schedule_getoutput", FakeResult(returncode=0, stdout="output text")),
+])
+sc.ssh_run = fake
+details, output = sc.ansible_playbook_status("host1", "mgrctl exec --", 42)
+check("ansible_playbook_status: returns (details, output) via schedule_details/schedule_getoutput",
+      details == "Action: foo" and output == "output text")
+
+# -- content_project_exists / ensure_content_project -------------------------
+fake = FakeSSH(responses=[("contentmanagement.listProjects", FakeResult(returncode=0, stdout="web-lifecycle\n"))])
+sc.ssh_run = fake
+check("content_project_exists: found",
+      sc.content_project_exists("host1", "mgrctl exec --", "web-lifecycle") is True)
+check("content_project_exists: not found",
+      sc.content_project_exists("host1", "mgrctl exec --", "other") is False)
+
+fake = FakeSSH(responses=[("contentmanagement.listProjects", FakeResult(returncode=0, stdout="web-lifecycle\n"))])
+sc.ssh_run = fake
+sc.ensure_content_project("host1", "mgrctl exec --", "web-lifecycle", "Web", "desc")
+check("ensure_content_project: existing project -> no createProject call",
+      len(fake.calls) == 1 and "createProject" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("contentmanagement.listProjects", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_content_project("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "web-lifecycle", "Web", "desc")
+create_cmd = next((c[1] for c in fake.calls if "createProject" in c[1]), "")
+check("ensure_content_project: create command carries label/name/description as JSON",
+      '["web-lifecycle", "Web", "desc"]' in create_cmd
+      and create_cmd.endswith("contentmanagement.createProject"))
+
+# -- content_source_exists / ensure_content_source ---------------------------
+fake = FakeSSH(responses=[("contentmanagement.listProjectSources",
+                            FakeResult(returncode=0, stdout="sle-product-base"))])
+sc.ssh_run = fake
+check("content_source_exists: found",
+      sc.content_source_exists("host1", "mgrctl exec --", "proj", "sle-product-base") is True)
+check("content_source_exists: not found",
+      sc.content_source_exists("host1", "mgrctl exec --", "proj", "other") is False)
+
+fake = FakeSSH(responses=[("contentmanagement.listProjectSources", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_content_source("host1", "mgrctl exec --", "proj", "sle-product-base")
+attach_cmd = next((c[1] for c in fake.calls if "attachSource" in c[1]), "")
+check("ensure_content_source: attach command carries project/type/source as JSON",
+      '["proj", "software", "sle-product-base"]' in attach_cmd)
+
+fake = FakeSSH(responses=[("contentmanagement.listProjectSources",
+                            FakeResult(returncode=0, stdout="sle-product-base"))])
+sc.ssh_run = fake
+sc.ensure_content_source("host1", "mgrctl exec --", "proj", "sle-product-base")
+check("ensure_content_source: already attached -> no attachSource call",
+      len(fake.calls) == 1 and "attachSource" not in fake.calls[0][1])
+
+# -- ensure_content_filter: validation, idempotency, id extraction ----------
+died = False
+try:
+    sc.ensure_content_filter("host1", "mgrctl exec --", "proj", {"name": "f1"})
+except SystemExit:
+    died = True
+check("ensure_content_filter: missing required fields dies", died)
+
+fake = FakeSSH(responses=[("contentmanagement.listProjectFilters", FakeResult(returncode=0, stdout="exclude-beta"))])
+sc.ssh_run = fake
+sc.ensure_content_filter("host1", "mgrctl exec --", "proj",
+                          {"name": "exclude-beta", "rule": "deny", "entity_type": "package",
+                           "matcher": "contains", "field": "name", "value": "-beta"})
+check("ensure_content_filter: already attached to this project -> no createFilter call",
+      len(fake.calls) == 1 and "createFilter" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[
+    ("contentmanagement.listProjectFilters", FakeResult(returncode=0, stdout="")),
+    ("contentmanagement.createFilter", FakeResult(returncode=0, stdout="{'id': 42, 'name': 'exclude-beta'}")),
+])
+sc.ssh_run = fake
+sc.ensure_content_filter("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "proj",
+                          {"name": "exclude-beta", "rule": "deny", "entity_type": "package",
+                           "matcher": "contains", "field": "name", "value": "-beta"})
+cmds = [c[1] for c in fake.calls]
+create_cmd = next(c for c in cmds if "createFilter" in c)
+check("ensure_content_filter: create command carries name/rule/entity_type/criteria as JSON",
+      '["exclude-beta", "deny", "package", {"matcher": "contains", "field": "name", "value": "-beta"}]'
+      in create_cmd)
+attach_cmd = next((c for c in cmds if "attachFilter" in c), "")
+check("ensure_content_filter: attaches using the id parsed from createFilter's output",
+      '["proj", 42]' in attach_cmd)
+
+fake = FakeSSH(responses=[
+    ("contentmanagement.listProjectFilters", FakeResult(returncode=0, stdout="")),
+    ("contentmanagement.createFilter", FakeResult(returncode=0, stdout="no id here")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_content_filter("host1", "mgrctl exec --", "proj",
+                              {"name": "f2", "rule": "allow", "entity_type": "erratum",
+                               "matcher": "equals", "field": "advisory_type", "value": "bugfix"})
+except SystemExit:
+    died = True
+check("ensure_content_filter: unparseable id from createFilter output dies", died)
+
+fake = FakeSSH(responses=[
+    ("contentmanagement.listProjectFilters", FakeResult(returncode=0, stdout="")),
+    ("contentmanagement.createFilter", FakeResult(returncode=1, stderr="duplicate filter name")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_content_filter("host1", "mgrctl exec --", "proj",
+                              {"name": "f3", "rule": "allow", "entity_type": "package",
+                               "matcher": "contains", "field": "name", "value": "x"})
+except SystemExit:
+    died = True
+check("ensure_content_filter: createFilter failure dies", died)
+
+# -- content_environment_exists / ensure_content_environments ----------------
+fake = FakeSSH(responses=[("contentmanagement.listProjectEnvironments", FakeResult(returncode=0, stdout="dev"))])
+sc.ssh_run = fake
+check("content_environment_exists: found",
+      sc.content_environment_exists("host1", "mgrctl exec --", "proj", "dev") is True)
+check("content_environment_exists: not found",
+      sc.content_environment_exists("host1", "mgrctl exec --", "proj", "test") is False)
+
+fake = FakeSSH(responses=[("contentmanagement.listProjectEnvironments", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_content_environments("host1", "mgrctl exec --", "proj", ["dev", "test", "prod"])
+cmds = [c[1] for c in fake.calls]
+create_cmds = [c for c in cmds if "createEnvironment" in c]
+check("ensure_content_environments: creates every stage", len(create_cmds) == 3)
+check("ensure_content_environments: first stage has an empty predecessor",
+      '["proj", "", "dev", "dev", "dev"]' in create_cmds[0])
+check("ensure_content_environments: second stage's predecessor is the first stage's label "
+      "(confirmed live: this was NOT advancing before the fix, silently building a set of "
+      "disconnected 'first' environments instead of a chain)",
+      '["proj", "dev", "test", "test", "test"]' in create_cmds[1])
+check("ensure_content_environments: third stage's predecessor is the second stage's label",
+      '["proj", "test", "prod", "prod", "prod"]' in create_cmds[2])
+
+fake = FakeSSH(responses=[("contentmanagement.listProjectEnvironments", FakeResult(returncode=0, stdout="dev"))])
+sc.ssh_run = fake
+sc.ensure_content_environments("host1", "mgrctl exec --", "proj", ["dev", "test"])
+cmds = [c[1] for c in fake.calls]
+check("ensure_content_environments: skips an already-existing stage but still chains the next one correctly",
+      not any("createEnvironment" in c and '"dev", "dev", "dev"' in c for c in cmds)
+      and any('["proj", "dev", "test", "test", "test"]' in c for c in cmds))
+
+died = False
+try:
+    sc.ensure_content_environments("host1", "mgrctl exec --", "proj", [{"name": "no label"}])
+except SystemExit:
+    died = True
+check("ensure_content_environments: entry missing 'label' dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_content_environments("host1", "mgrctl exec --", "proj", [])
+check("ensure_content_environments: no-op on empty list", len(fake.calls) == 0)
+
+# -- ensure_content_projects: full orchestration + validation + no-op -------
+fake = FakeSSH(responses=[
+    ("contentmanagement.listProjects", FakeResult(returncode=0, stdout="")),
+    ("contentmanagement.listProjectSources", FakeResult(returncode=0, stdout="")),
+    ("contentmanagement.listProjectFilters", FakeResult(returncode=0, stdout="")),
+    ("contentmanagement.createFilter", FakeResult(returncode=0, stdout="{'id': 7}")),
+    ("contentmanagement.listProjectEnvironments", FakeResult(returncode=0, stdout="")),
+])
+sc.ssh_run = fake
+cfg = {
+    "smlm_content_projects": [{
+        "label": "web-lifecycle", "sources": ["sle-product-base"],
+        "filters": [{"name": "exclude-beta", "rule": "deny", "entity_type": "package",
+                     "matcher": "contains", "field": "name", "value": "-beta"}],
+        "environments": ["dev", "test"],
+    }]
+}
+sc.ensure_content_projects("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("ensure_content_projects: creates the project", any("createProject" in c for c in cmds))
+check("ensure_content_projects: attaches the source", any("attachSource" in c for c in cmds))
+check("ensure_content_projects: creates and attaches the filter",
+      any("createFilter" in c for c in cmds) and any("attachFilter" in c for c in cmds))
+check("ensure_content_projects: creates both environments",
+      sum(1 for c in cmds if "createEnvironment" in c) == 2)
+
+died = False
+try:
+    sc.ensure_content_projects("host1", "mgrctl exec --", {"uyuni_content_projects": [{"name": "no label"}]},
+                                "uyuni")
+except SystemExit:
+    died = True
+check("ensure_content_projects: entry missing 'label' dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_content_projects("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_content_projects: no-op when field unset", len(fake.calls) == 0)
+
+# -- build_content_project / promote_content_project -------------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.build_content_project("host1", "mgrctl exec --", "proj")
+check("build_content_project: base 1-arg form when no message given",
+      # _api_call passes a single arg as its bare JSON value, not wrapped in
+      # a one-element array — confirmed live 2026-08-28 (saltkey.accept).
+      '"proj"' in unwrap(fake.calls[0][1]) and "contentmanagement.buildProject" in fake.calls[0][1])
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.build_content_project("host1", "mgrctl exec --", "proj", message="initial build")
+check("build_content_project: includes the message when given",
+      '["proj", "initial build"]' in unwrap(fake.calls[0][1]))
+
+fake = FakeSSH(responses=[("buildProject", FakeResult(returncode=1, stderr="no sources attached"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.build_content_project("host1", "mgrctl exec --", "proj")
+except SystemExit:
+    died = True
+check("build_content_project: server-side failure dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.promote_content_project("host1", "mgrctl exec --", "proj", "dev")
+check("promote_content_project: passes project and the FROM environment (not the destination)",
+      '["proj", "dev"]' in unwrap(fake.calls[0][1]) and "contentmanagement.promoteProject" in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("promoteProject", FakeResult(returncode=1, stderr="no successor environment"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.promote_content_project("host1", "mgrctl exec --", "proj", "prod")
+except SystemExit:
+    died = True
+check("promote_content_project: server-side failure dies", died)
+
+# -- content_environment_status / wait_for_content_environment --------------
+fake = FakeSSH(responses=[("lookupEnvironment",
+                            FakeResult(returncode=0, stdout="{'status': 'built', 'label': 'dev'}"))])
+sc.ssh_run = fake
+check("content_environment_status: parses the status field",
+      sc.content_environment_status("host1", "mgrctl exec --", "proj", "dev") == "built")
+
+fake = FakeSSH(responses=[("lookupEnvironment", FakeResult(returncode=1, stderr="not found"))])
+sc.ssh_run = fake
+check("content_environment_status: returns None on failure",
+      sc.content_environment_status("host1", "mgrctl exec --", "proj", "dev") is None)
+
+fake = FakeSSH(responses=[("lookupEnvironment", FakeResult(returncode=0, stdout="{'status': 'built'}"))])
+sc.ssh_run = fake
+status = sc.wait_for_content_environment("host1", "mgrctl exec --", "proj", "dev", timeout=60, interval=5)
+check("wait_for_content_environment: returns immediately once a target status is reached", status == "built")
+
+fake = FakeSSH(responses=[("lookupEnvironment", FakeResult(returncode=0, stdout="{'status': 'building'}"))])
+sc.ssh_run = fake
+_orig_sleep = sc.time.sleep
+sc.time.sleep = lambda s: None
+try:
+    died = False
+    try:
+        sc.wait_for_content_environment("host1", "mgrctl exec --", "proj", "dev", timeout=10, interval=5)
+    except SystemExit:
+        died = True
+    check("wait_for_content_environment: dies after timeout if status never reaches target", died)
+finally:
+    sc.time.sleep = _orig_sleep
+
+# -- run_content_lifecycle_actions: orchestration + validation --------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.run_content_lifecycle_actions("host1", "mgrctl exec --", {}, "uyuni")
+check("run_content_lifecycle_actions: no-op when field unset", len(fake.calls) == 0)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+cfg = {"uyuni_content_lifecycle_actions": [
+    {"project": "proj", "action": "build"},
+    {"project": "proj", "action": "promote", "from_env": "dev"},
+]}
+sc.run_content_lifecycle_actions("host1", "mgrctl exec --", cfg, "uyuni")
+cmds = [c[1] for c in fake.calls]
+check("run_content_lifecycle_actions: runs build then promote in order",
+      any("buildProject" in c for c in cmds) and any("promoteProject" in c for c in cmds))
+
+died = False
+try:
+    sc.run_content_lifecycle_actions(
+        "host1", "mgrctl exec --", {"uyuni_content_lifecycle_actions": [{"project": "p", "action": "bogus"}]},
+        "uyuni")
+except SystemExit:
+    died = True
+check("run_content_lifecycle_actions: invalid action dies", died)
+
+died = False
+try:
+    sc.run_content_lifecycle_actions(
+        "host1", "mgrctl exec --", {"uyuni_content_lifecycle_actions": [{"project": "p", "action": "promote"}]},
+        "uyuni")
+except SystemExit:
+    died = True
+check("run_content_lifecycle_actions: promote without 'from_env' dies", died)
+
+fake = FakeSSH(responses=[("lookupEnvironment", FakeResult(returncode=0, stdout="{'status': 'built'}"))])
+sc.ssh_run = fake
+sc.run_content_lifecycle_actions(
+    "host1", "mgrctl exec --",
+    {"uyuni_content_lifecycle_actions": [{"project": "proj", "action": "build", "wait": True, "wait_env": "dev"}]},
+    "uyuni")
+check("run_content_lifecycle_actions: 'wait' polls the named environment",
+      any("lookupEnvironment" in c[1] for c in fake.calls))
+
+died = False
+try:
+    sc.run_content_lifecycle_actions(
+        "host1", "mgrctl exec --",
+        {"uyuni_content_lifecycle_actions": [{"project": "proj", "action": "build", "wait": True}]},
+        "uyuni")
+except SystemExit:
+    died = True
+check("run_content_lifecycle_actions: 'wait' without 'wait_env' dies", died)
+
+# -- scap_scan_exists / ensure_scap_scan -------------------------------------
+fake = FakeSSH(responses=[("scap_listxccdfscans",
+                            FakeResult(returncode=0, stdout="path: /usr/share/openscap/x.xml"))])
+sc.ssh_run = fake
+check("scap_scan_exists: found",
+      sc.scap_scan_exists("host1", "mgrctl exec --", "web1", "/usr/share/openscap/x.xml") is True)
+check("scap_scan_exists: not found",
+      sc.scap_scan_exists("host1", "mgrctl exec --", "web1", "/other/path.xml") is False)
+
+fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout="/usr/share/x.xml"))])
+sc.ssh_run = fake
+sc.ensure_scap_scan("host1", "mgrctl exec --", "web1", "/usr/share/x.xml", profile="Web-Default")
+check("ensure_scap_scan: already scanned -> no scap_schedulexccdfscan call",
+      len(fake.calls) == 1 and "scap_schedulexccdfscan" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_scap_scan("host1", "mgrctl exec --", "web1", "/usr/share/x.xml", profile="Web-Default")
+sched_cmd = next((c[1] for c in fake.calls if "scap_schedulexccdfscan" in c[1]), "")
+check("ensure_scap_scan: schedule command carries path/profile-options/system",
+      "scap_schedulexccdfscan /usr/share/x.xml" in sched_cmd
+      and "profile Web-Default" in sched_cmd and "web1" in sched_cmd)
+
+fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_scap_scan("host1", "mgrctl exec --", "web1", "/usr/share/x.xml")
+sched_cmd = next((c[1] for c in fake.calls if "scap_schedulexccdfscan" in c[1]), "")
+check("ensure_scap_scan: no profile -> empty xccdf_options argument",
+      "scap_schedulexccdfscan /usr/share/x.xml '' web1" in unwrap(sched_cmd))
+
+fake = FakeSSH(responses=[
+    ("scap_listxccdfscans", FakeResult(returncode=0, stdout="")),
+    ("scap_schedulexccdfscan", FakeResult(returncode=1, stderr="no such system")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_scap_scan("host1", "mgrctl exec --", "bogus-system", "/usr/share/x.xml")
+except SystemExit:
+    died = True
+check("ensure_scap_scan: schedule failure dies", died)
+
+# -- list_scap_scans / scap_scan_details / scap_scan_rule_results -----------
+fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout="scan list text"))])
+sc.ssh_run = fake
+check("list_scap_scans: returns raw text",
+      sc.list_scap_scans("host1", "mgrctl exec --", "web1") == "scan list text")
+
+fake = FakeSSH(responses=[("scap_getxccdfscandetails", FakeResult(returncode=0, stdout="details text"))])
+sc.ssh_run = fake
+check("scap_scan_details: returns raw text",
+      sc.scap_scan_details("host1", "mgrctl exec --", 42) == "details text")
+
+fake = FakeSSH(responses=[("scap_getxccdfscanruleresults", FakeResult(returncode=0, stdout="rule results text"))])
+sc.ssh_run = fake
+check("scap_scan_rule_results: returns raw text",
+      sc.scap_scan_rule_results("host1", "mgrctl exec --", 42) == "rule results text")
+
+# -- run_scap_scans: orchestration, no-op, validation ------------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.run_scap_scans("host1", "mgrctl exec --", {}, "uyuni")
+check("run_scap_scans: no-op when field unset", len(fake.calls) == 0)
+
+fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+cfg = {"uyuni_scap_scans": [
+    {"system": "web1", "xccdf_path": "/usr/share/x.xml", "profile": "Web-Default"},
+    {"system": "web2", "xccdf_path": "/usr/share/y.xml"},
+]}
+sc.run_scap_scans("host1", "mgrctl exec --", cfg, "uyuni")
+cmds = [c[1] for c in fake.calls]
+check("run_scap_scans: schedules every entry",
+      sum(1 for c in cmds if "scap_schedulexccdfscan" in c) == 2)
+
+died = False
+try:
+    sc.run_scap_scans("host1", "mgrctl exec --", {"uyuni_scap_scans": [{"system": "web1"}]}, "uyuni")
+except SystemExit:
+    died = True
+check("run_scap_scans: entry missing 'xccdf_path' dies", died)
+
+# -- list_systems_by_patch_status (CVE/OVAL audit) ---------------------------
+fake = FakeSSH(responses=[("audit.listSystemsByPatchStatus",
+                            FakeResult(returncode=0, stdout="[{'system_id': 1, 'patch_status': 'PATCHED'}]"))])
+sc.ssh_run = fake
+out = sc.list_systems_by_patch_status("host1", "mgrctl exec --", "CVE-2024-1234")
+check("list_systems_by_patch_status: returns raw output via the api passthrough", "PATCHED" in out)
+call_cmd = fake.calls[0][1]
+check("list_systems_by_patch_status: JSON args carry just the CVE id when no status filter given",
+      '"CVE-2024-1234"' in unwrap(call_cmd) and "audit.listSystemsByPatchStatus" in call_cmd)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.list_systems_by_patch_status("host1", "mgrctl exec --", "CVE-2024-1234",
+                                 patch_status_labels=["PATCHED", "NOT_AFFECTED"])
+check("list_systems_by_patch_status: passes patch_status_labels as a second JSON arg",
+      '["CVE-2024-1234", ["PATCHED", "NOT_AFFECTED"]]' in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("audit.listSystemsByPatchStatus", FakeResult(returncode=1, stderr="invalid CVE"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.list_systems_by_patch_status("host1", "mgrctl exec --", "bogus")
+except SystemExit:
+    died = True
+check("list_systems_by_patch_status: server-side failure dies", died)
+
+# -- activation_key_groups / ensure_activation_key_groups --------------------
+fake = FakeSSH(responses=[("activationkey_listgroups", FakeResult(returncode=0, stdout="dev-systems\nqa-systems\n"))])
+sc.ssh_run = fake
+check("activation_key_groups: returns the current set",
+      sc.activation_key_groups("host1", "mgrctl exec --", "1-mykey") == {"dev-systems", "qa-systems"})
+
+fake = FakeSSH(responses=[("activationkey_listgroups", FakeResult(returncode=1, stderr="no such key"))])
+sc.ssh_run = fake
+check("activation_key_groups: returns empty set on failure",
+      sc.activation_key_groups("host1", "mgrctl exec --", "bogus") == set())
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_activation_key_groups("host1", "mgrctl exec --", {}, "uyuni")
+sc.ensure_activation_key_groups("host1", "mgrctl exec --", {"uyuni_activation_key": "1-mykey"}, "uyuni")
+check("ensure_activation_key_groups: no-op when key or groups field is unset", len(fake.calls) == 0)
+
+fake = FakeSSH(responses=[("activationkey_listgroups", FakeResult(returncode=0, stdout="dev-systems\n"))])
+sc.ssh_run = fake
+sc.ensure_activation_key_groups(
+    "host1", "mgrctl exec --",
+    {"uyuni_activation_key": "1-mykey", "uyuni_activation_key_groups": "dev-systems"}, "uyuni")
+check("ensure_activation_key_groups: all already linked -> no addgroups call",
+      len(fake.calls) == 2 and not any("activationkey_addgroups" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("activationkey_listgroups", FakeResult(returncode=0, stdout="dev-systems\n"))])
+sc.ssh_run = fake
+sc.ensure_activation_key_groups(
+    "host1", "kubectl exec -n ns deploy/uyuni -c uyuni --",
+    {"smlm_activation_key": "1-mykey", "smlm_activation_key_groups": "dev-systems qa-systems"}, "smlm")
+add_cmd = next((c[1] for c in fake.calls if "activationkey_addgroups" in c[1]), "")
+check("ensure_activation_key_groups: links only the missing groups",
+      "activationkey_addgroups 1-mykey qa-systems" in add_cmd)
+
+fake = FakeSSH(responses=[
+    ("activationkey_listgroups", FakeResult(returncode=0, stdout="")),
+    ("activationkey_addgroups", FakeResult(returncode=1, stderr="no such group")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_activation_key_groups(
+        "host1", "mgrctl exec --",
+        {"uyuni_activation_key": "1-mykey", "uyuni_activation_key_groups": "bogus-group"}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_activation_key_groups: addgroups failure dies", died)
+
+# -- ensure_activation_keys: list orchestration reuses per-key functions -----
+fake = FakeSSH(responses=[
+    ("activationkey_listgroups", FakeResult(returncode=0, stdout="")),
+    ("activationkey_listpackages", FakeResult(returncode=0, stdout="")),
+    ("activationkey_list", FakeResult(returncode=0, stdout="")),
+])
+sc.ssh_run = fake
+cfg = {"smlm_activation_keys": [
+    {"smlm_activation_key": "1-dev-key", "smlm_activation_key_base_channel": "base-ch",
+     "smlm_activation_key_packages": "nodejs", "smlm_activation_key_groups": "dev-systems"},
+]}
+sc.ensure_activation_keys("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("ensure_activation_keys: creates the key",
+      any("activationkey_create" in c and "1-dev-key" in c for c in cmds))
+check("ensure_activation_keys: adds its packages",
+      any("activationkey_addpackages 1-dev-key nodejs" in c for c in cmds))
+check("ensure_activation_keys: links its groups",
+      any("activationkey_addgroups 1-dev-key dev-systems" in c for c in cmds))
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_activation_keys("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_activation_keys: no-op when field unset", len(fake.calls) == 0)
+
+# -- group_exists / ensure_system_group --------------------------------------
+fake = FakeSSH(responses=[("group_list", FakeResult(returncode=0, stdout="dev-systems\nqa-systems\n"))])
+sc.ssh_run = fake
+check("group_exists: found", sc.group_exists("host1", "mgrctl exec --", "dev-systems") is True)
+check("group_exists: not found", sc.group_exists("host1", "mgrctl exec --", "prod-systems") is False)
+
+fake = FakeSSH(responses=[("group_list", FakeResult(returncode=0, stdout="dev-systems\n"))])
+sc.ssh_run = fake
+sc.ensure_system_group("host1", "mgrctl exec --", "dev-systems", "Dev systems")
+check("ensure_system_group: existing group -> no group_create call",
+      len(fake.calls) == 1 and "group_create" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("group_list", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_system_group("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "dev-systems", "Dev systems")
+create_cmd = next((c[1] for c in fake.calls if "group_create" in c[1]), "")
+check("ensure_system_group: create command carries name/description",
+      "group_create dev-systems 'Dev systems'" in create_cmd)
+
+fake = FakeSSH(responses=[("group_list", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_system_group("host1", "mgrctl exec --", "dev-systems")
+create_cmd = next((c[1] for c in fake.calls if "group_create" in c[1]), "")
+check("ensure_system_group: defaults description to the name when unset",
+      "group_create dev-systems dev-systems" in create_cmd)
+
+fake = FakeSSH(responses=[
+    ("group_list", FakeResult(returncode=0, stdout="")),
+    ("group_create", FakeResult(returncode=1, stderr="bad name")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_system_group("host1", "mgrctl exec --", "bad name")
+except SystemExit:
+    died = True
+check("ensure_system_group: create failure dies", died)
+
+# -- list_group_systems / group_has_system / ensure_group_systems -----------
+fake = FakeSSH(responses=[("group_listsystems", FakeResult(returncode=0, stdout="dev1.lab\ndev2.lab\n"))])
+sc.ssh_run = fake
+check("list_group_systems: returns raw text",
+      sc.list_group_systems("host1", "mgrctl exec --", "dev-systems") == "dev1.lab\ndev2.lab\n")
+check("group_has_system: found",
+      sc.group_has_system("host1", "mgrctl exec --", "dev-systems", "dev1.lab") is True)
+check("group_has_system: not found",
+      sc.group_has_system("host1", "mgrctl exec --", "dev-systems", "prod1.lab") is False)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_group_systems("host1", "mgrctl exec --", "dev-systems", [])
+check("ensure_group_systems: no-op on empty systems list", len(fake.calls) == 0)
+
+fake = FakeSSH(responses=[("group_listsystems", FakeResult(returncode=0, stdout="dev1.lab\n"))])
+sc.ssh_run = fake
+sc.ensure_group_systems("host1", "mgrctl exec --", "dev-systems", ["dev1.lab"])
+check("ensure_group_systems: all already members -> no addsystems call",
+      len(fake.calls) == 1 and "group_addsystems" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("group_listsystems", FakeResult(returncode=0, stdout="dev1.lab\n"))])
+sc.ssh_run = fake
+sc.ensure_group_systems("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --",
+                         "dev-systems", ["dev1.lab", "dev2.lab"])
+add_cmd = next((c[1] for c in fake.calls if "group_addsystems" in c[1]), "")
+check("ensure_group_systems: adds only the missing systems",
+      "group_addsystems dev-systems dev2.lab" in add_cmd)
+
+fake = FakeSSH(responses=[
+    ("group_listsystems", FakeResult(returncode=0, stdout="")),
+    ("group_addsystems", FakeResult(returncode=1, stderr="no such system")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_group_systems("host1", "mgrctl exec --", "dev-systems", ["bogus.lab"])
+except SystemExit:
+    died = True
+check("ensure_group_systems: addsystems failure dies", died)
+
+# -- ensure_system_groups: orchestration, no-op, validation ------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_system_groups("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_system_groups: no-op when field unset", len(fake.calls) == 0)
+
+fake = FakeSSH(responses=[
+    ("group_listsystems", FakeResult(returncode=0, stdout="")),
+    ("group_list", FakeResult(returncode=0, stdout="")),
+])
+sc.ssh_run = fake
+cfg = {"uyuni_system_groups": [{"name": "dev-systems", "description": "Dev", "systems": ["dev1.lab"]}]}
+sc.ensure_system_groups("host1", "mgrctl exec --", cfg, "uyuni")
+cmds = [c[1] for c in fake.calls]
+check("ensure_system_groups: creates the group and adds its systems",
+      any("group_create dev-systems Dev" in c for c in cmds)
+      and any("group_addsystems dev-systems dev1.lab" in c for c in cmds))
+
+died = False
+try:
+    sc.ensure_system_groups("host1", "mgrctl exec --", {"uyuni_system_groups": [{"description": "x"}]}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_system_groups: entry missing 'name' dies", died)
+
+# -- custom_info_key_exists / ensure_custom_info_key / ensure_custom_info_keys
+fake = FakeSSH(responses=[("custominfo_listkeys", FakeResult(returncode=0, stdout="tier\nowner\n"))])
+sc.ssh_run = fake
+check("custom_info_key_exists: found", sc.custom_info_key_exists("host1", "mgrctl exec --", "tier") is True)
+check("custom_info_key_exists: not found", sc.custom_info_key_exists("host1", "mgrctl exec --", "region") is False)
+
+fake = FakeSSH(responses=[("custominfo_listkeys", FakeResult(returncode=0, stdout="tier\n"))])
+sc.ssh_run = fake
+sc.ensure_custom_info_key("host1", "mgrctl exec --", "tier", "Environment tier")
+check("ensure_custom_info_key: existing key -> no createkey call",
+      len(fake.calls) == 1 and "custominfo_createkey" not in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("custominfo_listkeys", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_custom_info_key("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "tier", "Environment tier")
+create_cmd = next((c[1] for c in fake.calls if "custominfo_createkey" in c[1]), "")
+check("ensure_custom_info_key: create command carries name/description",
+      "custominfo_createkey tier 'Environment tier'" in create_cmd)
+
+fake = FakeSSH(responses=[
+    ("custominfo_listkeys", FakeResult(returncode=0, stdout="")),
+    ("custominfo_createkey", FakeResult(returncode=1, stderr="bad key")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_custom_info_key("host1", "mgrctl exec --", "tier")
+except SystemExit:
+    died = True
+check("ensure_custom_info_key: create failure dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_custom_info_keys("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_custom_info_keys: no-op when field unset", len(fake.calls) == 0)
+
+fake = FakeSSH(responses=[("custominfo_listkeys", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_custom_info_keys("host1", "mgrctl exec --", {"uyuni_custom_info_keys": [{"name": "tier"}]}, "uyuni")
+check("ensure_custom_info_keys: creates the key", any("custominfo_createkey" in c[1] for c in fake.calls))
+
+died = False
+try:
+    sc.ensure_custom_info_keys("host1", "mgrctl exec --", {"uyuni_custom_info_keys": [{"description": "x"}]},
+                                "uyuni")
+except SystemExit:
+    died = True
+check("ensure_custom_info_keys: entry missing 'name' dies", died)
+
+# -- ensure_system_tag / ensure_system_tags ----------------------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_system_tag("host1", "mgrctl exec --", "dev1.lab", "tier", "dev")
+check("ensure_system_tag: calls system_addcustomvalue with key/value/system in order",
+      "system_addcustomvalue tier dev dev1.lab" in fake.calls[0][1])
+
+fake = FakeSSH(responses=[("system_addcustomvalue", FakeResult(returncode=1, stderr="no such key"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_system_tag("host1", "mgrctl exec --", "dev1.lab", "bogus", "x")
+except SystemExit:
+    died = True
+check("ensure_system_tag: failure dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_system_tags("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_system_tags: no-op when field unset", len(fake.calls) == 0)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+cfg = {"uyuni_system_tags": [{"system": "dev1.lab", "tags": {"tier": "dev", "owner": "team-a"}}]}
+sc.ensure_system_tags("host1", "mgrctl exec --", cfg, "uyuni")
+cmds = [c[1] for c in fake.calls]
+check("ensure_system_tags: sets every tag on the system",
+      any("system_addcustomvalue tier dev dev1.lab" in c for c in cmds)
+      and any("system_addcustomvalue owner team-a dev1.lab" in c for c in cmds))
+
+died = False
+try:
+    sc.ensure_system_tags("host1", "mgrctl exec --", {"uyuni_system_tags": [{"system": "dev1.lab"}]}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_system_tags: entry missing 'tags' dies", died)
+
+# -- group_id_for -------------------------------------------------------------
+fake = FakeSSH(responses=[("group_details", FakeResult(returncode=0, stdout="ID: 42\nName: dev-systems\n"))])
+sc.ssh_run = fake
+check("group_id_for: parses a numeric id from group_details output",
+      sc.group_id_for("host1", "mgrctl exec --", "dev-systems") == 42)
+
+fake = FakeSSH(responses=[("group_details", FakeResult(returncode=0, stdout="Name: dev-systems\n"))])
+sc.ssh_run = fake
+check("group_id_for: returns None when no id could be parsed",
+      sc.group_id_for("host1", "mgrctl exec --", "dev-systems") is None)
+
+fake = FakeSSH(responses=[("group_details", FakeResult(returncode=1, stderr="no such group"))])
+sc.ssh_run = fake
+check("group_id_for: returns None on failure", sc.group_id_for("host1", "mgrctl exec --", "bogus") is None)
+
+# -- ensure_recurring_schedule -------------------------------------------------
+died = False
+try:
+    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", schedule_type="bogus")
+except SystemExit:
+    died = True
+check("ensure_recurring_schedule: invalid schedule_type dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2")
+cmd = fake.calls[0][1]
+check("ensure_recurring_schedule: highstate uses recurring.highstate.create with entity/cron",
+      # _api_call passes a single arg (the props dict) as its bare JSON
+      # value, not wrapped in a one-element array — see its docstring.
+      '{"entity_type": "group", "entity_id": 42, "cron_expr": "0 2 * * 2"}' in unwrap(cmd)
+      and "recurring.highstate.create" in cmd)
+
+died = False
+try:
+    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", schedule_type="custom")
+except SystemExit:
+    died = True
+check("ensure_recurring_schedule: custom type without 'states' dies", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_recurring_schedule("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "group", 42, "0 2 * * 2",
+                              schedule_type="custom", states=["patch.apply"], extra={"name": "dev-patch"})
+cmd = fake.calls[0][1]
+check("ensure_recurring_schedule: custom includes states and merges 'extra'",
+      '"states": ["patch.apply"]' in cmd and '"name": "dev-patch"' in cmd
+      and cmd.endswith("recurring.custom.create"))
+
+fake = FakeSSH(responses=[("recurring.highstate.create", FakeResult(returncode=1, stderr="bad entity"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 999, "0 2 * * 2")
+except SystemExit:
+    died = True
+check("ensure_recurring_schedule: server-side failure dies", died)
+
+# -- ensure_environments -------------------------------------------------------
+fake = FakeSSH(responses=[
+    ("activationkey_listgroups", FakeResult(returncode=0, stdout="")),
+    ("group_listsystems", FakeResult(returncode=0, stdout="dev1.lab\ndev2.lab\n")),
+])
+sc.ssh_run = fake
+cfg = {"smlm_environments": [{
+    "label": "dev", "system_group": "dev-systems", "activation_key": "1-dev-key",
+    "custom_info_tags": {"tier": "dev"},
+}]}
+sc.ensure_environments("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", cfg, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("ensure_environments: links the activation key to the system group",
+      any("activationkey_addgroups 1-dev-key dev-systems" in c for c in cmds))
+check("ensure_environments: tags every system currently in the group",
+      any("system_addcustomvalue tier dev dev1.lab" in c for c in cmds)
+      and any("system_addcustomvalue tier dev dev2.lab" in c for c in cmds))
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_environments("host1", "mgrctl exec --", {}, "uyuni")
+check("ensure_environments: no-op when field unset", len(fake.calls) == 0)
+
+died = False
+try:
+    sc.ensure_environments("host1", "mgrctl exec --", {"uyuni_environments": [{"system_group": "x"}]}, "uyuni")
+except SystemExit:
+    died = True
+check("ensure_environments: entry missing 'label' dies", died)
+
+# -- run_environment_schedules -------------------------------------------------
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.run_environment_schedules("host1", "mgrctl exec --", {}, "uyuni")
+check("run_environment_schedules: no-op when field unset", len(fake.calls) == 0)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+cfg = {"uyuni_environments": [{"label": "dev", "recurring_schedule": {"cron": "0 2 * * 2", "group_id": 42}}]}
+sc.run_environment_schedules("host1", "mgrctl exec --", cfg, "uyuni")
+check("run_environment_schedules: uses an explicit group_id without resolving a name",
+      any("recurring.highstate.create" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("group_details", FakeResult(returncode=0, stdout="ID: 7\n"))])
+sc.ssh_run = fake
+cfg = {"uyuni_environments": [{"label": "qa", "system_group": "qa-systems",
+                                "recurring_schedule": {"cron": "0 3 * * 3"}}]}
+sc.run_environment_schedules("host1", "mgrctl exec --", cfg, "uyuni")
+cmds = [c[1] for c in fake.calls]
+check("run_environment_schedules: resolves group_id from system_group when not given explicitly",
+      any('"entity_id": 7' in c for c in cmds))
+
+fake = FakeSSH(responses=[("group_details", FakeResult(returncode=1, stderr="no such group"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.run_environment_schedules(
+        "host1", "mgrctl exec --",
+        {"uyuni_environments": [{"label": "qa", "system_group": "bogus",
+                                  "recurring_schedule": {"cron": "0 3 * * 3"}}]}, "uyuni")
+except SystemExit:
+    died = True
+check("run_environment_schedules: dies when group_id can't be resolved and none was given", died)
+
+died = False
+try:
+    sc.run_environment_schedules(
+        "host1", "mgrctl exec --",
+        {"uyuni_environments": [{"label": "qa", "recurring_schedule": {"cron": "0 3 * * 3"}}]}, "uyuni")
+except SystemExit:
+    died = True
+check("run_environment_schedules: dies when neither system_group nor group_id is given", died)
+
+died = False
+try:
+    sc.run_environment_schedules(
+        "host1", "mgrctl exec --",
+        {"uyuni_environments": [{"label": "qa", "recurring_schedule": {"group_id": 1}}]}, "uyuni")
+except SystemExit:
+    died = True
+check("run_environment_schedules: dies when 'cron' is missing", died)
+
+# -- Client registration: saltkey_pending/accepted/accept -------------------
+fake = FakeSSH(responses=[("saltkey.pendingList", FakeResult(stdout="['client1.mydemo.lab']"))])
+sc.ssh_run = fake
+check("saltkey_pending: returns the raw pendingList output", "client1.mydemo.lab" in sc.saltkey_pending("host1", "mgrctl exec --"))
+
+fake = FakeSSH(responses=[("saltkey.acceptedList", FakeResult(stdout="['client1.mydemo.lab']"))])
+sc.ssh_run = fake
+check("saltkey_accepted: found", sc.saltkey_accepted("host1", "mgrctl exec --", "client1.mydemo.lab") is True)
+check("saltkey_accepted: not found", sc.saltkey_accepted("host1", "mgrctl exec --", "client2.mydemo.lab") is False)
+
+fake = FakeSSH(responses=[("saltkey.accept", FakeResult(returncode=0))])
+sc.ssh_run = fake
+sc.saltkey_accept("host1", "mgrctl exec --", "client1.mydemo.lab")
+check("saltkey_accept: calls saltkey.accept with the minion id",
+      any("saltkey.accept" in c and "client1.mydemo.lab" in c for h, c, kw in fake.calls))
+
+fake = FakeSSH(responses=[("saltkey.accept", FakeResult(returncode=1, stderr="no such key"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.saltkey_accept("host1", "mgrctl exec --", "client1.mydemo.lab")
+except SystemExit:
+    died = True
+check("saltkey_accept: dies on failure", died)
+
+
+# -- ensure_client_registered -------------------------------------------------
+sc.time.sleep = lambda s: None  # never actually wait in tests
+
+# Already accepted: pure no-op, no bootstrap curl issued.
+fake = FakeSSH(responses=[("saltkey.acceptedList", FakeResult(stdout="['client1.mydemo.lab']"))])
+sc.ssh_run = fake
+sc.ensure_client_registered("srv1", "mgrctl exec --", "client1.mydemo.lab", "uyuni.mydemo.lab", "1-key")
+check("ensure_client_registered: already-accepted client is a pure no-op", len(fake.calls) == 1)
+
+# Not yet registered: bootstraps the client, then accepts once the key goes pending.
+_poll_count = {"n": 0}
+
+
+def _responder(hostname, cmd, **kwargs):
+    if "saltkey.acceptedList" in cmd:
+        return FakeResult(stdout="[]")
+    if "saltkey.pendingList" in cmd:
+        _poll_count["n"] += 1
+        # not pending on the first poll, pending from the second poll onward
+        return FakeResult(stdout="['client1.mydemo.lab']" if _poll_count["n"] >= 2 else "[]")
+    if "saltkey.accept" in cmd:
+        return FakeResult(returncode=0)
+    if "curl -Sks" in cmd:
+        return FakeResult(returncode=0)
+    return FakeResult()
+
+
+sc.ssh_run = _responder
+calls_before = _poll_count["n"]
+sc.ensure_client_registered("srv1", "mgrctl exec --", "client1.mydemo.lab", "uyuni.mydemo.lab", "1-key",
+                             retry_limit=5, retry_interval=0)
+check("ensure_client_registered: polled pendingList more than once before accepting",
+      _poll_count["n"] > calls_before + 1)
+
+# Verify the bootstrap command shape by capturing calls with a recording wrapper.
+bootstrap_calls = []
+
+
+def _recording_responder(hostname, cmd, **kwargs):
+    bootstrap_calls.append((hostname, cmd, kwargs))
+    return _responder(hostname, cmd, **kwargs)
+
+
+_poll_count["n"] = 0
+sc.ssh_run = _recording_responder
+sc.ensure_client_registered("srv1", "mgrctl exec --", "client1.mydemo.lab", "uyuni.mydemo.lab", "1-key",
+                             reactivation_key="react-1", retry_limit=5, retry_interval=0)
+bootstrap_cmd = next((c for h, c, kw in bootstrap_calls if "curl -Sks" in c), None)
+check("ensure_client_registered: bootstrap runs against the CLIENT host, not the server",
+      any(h == "client1.mydemo.lab" for h, c, kw in bootstrap_calls if "curl -Sks" in c))
+check("ensure_client_registered: bootstrap URL points at the per-key generated script",
+      bootstrap_cmd is not None and "https://uyuni.mydemo.lab/pub/bootstrap/1-key.sh" in bootstrap_cmd)
+
+check("ensure_client_registered: generates the bootstrap script via mgr-bootstrap before curling it",
+      any("mgr-bootstrap" in c and "--activation-keys=1-key" in c and "--script=1-key.sh" in c
+          for h, c, kw in bootstrap_calls))
+check("ensure_client_registered: ACTIVATION_KEYS is set on the bootstrap command",
+      bootstrap_cmd is not None and "ACTIVATION_KEYS=1-key" in bootstrap_cmd)
+check("ensure_client_registered: REACTIVATION_KEY is passed through when given",
+      bootstrap_cmd is not None and "REACTIVATION_KEY=react-1" in bootstrap_cmd)
+
+# Bootstrap script itself fails -> dies immediately, no polling.
+def _bootstrap_fails(hostname, cmd, **kwargs):
+    if "saltkey.acceptedList" in cmd:
+        return FakeResult(stdout="[]")
+    if "curl -Sks" in cmd:
+        return FakeResult(returncode=1)
+    return FakeResult()
+
+
+sc.ssh_run = _bootstrap_fails
+died = False
+try:
+    sc.ensure_client_registered("srv1", "mgrctl exec --", "client1.mydemo.lab", "uyuni.mydemo.lab", "1-key")
+except SystemExit:
+    died = True
+check("ensure_client_registered: dies immediately if the bootstrap script itself fails", died)
+
+# Key never goes pending -> dies with a clear message after exhausting retries.
+def _never_pending(hostname, cmd, **kwargs):
+    if "saltkey.acceptedList" in cmd or "saltkey.pendingList" in cmd:
+        return FakeResult(stdout="[]")
+    return FakeResult(returncode=0)
+
+
+sc.ssh_run = _never_pending
+died = False
+try:
+    sc.ensure_client_registered("srv1", "mgrctl exec --", "client1.mydemo.lab", "uyuni.mydemo.lab", "1-key",
+                                 retry_limit=3, retry_interval=0)
+except SystemExit:
+    died = True
+check("ensure_client_registered: dies if the key never appears as pending", died)
+
+
+if failures:
+    print("{} check(s) failed".format(len(failures)))
+    sys.exit(1)
+print("all spacecmd_common checks passed")

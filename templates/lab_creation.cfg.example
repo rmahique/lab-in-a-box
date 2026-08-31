@@ -67,5 +67,47 @@ mysource='automation.mydemo.lab'
 ## This is the location of the source images used to build the VMs
 #ISO_LOC='/var/lib/libvirt/images/sources'
 
+## Required only if some node/cluster uses common.backend or nodes.<x>.backend
+## = "harvester" — path to a kubeconfig for an already-running Harvester
+## cluster this tool will provision guest VMs on instead of a KVM
+## hypervisor. HarvesterBackend v1 only supports config_method="cloud-init"
+## and does not auto-import VM images — pre-import a VirtualMachineImage
+## named after ISO_IMAGE in Harvester before deploying. Live-tested
+## against real Harvester clusters (ISO- and PXE-installed) — see
+## libs/backends.py's HarvesterBackend docstring for exactly what was
+## verified and what wasn't.
+#HARVESTER_KUBECONFIG='/etc/lab-harvester/kubeconfig'
+
+## Harvester namespace guest VMs are created in (default: "default")
+#HARVESTER_NAMESPACE='default'
+
+## Pre-existing Multus NetworkAttachmentDefinition ("<namespace>/<name>", or
+## a bare name for one in HARVESTER_NAMESPACE) guest VMs attach to instead
+## of KubeVirt's default pod network. Required for a real LAN-routable IP
+## (matching this project's DNS/SSH conventions) — omitting it keeps VMs on
+## the pod network, reachable only via kubectl/virtctl, never DNS/SSH.
+## HarvesterBackend does not create the underlying Harvester VLAN network
+## (ClusterNetwork/VlanConfig/NetworkAttachmentDefinition) itself — that's a
+## one-time, cluster-level physical-network decision, set it up in Harvester
+## first (same "pre-configure it yourself" stance as the VM image above).
+#HARVESTER_NETWORK='default/mgmt-vlan'
+
+## MCP (Model Context Protocol) endpoint — lets an MCP client (an LLM agent)
+## drive lab-in-a-box. Runs as its own root-owned service, separate from the
+## webui. Off (read-only tools only) unless MCP_ALLOW_MUTATIONS is set.
+#MCP_PORT=8843
+#MCP_BIND=0.0.0.0
+
+## Set to "true" to let the MCP endpoint's deploy_lab/rebuild_lab/
+## destroy_lab/destroy_vm tools run real deploy/destroy operations. Every
+## call still requires an exact target-identifier "confirm" string — this
+## just controls whether those tools exist at all. Default: unset (false) —
+## the endpoint is read-only until you opt in.
+#MCP_ALLOW_MUTATIONS=false
+
+## Where every MCP tool call (accepted or rejected) gets logged, one JSON
+## object per line.
+#MCP_AUDIT_LOG=/var/log/lab-mcp/audit.log
+
 
 

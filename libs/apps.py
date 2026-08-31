@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# Part of lab-in-a-box — addon plugin-capability model.
+# Author/s: Raul Mahiques
+# License: GPLv3
+"""
+libs/apps.py — plugin capability registry for install_<addon> scripts.
+
+Every scripts/install_<addon>.py declares a module-level PLUGIN dict:
+
+    PLUGIN = {
+        "name": "mariadb",
+        "targets": ["container"],              # subset of "container"/"vm"/"baremetal"
+                                                 # (libs/targets.py — WHERE it may be placed)
+        "layers": ["kubernetes"],               # subset of libs/layers.py's LAYER_* — HOW it
+                                                 # can be installed; descriptive only, doesn't
+                                                 # gate validation the way "targets" does
+        "requires_kubernetes": ["rke2", "k3s"], # or None if not a container addon
+        "aux_services": [],                     # names from the (future) services registry
+    }
+
+load_plugin() imports the addon script as a module (without running its
+main()) and returns that dict, falling back to a conservative default for
+any addon script found in PATH that hasn't been given a PLUGIN yet — so an
+addon nobody has classified still validates exactly as before this model
+existed, rather than breaking.
+"""
+
+import importlib.util
+import os
+from importlib.machinery import SourceFileLoader
+import shutil
+import sys
+
+from lab_creation import die
+
+DEFAULT_PLUGIN = {
+    "name": None,
+    "targets": ["container"],
+    "layers": ["kubernetes"],
+    "requires_kubernetes": ["rke2", "k3s"],
+    "aux_services": [],
+}
+
+_cache = {}
+
+
+def load_plugin_from_path(path, name=None):
+    """
+    Return the PLUGIN dict for the addon script at `path` (an explicit
+    filesystem path, not a PATH lookup — see load_plugin() below for the
+    PATH-based variant every CLI call site actually uses). This is what a
+    dev-mode caller needs: scripts/install_<x>.py isn't on
+    $PATH in a repo checkout, so shutil.which()-based lookup can't find it,
+    which webui/lib/discovery.py otherwise runs into every time. Returns a
+    copy of DEFAULT_PLUGIN (with "name" filled in) if the file doesn't exist
+    or has no PLUGIN dict of its own — matches load_plugin()'s same
+    graceful fallback, including for a non-Python addon script (e.g.
+    install_ds389, still bash) that raises on import.
+    """
+    plugin = dict(DEFAULT_PLUGIN, name=name)
+    if not path or not os.path.isfile(str(path)):
+        return plugin
+    try:
+        # A deployed script has no .py suffix (install_automation_node_scripts.sh
+        # copies it to /usr/local/bin/install_<addon>), so
+        # spec_from_file_location can't infer a loader from the extension —
+        # an explicit SourceFileLoader is required, extension or not.
+        mod_name = "install_{}_plugin".format(name or os.path.basename(str(path)))
+        loader = SourceFileLoader(mod_name, str(path))
+        spec = importlib.util.spec_from_loader(mod_name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        found = getattr(mod, "PLUGIN", None)
+        if found:
+            plugin = found
+    except Exception:
+        # Any import-time failure (missing dependency, syntax error in an
+        # addon under development, a bash script that isn't valid Python at
+        # all — install_ds389 today — …) falls back to the default rather
+        # than breaking validation/orchestration/discovery over one script.
+        pass
+    return plugin
+
+
+def load_plugin(name):
+    """
+    Return the PLUGIN dict for addon `name` (looks up install_<name> in
+    PATH, same resolution setup_lab.py already uses via shutil.which). Thin
+    wrapper around load_plugin_from_path() — every CLI/orchestration call
+    site (validate_lab_definition, setup_lab.py) resolves addons via PATH,
+    so this is what they use; discovery.py uses load_plugin_from_path()
+    directly instead, since it already has the addon's real file path from
+    its own directory-scanning discovery.
+    """
+    if name in _cache:
+        return _cache[name]
+
+    exe = shutil.which("install_{}".format(name))
+    plugin = load_plugin_from_path(exe, name=name)
+    _cache[name] = plugin
+    return plugin
+
+
+def attach_capabilities(schema_dict, plugin_dict):
+    """
+    Merge an addon's PLUGIN capabilities into its --schema output (or any
+    other dict), as a "capabilities" key — the single place both
+    addon_common.py's --schema dispatch and webui/lib/discovery.py's
+    schema()/discover() build this from, so the CLI and the webui can never
+    disagree about the shape. Mutates and returns schema_dict.
+    """
+    schema_dict["capabilities"] = {
+        "targets": plugin_dict.get("targets") or [],
+        "layers": plugin_dict.get("layers") or [],
+        "requires_kubernetes": plugin_dict.get("requires_kubernetes"),
+        "aux_services": plugin_dict.get("aux_services") or [],
+    }
+    return schema_dict
+
+
+def supports(plugin, target_kind):
+    """True when plugin declares support for target_kind ("container"/"vm"/"baremetal")."""
+    return target_kind in (plugin.get("targets") or [])
+
+
+def requirement_issue(plugin, target_kind, clu_type=None):
+    """
+    Returns a human-readable problem string if placing `plugin` at
+    `target_kind` (and, for a container placement, on a kcluster of
+    `clu_type`) is invalid — or None when the placement is fine.
+
+    This is the non-raising half of check_requirements(), split out so
+    validate_lab_definition() can catalog the problem as one more preflight
+    [ERROR] alongside everything else, rather than depend on recovering a
+    message from a caught SystemExit (die() only prints its message to
+    stderr — the raised SystemExit itself carries no text, just an exit
+    code, so catching it can't recover what went wrong).
+    """
+    name = plugin.get("name") or "?"
+
+    if not supports(plugin, target_kind):
+        return "does not support target '{}' — supported: {}".format(
+            target_kind, ", ".join(plugin.get("targets") or []) or "none")
+
+    if target_kind == "container":
+        required = plugin.get("requires_kubernetes")
+        if required and clu_type not in required:
+            return "requires a Kubernetes distribution in {} — cluster is '{}'".format(required, clu_type)
+
+    return None
+
+
+def check_requirements(plugin, target_kind, clu_type=None):
+    """
+    die() with a clear message if placing `plugin` at `target_kind` (and, for
+    a container placement, on a kcluster of `clu_type`) is invalid. Returns
+    normally when the placement is fine. For orchestration call sites
+    (setup_lab.py) that want a hard stop; validate_lab_definition() uses
+    requirement_issue() directly instead so it can catalog the problem
+    rather than abort.
+    """
+    issue = requirement_issue(plugin, target_kind, clu_type=clu_type)
+    if issue:
+        die("Addon '{}' {}".format(plugin.get("name") or "?", issue))

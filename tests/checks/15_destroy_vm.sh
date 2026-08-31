@@ -1,0 +1,8 @@
+#!/bin/bash
+# Mocked unit tests for scripts/destroy_vm.py — single-VM
+# teardown orchestration. No live KVM host available; every lab_creation
+# call is monkeypatched. Independent container — see tests/run_tests.sh.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+python3 tests/checks/15_destroy_vm_test.py

@@ -11,6 +11,7 @@ Typical usage:
 # License: GPLv3
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -18,42 +19,149 @@ from pathlib import Path
 
 # ── Definition loading ────────────────────────────────────────────────────────
 
+class LabDefinition(dict):
+    """
+    A loaded lab definition. Behaves as a plain dict for every existing
+    read access (.get()/["..."]/.items()/json.dumps()/isinstance(x, dict) —
+    every one of the ~40 addons and every library function that reads a
+    definition keeps working completely unchanged), but also carries where
+    it came from and in what format, as plain instance attributes:
+
+        .source_path  — the file path it was loaded from
+        .fmt          — "json" or "yaml", whichever was actually used
+
+    These are attributes, not dict keys, so they never show up in
+    .items()/.keys()/iteration or get serialized by json.dumps()/
+    yaml.safe_dump() — the dict's own content is always exactly what was
+    on disk, nothing extra riding along in it.
+
+    The point: anything holding a `definition` already has everything it
+    needs to save a change back later (see save_definition() below) without
+    a separate path/format argument threaded through every function in the
+    call chain — logic that mutates a value (e.g. backends.py's MAC-
+    conflict resolution) shouldn't need to know or care where the file
+    lives or what format it's in; that's this object's job, not theirs.
+    """
+
+    def __init__(self, data, source_path, fmt):
+        super().__init__(data)
+        self.source_path = source_path
+        self.fmt = fmt
+
+
 def load_definition(path):
     """
-    Load a lab definition from a JSON or YAML file.
+    Load a lab definition from a JSON or YAML file. Dies (SystemExit) on any
+    parse failure — for the graceful, non-dying equivalent used by preflight/
+    --validate paths that need to fold a parse failure into their own issue
+    list, see try_load_definition() below (this function is a thin wrapper
+    around it).
 
-    Returns a dict. YAML input requires pyyaml (pip install pyyaml).
-    Falls back to YAML parsing if the file is not valid JSON.
+    Returns a LabDefinition (see above). YAML input requires pyyaml
+    (pip install pyyaml). Falls back to YAML parsing if the file is not
+    valid JSON.
+    """
+    definition, error = try_load_definition(path)
+    if error:
+        _die(error)
+    return definition
+
+
+def try_load_definition(path):
+    """
+    Format-detecting lab-definition parse that never dies: returns
+    (definition, error) where exactly one of the two is None/empty.
+    `definition`, when present, is a LabDefinition (see above) — it already
+    knows its own source path and format, so nothing downstream needs to
+    re-derive or re-pass either.
+
+    Detection mirrors load_definition(): a .yaml/.yml extension parses as
+    YAML directly; anything else is tried as JSON first, falling back to
+    YAML if that fails (so an extensionless or oddly-named file still works
+    either way). YAML parsing (including the fallback) requires pyyaml.
     """
     p = Path(path)
     if not p.exists():
-        _die("Lab definition file '{}' not found".format(path))
-
-    text = p.read_text()
-
-    if p.suffix.lower() in (".yaml", ".yml"):
-        return _load_yaml(text, path)
+        return None, "Lab definition file '{}' not found".format(path)
 
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        import warnings
-        warnings.warn("'{}' is not valid JSON — attempting YAML parse".format(path))
-        return _load_yaml(text, path)
+        text = p.read_text()
+    except OSError as e:
+        return None, "could not read '{}': {}".format(path, e)
 
+    is_yaml_ext = p.suffix.lower() in (".yaml", ".yml")
 
-def _load_yaml(text, path):
+    json_error = None
+    if not is_yaml_ext:
+        try:
+            return LabDefinition(json.loads(text), path, "json"), None
+        except json.JSONDecodeError as e:
+            json_error = e
+
     try:
         import yaml
     except ImportError:
-        _die(
-            "PyYAML is required for YAML definition files.\n"
-            "Install it with:  pip install pyyaml"
+        return None, (
+            "PyYAML is required to parse '{}' as YAML.\n"
+            "Install it with:  pip install pyyaml".format(path)
         )
-    data = yaml.safe_load(text)
+
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        if json_error is not None:
+            return None, (
+                "'{}' is not valid JSON ({}) or YAML ({})".format(path, json_error, e)
+            )
+        return None, "YAML syntax error in '{}': {}".format(path, e)
+
     if not isinstance(data, dict):
-        _die("'{}' does not contain a mapping at the top level".format(path))
-    return data
+        return None, "'{}' does not contain a mapping at the top level".format(path)
+
+    return LabDefinition(data, path, "yaml"), None
+
+
+def save_definition(definition):
+    """
+    Persist a change made to an in-memory `definition` (a LabDefinition, or
+    any dict-like object carrying .source_path/.fmt attributes in the same
+    shape). Returns the path actually written.
+
+    Deliberately does NOT overwrite .source_path itself: this project's
+    lab definitions are sometimes hand-edited (comments, specific
+    formatting), and a plain json.dumps()/yaml.safe_dump() round-trip would
+    silently discard all of that. Instead, writes to
+    "<source_path>.system_modified.<fmt>" — a clearly-named sibling file the
+    operator can review and merge back manually. The original file is never
+    touched.
+
+    This is the ONLY place a lab-definition-mutating change gets written to
+    disk — a caller that needs to persist something (e.g. backends.py's
+    MAC-conflict resolution, generating a new MAC) mutates the in-memory
+    `definition` directly and calls this; there is no re-reading of the
+    source file anywhere in that path, ever — the in-memory `definition` IS
+    the current, authoritative state.
+
+    Dies (SystemExit) if pyyaml is required and missing, same as
+    load_definition().
+    """
+    path = definition.source_path
+    fmt = definition.fmt
+    output_path = "{}.system_modified.{}".format(path, fmt)
+
+    if fmt == "yaml":
+        try:
+            import yaml
+        except ImportError:
+            _die(
+                "PyYAML is required to write '{}' as YAML.\n"
+                "Install it with:  pip install pyyaml".format(output_path)
+            )
+        Path(output_path).write_text(yaml.safe_dump(dict(definition), sort_keys=False))
+    else:
+        Path(output_path).write_text(json.dumps(dict(definition), indent=2))
+
+    return output_path
 
 
 # ── Config / defaults loading ─────────────────────────────────────────────────
@@ -83,6 +191,20 @@ def load_defaults(paths=None):
     return _load_shell_vars_file(paths or _DEFAULT_DEFAULTS_PATHS, "lab_creation.defaults")
 
 
+def load_shell_vars(path):
+    """
+    Parse an arbitrary simple-shell-variable config file at an exact path
+    (unlike load_config/load_defaults, which search a list of default
+    locations for a specific filename). Used for config files outside the
+    lab_creation.cfg/.defaults pair — e.g. setup_demo_server/lab.cfg.
+    Returns a dict. Raises SystemExit if the file doesn't exist.
+    """
+    p = Path(path)
+    if not p.exists():
+        _die("Configuration file '{}' not found".format(path))
+    return _parse_shell_vars(p.read_text())
+
+
 def _load_shell_vars_file(search_paths, name):
     for candidate in search_paths:
         p = Path(candidate)
@@ -91,10 +213,22 @@ def _load_shell_vars_file(search_paths, name):
     _die("Configuration file '{}' not found in: {}".format(name, ", ".join(search_paths)))
 
 
+_VAR_REF_RE = re.compile(r'\$\{(\w+)\}|\$(\w+)')
+
+
 def _parse_shell_vars(text):
     """
     Parse simple KEY=value or KEY="value" assignments from a bash config file.
     Skips comments, declare statements, arrays, and command substitutions.
+
+    Expands ${VAR}/$VAR references to previously-parsed keys in the same file
+    (sequential, like bash `source` — e.g. the real lab_creation.cfg.example
+    ships `VIRT_SRV="qemu+ssh://root@${REMOTE_HOST}/system?..."`, which relies
+    on REMOTE_HOST already having been assigned earlier in the same file).
+    Falls back to the process environment for anything not defined earlier in
+    the file, matching a sourced script's actual variable scope. An
+    unresolvable reference is left as-is rather than raising.
+
     Returns a dict.
     """
     result = {}
@@ -110,8 +244,29 @@ def _parse_shell_vars(text):
         key, raw = match.group(1), match.group(2).strip()
         if raw.startswith("(") or "$(" in raw or "`" in raw:
             continue
-        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'"):
-            raw = raw[1:-1]
+        if raw and raw[0] in ('"', "'"):
+            # Quoted value: the value ends at the matching closing quote —
+            # anything after that (e.g. a trailing " # comment") is not part
+            # of it. A naive "first char == last char" check breaks on lines
+            # like `KEY='value' # comment`, since the line's last character
+            # is then the comment's, not the closing quote.
+            quote = raw[0]
+            end = raw.find(quote, 1)
+            raw = raw[1:end] if end != -1 else raw[1:]
+        else:
+            # Unquoted: bash treats " #" (space then hash) as the start of a
+            # trailing comment.
+            comment_at = raw.find(" #")
+            if comment_at != -1:
+                raw = raw[:comment_at].rstrip()
+
+        def _expand(m):
+            name = m.group(1) or m.group(2)
+            if name in result:
+                return result[name]
+            return os.environ.get(name, m.group(0))
+
+        raw = _VAR_REF_RE.sub(_expand, raw)
         result[key] = raw
     return result
 

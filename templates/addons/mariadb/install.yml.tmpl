@@ -36,7 +36,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ${mariadb_name:-mariadb}
-  namespace: ${mariadb_ns:-insecure-apps}
+  namespace: ${mariadb_ns:-db}
 spec:
   clusterIP: None
   clusterIPs:
@@ -47,9 +47,9 @@ spec:
   ipFamilyPolicy: SingleStack
   ports:
     - name: ${mariadb_name:-mariadb}-port
-      port: ${mariadb_port:-5000}
+      port: ${mariadb_port:-3306}
       protocol: TCP
-      targetPort: ${mariadb_port:-5000}
+      targetPort: ${mariadb_port:-3306}
   selector:
     app: ${mariadb_name:-mariadb}
   sessionAffinity: None

@@ -20,7 +20,14 @@ const isField = (o) => o && typeof o === "object" && !Array.isArray(o) &&
   typeof o.name === "string" && typeof o.type === "string";
 
 // ---- state -----------------------------------------------------------------
-const state = { components: [], current: null, lab: {} };
+// commonDefaults: name -> live value typed into a `common.*` field on the base
+// topology form. setup_lab.py resolves a per-node field to the node's own
+// value if set, else falls back to `common`'s value, else the schema default
+// — so once a common field has a value, every other rendered field sharing
+// that name (node/kcluster instances, present and future) should show it as
+// their *effective* default instead of the schema's hardcoded one. Reset on
+// every fresh schema load (selectBase/selectComponent).
+const state = { components: [], current: null, lab: {}, commonDefaults: {} };
 
 // ---- tiny DOM helpers ------------------------------------------------------
 const $ = (s, r = document) => r.querySelector(s);
@@ -81,9 +88,68 @@ function renderCatalogue(filter) {
       li.appendChild(el("div", "ci-title", c.title));
       if (c.description) li.appendChild(el("div", "ci-desc", c.description));
       li.appendChild(el("div", "ci-meta", `${c.field_count} option${c.field_count === 1 ? "" : "s"}`));
+      if (c.layers && c.layers.length) {
+        const layers = el("div", "ci-layers");
+        c.layers.forEach((l) => layers.appendChild(el("span", "layer-badge layer-" + l, l)));
+        li.appendChild(layers);
+      }
       li.addEventListener("click", () => selectComponent(c.name, li));
       ul.appendChild(li);
     });
+}
+
+// ---- hypervisor status panel (read-only) ------------------------------------
+// Populated from the "status" action, which just reads a cached JSON
+// snapshot (webui/lib/discovery.py's status()) — the CGI never queries the
+// hypervisor itself. Any secret-shaped config value already arrives masked
+// as a fixed "********" from the server; this renders whatever it's given
+// verbatim, it never tries to unmask or judge anything.
+async function loadStatus() {
+  const body = $("#statusBody");
+  body.innerHTML = "";
+  try {
+    const s = await apiGet("status");
+    if (!s.available) {
+      body.appendChild(el("p", "muted",
+        "No hypervisor status snapshot yet — refresh_hypervisor_status.py hasn't run yet, or lab_creation.cfg isn't reachable."));
+      $("#statusFreshness").textContent = "";
+      return;
+    }
+    $("#statusFreshness").textContent = s.generated_at ? `as of ${s.generated_at}` : "";
+
+    const hosts = s.hosts || [];
+    if (hosts.length) {
+      const hostsBox = el("div", "status-hosts");
+      hosts.forEach((h) => {
+        const card = el("div", h.error ? "host-card host-error" : "host-card");
+        card.appendChild(el("div", "host-name", h.host));
+        if (h.error) {
+          card.appendChild(el("div", "host-error-msg", h.error));
+        } else {
+          card.appendChild(el("div", null, `${h.free_cpu} vCPU free`));
+          card.appendChild(el("div", null, `${h.free_mem_mb} MiB RAM free`));
+          card.appendChild(el("div", null, `${h.free_disk_mb} MiB disk free`));
+        }
+        hostsBox.appendChild(card);
+      });
+      body.appendChild(hostsBox);
+    }
+
+    const cfgBox = el("div", "status-config");
+    const chip = (k, v) => {
+      const c = el("span", "status-chip");
+      c.appendChild(el("span", "k", k + ": "));
+      c.appendChild(el("span", "v", String(v)));
+      return c;
+    };
+    Object.entries(s.config || {}).forEach(([k, v]) => cfgBox.appendChild(chip(k, v)));
+    cfgBox.appendChild(chip("images", (s.images || []).length));
+    body.appendChild(cfgBox);
+
+    if (s.error) body.appendChild(el("p", "host-error-msg", s.error));
+  } catch (e) {
+    body.appendChild(el("p", "muted", "Could not load hypervisor status: " + e.message));
+  }
 }
 
 // ---- schema form -----------------------------------------------------------
@@ -92,8 +158,15 @@ async function selectComponent(name, li) {
   if (li) li.classList.add("active");
   const schema = await apiGet("schema", { name });
   state.current = schema;
+  state.commonDefaults = {};
   $("#formTitle").textContent = schema.section || schema.component || name;
   $("#formDesc").textContent = schema.description || "";
+  const layersEl = $("#formLayers");
+  if (layersEl) {
+    layersEl.innerHTML = "";
+    const layers = (schema.capabilities && schema.capabilities.layers) || [];
+    layers.forEach((l) => layersEl.appendChild(el("span", "layer-badge layer-" + l, l)));
+  }
   $("#formEmpty").hidden = true;
   $("#addBtn").disabled = false;
   const form = $("#schemaForm");
@@ -106,6 +179,7 @@ async function selectBase(li) {
   if (li) li.classList.add("active");
   const schema = await apiGet("base");
   state.current = schema;
+  state.commonDefaults = {};
   $("#formTitle").textContent = "Lab topology";
   $("#formDesc").textContent = schema.description || "";
   $("#formEmpty").hidden = true;
@@ -141,7 +215,7 @@ function walk(node, parent, outPath) {
 }
 
 function fieldRow(field, outPath, repeatMode) {
-  const row = el("div", "field");
+  const row = el("div", field.required ? "field field-required" : "field field-optional");
   const label = el("label");
   label.appendChild(document.createTextNode(field.name));
   if (field.required) label.appendChild(el("span", "req", "*"));
@@ -149,31 +223,170 @@ function fieldRow(field, outPath, repeatMode) {
   row.appendChild(label);
   if (field.description) row.appendChild(el("div", "desc", field.description));
 
-  const def = field.default != null ? String(field.default) : "";
+  // A field with a fixed set of options (boolean, or an explicit `enum` list
+  // from the schema) gets a dropdown instead of free text, with whichever
+  // option matches the *effective* default (see applyFieldDefault) visually
+  // marked. `enum` entries may be plain strings or {value, label} objects,
+  // for cases (like an empty-string default) where the raw value alone isn't
+  // a readable label.
+  const options = field.type === "boolean" ? ["true", "false"]
+                : Array.isArray(field.enum) && field.enum.length ? field.enum
+                : null;
+
   let input;
-  switch (field.type) {
-    case "boolean":
-      input = el("select");
-      [["", "— unset —"], ["true", "true"], ["false", "false"]].forEach(([v, t]) => {
-        const o = el("option", null, t); o.value = v; input.appendChild(o);
-      });
-      input.value = ["true", "false"].includes(def) ? def : "";
-      break;
-    case "integer": case "port":
-      input = el("input"); input.type = "number"; input.placeholder = def; break;
-    case "password":
-      input = el("input"); input.type = "password"; input.placeholder = def ? "default set" : ""; break;
-    case "array":
-      input = el("input"); input.type = "text";
-      input.placeholder = def || "comma,separated,values"; break;
-    default:
-      input = el("input"); input.type = "text"; input.placeholder = def;
+  if (options) {
+    const optValue = (o) => (o && typeof o === "object") ? o.value : o;
+    const optLabel = (o) => (o && typeof o === "object") ? o.label : o;
+    input = el("select");
+    if (!options.some((o) => optValue(o) === "")) {
+      const blank = el("option", null, "— unset —");
+      blank.value = "";
+      blank.dataset.blank = "1";
+      input.appendChild(blank);
+    }
+    options.forEach((o) => {
+      const v = optValue(o);
+      const isObj = o && typeof o === "object";
+      const opt = el("option", null, optLabel(o));
+      opt.value = v;
+      opt.dataset.label = optLabel(o);
+      opt.dataset.fixedLabel = isObj ? "1" : "";   // objects carry their own label; never append "(default)"
+      input.appendChild(opt);
+    });
+    // Once the user has actually picked something, live common-default
+    // cascades must not silently switch their selection back — only the
+    // "(default)" marking/bolding keeps updating.
+    input.addEventListener("change", () => { input.dataset.userTouched = "1"; });
+  } else {
+    switch (field.type) {
+      case "integer": case "port": input = el("input"); input.type = "number"; break;
+      case "password": input = el("input"); input.type = "password"; break;
+      case "array": input = el("input"); input.type = "text"; break;
+      default: input = el("input"); input.type = "text";
+    }
   }
+  input._field = field;
+  applyFieldDefault(input, state.commonDefaults[field.name]);
+
   if (repeatMode) input.dataset.field = field.name;         // serialized per-instance
   else input.dataset.outpath = JSON.stringify(outPath.concat(field.name));
   input.dataset.ftype = field.type;
   row.appendChild(input);
+
+  // Fields under `common` feed their live value forward as the effective
+  // default for every other rendered field of the same name (nodes/kclusters
+  // instances, present and future) — see state.commonDefaults above.
+  if (!repeatMode && outPath[0] === "common") {
+    const cascade = () => {
+      const v = input.value;
+      if (v === "") delete state.commonDefaults[field.name];
+      else state.commonDefaults[field.name] = v;
+      applyLiveDefault(field.name);
+    };
+    input.addEventListener("input", cascade);
+    input.addEventListener("change", cascade);
+  }
+
+  // Schema-driven live validation — the schema is the source of truth for
+  // what's correct (pattern/min/max/enum), not hand-coded per-field rules
+  // here. A field left empty is never flagged (an empty optional field is
+  // fine, and flagging an empty required one before the user has had a
+  // chance to fill it in would just be naggy — required-ness is already
+  // shown via the "*" marker, and unfilled requireds still get caught by
+  // the server-side Validate button).
+  if (!options) {
+    const errBox = el("div", "field-error");
+    errBox.hidden = true;
+    row.appendChild(errBox);
+    const check = () => {
+      const msg = validateFieldValue(field, input.value);
+      input.classList.toggle("invalid", !!msg);
+      errBox.hidden = !msg;
+      errBox.textContent = msg || "";
+    };
+    input.addEventListener("input", check);
+    input.addEventListener("blur", check);
+  }
+
   return row;
+}
+
+/* Re-render `input`'s placeholder (plain input) or default-marked option
+ * (select) using `liveVal` if set, else the field's own schema default —
+ * this is the single place that decides what "the effective default" looks
+ * like, used both at field-creation time and when a common value cascades
+ * into already-rendered fields. Never touches the user's actual typed value
+ * (placeholders don't override input.value; a select's value is only synced
+ * to a new default before the user has ever changed it themselves). */
+function applyFieldDefault(input, liveVal) {
+  const field = input._field;
+  const hasDefault = liveVal != null || field.default != null;
+  const def = hasDefault ? String(liveVal != null ? liveVal : field.default) : "";
+
+  if (input.tagName === "SELECT") {
+    Array.from(input.options).forEach((opt) => {
+      if (opt.dataset.blank === "1") return;
+      const isDefault = hasDefault && opt.value === def;
+      const fixedLabel = opt.dataset.fixedLabel === "1";
+      opt.textContent = (!fixedLabel && isDefault) ? `${opt.dataset.label} (default)` : opt.dataset.label;
+      opt.className = isDefault ? "opt-default" : "";
+    });
+    if (!input.dataset.userTouched) {
+      input.value = Array.from(input.options).some((o) => o.value === def) ? def : "";
+    }
+    return;
+  }
+
+  switch (field.type) {
+    case "password": input.placeholder = def ? "default set" : ""; break;
+    case "array": input.placeholder = def || "comma,separated,values"; break;
+    default: input.placeholder = def;
+  }
+}
+
+/* A common.* field's value changed — push it as the new effective default
+ * onto every other currently-rendered field sharing that name: repeat-group
+ * instances (nodes/kclusters, tagged data-field) and any other flat field
+ * (tagged data-outpath), common's own field excluded. */
+function applyLiveDefault(name) {
+  const liveVal = state.commonDefaults[name];
+  document.querySelectorAll(`#schemaForm [data-field="${name}"]`).forEach((elm) => {
+    applyFieldDefault(elm, liveVal);
+  });
+  document.querySelectorAll("#schemaForm [data-outpath]").forEach((elm) => {
+    const path = JSON.parse(elm.dataset.outpath);
+    if (path[0] === "common") return;
+    if (path[path.length - 1] !== name) return;
+    applyFieldDefault(elm, liveVal);
+  });
+}
+
+/* Schema-driven validation for one field's current (string) value. Returns
+ * an error message, or null if the value is fine (or empty — see fieldRow's
+ * caller for why empty is never flagged here). Every rule comes from the
+ * schema itself (type/pattern/min/max) — nothing here is hard-coded to a
+ * specific field name, matching this renderer's "no per-script knowledge"
+ * design principle. */
+function validateFieldValue(field, value) {
+  if (value === "" || value == null) return null;
+
+  if (field.type === "integer" || field.type === "port") {
+    if (!/^-?\d+$/.test(value)) return "must be a whole number";
+    const n = parseInt(value, 10);
+    const lo = field.type === "port" ? 1 : field.min;
+    const hi = field.type === "port" ? 65535 : field.max;
+    if (lo != null && n < lo) return `must be ${lo} or more`;
+    if (hi != null && n > hi) return `must be ${hi} or less`;
+    return null;
+  }
+
+  if (field.pattern) {
+    try {
+      if (!new RegExp(field.pattern).test(value)) return "doesn't match the expected format";
+    } catch (e) { /* malformed pattern from the schema — don't block on it */ }
+  }
+
+  return null;
 }
 
 /* Gather every field under a node, wherever it lives (container-agnostic). */
@@ -210,7 +423,7 @@ function repeatGroup(name, obj, outPath) {
 
 function instanceBox(fields, keyLabel) {
   const inst = el("div", "instance");
-  const keyRow = el("div", "field");
+  const keyRow = el("div", "field field-required");   // the key itself is always required
   const kl = el("label");
   kl.appendChild(document.createTextNode(keyLabel));
   kl.appendChild(el("span", "req", "*"));
@@ -323,5 +536,23 @@ window.addEventListener("DOMContentLoaded", () => {
   $("#validateBtn").addEventListener("click", validateLab);
   $("#downloadBtn").addEventListener("click", downloadLab);
   $("#saveBtn").addEventListener("click", saveLab);
+
+  // "Required only" — hides every non-required field via CSS on the form
+  // element itself, so it stays in effect across re-renders (selectComponent/
+  // selectBase only clear the form's children, never the form element's own
+  // class) and across dynamically-added repeat-group instances (nodes/
+  // kclusters "+ add" rows are just more .field-optional/.field-required
+  // descendants of the same #schemaForm). Preference remembered per-browser.
+  const requiredOnlyToggle = $("#requiredOnlyToggle");
+  let requiredOnly = false;
+  try { requiredOnly = localStorage.getItem("labbuilder.requiredOnly") === "1"; } catch (e) { /* ignore */ }
+  requiredOnlyToggle.checked = requiredOnly;
+  $("#schemaForm").classList.toggle("hide-optional", requiredOnly);
+  requiredOnlyToggle.addEventListener("change", (e) => {
+    $("#schemaForm").classList.toggle("hide-optional", e.target.checked);
+    try { localStorage.setItem("labbuilder.requiredOnly", e.target.checked ? "1" : "0"); } catch (err) { /* ignore */ }
+  });
+
   loadComponents().catch((e) => { $("#countNum").textContent = "!"; toast("Load error: " + e.message); });
+  loadStatus();
 });

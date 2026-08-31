@@ -1,478 +1,354 @@
-#!/usr/bin/env python3
-# Part of lab-in-a-box, Python orchestrator for lab setup
+#!/usr/bin/env python3.11
+# Part of lab-in-a-box, it will setup a Lab
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# This program is free software: you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation, either version 3 of the License, or (at your option) any later version.
-#
-# Supports lab definition files in JSON or YAML format.
-# YAML files are converted to a temporary JSON file so all shell scripts
-# (setup_vm.sh, destroy_vm.sh, install_*) continue to work unchanged.
-#
-# Requires: pyyaml (only for YAML input)  →  pip install pyyaml
+# Python equivalent of scripts/setup_lab.sh — calls the python libraries
+# (lab_creation, k8s, primary) directly, in-process. No bash is sourced or
+# executed by this script for the DNS/VM/Kubernetes/addon phases below.
+# destroy_vm.py/setup_vm.py are still invoked as separate processes for VM
+# create/destroy, matching bash's own architecture (setup_lab.sh always called
+# destroy_vm.sh/setup_vm.sh as separate scripts too, never sourced them).
+# install_<addon> scripts are likewise separate processes, exactly as in bash.
 
 """
-setup_lab.py  —  equivalent of setup_lab.sh with JSON + YAML support.
+setup_lab.py — provision all VMs defined in a lab JSON, set up Kubernetes
+clusters, and install cluster-level and VM-level addons in order.
 
 Usage:
-    setup_lab.py <definition.json>
-    setup_lab.py <definition.yaml>
-    setup_lab.py --delay 5 mylab.yaml
+    setup_lab.py [--keep] <lab.json>
 """
 
-__version__ = "__LABVERSION__"
+__version__ = "f183058"
+_SCHEMA_VERSION = "1.0"
 
-import argparse
-import json
 import os
-import shlex
 import shutil
-import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent / "libs")):
+    if Path(_candidate).is_dir() and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
 
-# ─── Terminal colours ─────────────────────────────────────────────────────────
+import primary  # noqa: E402
+import lab_creation as lc  # noqa: E402
+import k8s  # noqa: E402
+import targets  # noqa: E402
+import apps  # noqa: E402
+import services  # noqa: E402
+from destroy_vm import destroy_vm  # noqa: E402
+from setup_vm import provision_vm  # noqa: E402
 
-RED    = "\033[1;91m"
-YELLOW = "\033[1;33m"
-BOLD   = "\033[1m"
-RESET  = "\033[0m"
+_HELP_TEXT = """\
+Usage: setup_lab.py [--keep] <lab.json>
 
+Provisions all VMs defined in the lab JSON, sets up Kubernetes clusters, and
+installs cluster-level and VM-level addons in order.
 
-# ─── Output helpers ───────────────────────────────────────────────────────────
+Options:
+  --keep    Skip VMs that already exist, are running, match the defined IP and
+            MAC address, and are accessible via SSH with default credentials.
+            Without this flag (default) every VM is destroyed and recreated.
 
-_lvl = 0
+The lab definition JSON must contain:
+  nodes      — map of VM hostname → node config (myip, mymac, kcluster, …)
+  common     — shared VM settings (ISO_IMAGE, VM_MEM, VM_DSK, VM_CPU, …)
+  kclusters  — map of cluster name → cluster config (clu_type, addons, …)
+  <addon>    — one section per addon listed in kclusters[x].addons or nodes[x].addons
 
-
-def log(msg: str, extra_indent: int = 0) -> None:
-    print("  " * (_lvl + extra_indent) + msg)
-
-
-def section(msg: str) -> None:
-    print(f"\n{BOLD}{msg}{RESET}")
-
-
-def warn(msg: str) -> None:
-    print(f"{YELLOW}WARNING:{RESET} {msg}", file=sys.stderr)
-
-
-def die(msg: str) -> None:
-    print(f"{RED}ERROR:{RESET} {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-# ─── Subprocess helpers ───────────────────────────────────────────────────────
-
-def run(cmd: list, env: dict | None = None, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(cmd, env=env)
-    if check and result.returncode != 0:
-        die(f"Command failed (rc={result.returncode}): {' '.join(str(c) for c in cmd)}")
-    return result
+Run 'install_<addon> --help' for the options accepted by each addon section.
+Run 'setup_lab.py --input-definition [json|yaml]' for the machine-readable schema.
+"""
 
 
-def bash_lab(json_file: str, code: str, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+def _merged_env(definition, config, defaults, vm_name):
     """
-    Source lab_creation.defaults + primary_functions (which loads lab_creation.cfg
-    and the main library), then execute arbitrary bash code with inputFile set.
+    Merge defaults + cfg + per-VM JSON vars, in bash's actual precedence
+    order (JSON wins — load_vm_vars runs last in the bash pipeline).
     """
-    env = {**os.environ, **(extra_env or {})}
-    script = (
-        "set -e\n"
-        "if [[ -f /etc/lab_creation.defaults ]]; then\n"
-        "    . /etc/lab_creation.defaults\n"
-        "elif [[ -f lab_creation.defaults ]]; then\n"
-        "    . lab_creation.defaults\n"
-        "else\n"
-        "    echo 'ERROR: lab_creation.defaults not found' >&2; exit 1\n"
-        "fi\n"
-        ". ${_primary_funtions}\n"
-        f"inputFile={shlex.quote(json_file)}\n"
-        f"{code}\n"
-    )
-    return subprocess.run(["bash", "-c", script], env=env)
+    env = {}
+    env.update(defaults)
+    env.update(config)
+    env.update(lc.load_vm_vars(definition, vm_name))
+    return env
 
 
-# ─── Definition loading ───────────────────────────────────────────────────────
-
-def load_definition(path: str) -> dict:
+def phase_services(definition, config, defaults):
     """
-    Load a lab definition from a JSON or YAML file.
-    Detection order:
-      1. .yaml / .yml extension  → parse as YAML (requires pyyaml)
-      2. other extension          → try JSON, then YAML as fallback
+    Configure+enable every service listed in common.services (optional;
+    absent means today's implicit default of nothing new — DNS/HTTP are
+    already running from the automation VM's own bootstrap). Order runs
+    before phase_create_vms so PXE/DHCP infrastructure is ready before any
+    node might try to boot from it.
     """
-    p = Path(path)
-    if not p.exists():
-        die(f"Definition file '{path}' not found")
+    service_names = definition.get("common", {}).get("services") or []
+    if not service_names:
+        return
+    lc.log("Configuring lab services")
+    lc._level += 1
+    for name in service_names:
+        svc = services.get(name, lab_setup_path=defaults.get("LAB_SETUP_PATH", "/srv/www/htdocs/lab_creation"))
+        lc.log("Service \"{}{}{}\"".format(lc._RED, name, lc._RESET))
+        svc.install()
+        svc.configure(definition, config)
+        svc.enable()
+    lc._level -= 1
 
-    suffix = p.suffix.lower()
-    text = p.read_text()
 
-    if suffix in (".yaml", ".yml"):
+def phase_dns(definition, remote_dns_servers):
+    lc.log("Add Kubernetes cluster DNS entries")
+    lc._level += 1
+    for clu_name in k8s.list_kclusters(definition):
+        clu_cfg = k8s.load_kclu_vars(definition, clu_name)
+        k8s.add_kclu_dns(definition, clu_name, clu_cfg.get("clu_type", ""), clu_cfg.get("mydomain", ""),
+                          remote_dns_servers=remote_dns_servers)
+    lc._level -= 1
+
+
+def phase_create_vms(definition, config, defaults, json_file, keep):
+    lc.log("Creating VMs")
+    lc._level += 1
+    for vm_name, node_cfg in definition.get("nodes", {}).items():
+        lc.log("Node: \"{}{}{}\"".format(lc._RED, vm_name, lc._RESET))
+
+        if targets.is_existing_node(node_cfg):
+            lc.log("  Using existing host \"{}{}{}\" — not creating a VM for it".format(
+                lc._RED, vm_name, lc._RESET))
+            lc.check_ssh_conn(vm_name)
+            continue
+
+        env = _merged_env(definition, config, defaults, vm_name)
+        # --keep's reusability check looks at a VM that may already exist,
+        # so it must find whichever host actually has it (locate_kvm_host),
+        # not resource-select a fresh one (resolve_kvm_host, used below by
+        # provision_vm() for genuinely new placement).
         try:
-            import yaml
-        except ImportError:
-            die(
-                "PyYAML is required for YAML definition files.\n"
-                "Install it with:  pip install pyyaml"
-            )
-        data = yaml.safe_load(text)
-        if not isinstance(data, dict):
-            die(f"'{path}' does not contain a YAML mapping at the top level")
-        return data
+            keep_remote_host, keep_virt_srv = lc.locate_kvm_host(definition, vm_name, config)
+        except SystemExit:
+            keep_remote_host, keep_virt_srv = None, None
+        if keep and keep_virt_srv and lc.vm_is_reusable(
+                keep_virt_srv, vm_name, env.get("mymac", ""), env.get("myip", ""),
+                remote_host=keep_remote_host):
+            lc.log("  Skipping \"{}{}{}\" — existing VM matches definition".format(lc._RED, vm_name, lc._RESET))
+            continue
 
-    # JSON or unknown extension
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            import yaml
-            warn(f"'{path}' is not valid JSON — attempting YAML parse")
-            return yaml.safe_load(text)
-        except ImportError:
-            die(
-                f"'{path}' is not valid JSON and PyYAML is not available for fallback.\n"
-                "Install PyYAML with:  pip install pyyaml"
-            )
-
-
-def as_json_file(definition: dict, original_path: str) -> tuple[str, bool]:
-    """
-    Shell scripts require JSON (they use jq internally).
-    If the source was already valid JSON return it as-is (is_temp=False).
-    Otherwise write a temporary JSON file and return (path, True).
-    The caller must delete the temp file when done.
-    """
-    p = Path(original_path)
-    if p.suffix.lower() not in (".yaml", ".yml"):
-        try:
-            with open(original_path) as f:
-                json.load(f)
-            return original_path, False
-        except (json.JSONDecodeError, OSError):
-            pass  # fall through: source was parsed as YAML fallback
-
-    fd, tmp = tempfile.mkstemp(suffix=".json", prefix="lab_setup_")
-    with os.fdopen(fd, "w") as f:
-        json.dump(definition, f, indent=2)
-    return tmp, True
-
-
-# ─── Definition accessors ─────────────────────────────────────────────────────
-
-def nodes(definition: dict) -> dict:
-    return definition.get("nodes", {})
-
-
-def kclusters(definition: dict) -> dict:
-    return definition.get("kclusters", {})
-
-
-def has_kclusters(definition: dict) -> bool:
-    return bool(definition.get("kclusters"))
-
-
-def node_kcluster(definition: dict, vm_name: str) -> str:
-    return nodes(definition).get(vm_name, {}).get("kcluster", "")
-
-
-def cluster_addons(definition: dict, clu_name: str) -> list:
-    return kclusters(definition).get(clu_name, {}).get("addons", [])
-
-
-def vm_addons(definition: dict, vm_name: str) -> list:
-    return nodes(definition).get(vm_name, {}).get("addons", [])
-
-
-def first_node_in_cluster(definition: dict, clu_name: str) -> str:
-    return next(
-        (v for v in nodes(definition) if node_kcluster(definition, v) == clu_name),
-        "",
-    )
-
-
-# ─── SSH polling ──────────────────────────────────────────────────────────────
-
-def wait_for_ssh(hostname: str, timeout: int = 300, interval: int = 5) -> None:
-    log(f"Waiting for {RED}{hostname}{RESET} to come online", extra_indent=1)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((hostname, 22), timeout=3):
-                log(f"{RED}{hostname}{RESET} is online", extra_indent=1)
-                return
-        except OSError:
-            time.sleep(interval)
-    die(f"Timeout waiting for {hostname} to come online")
-
-
-# ─── Phases ───────────────────────────────────────────────────────────────────
-
-def phase_dns(definition: dict, json_file: str) -> None:
-    section("Registering Kubernetes cluster DNS entries")
-    for clu_name in kclusters(definition):
-        log(f"Cluster: {RED}{clu_name}{RESET}", extra_indent=1)
-        r = bash_lab(
-            json_file,
-            f"clu_name={shlex.quote(clu_name)}\n"
-            f"load_kclu_vars\n"
-            f"add_kclu_dns\n",
-        )
-        if r.returncode != 0:
-            die(f"Failed to register DNS for cluster '{clu_name}'")
-
-
-def phase_create_vms(definition: dict, json_file: str) -> None:
-    section("Creating VMs")
-    for vm_name in nodes(definition):
-        log(f"Node: {RED}{vm_name}{RESET}", extra_indent=1)
-        # Remove stale known_hosts entry silently
         subprocess.run(
-            ["ssh-keygen", "-f", os.path.expanduser("~/.ssh/known_hosts"), "-R", vm_name],
-            capture_output=True,
+            ["ssh-keygen", "-f", str(Path.home() / ".ssh" / "known_hosts"), "-R", vm_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
-        run(["destroy_vm.sh", json_file, vm_name], check=False)
-        run(["setup_vm.sh", json_file, vm_name])
+        # bash's `destroy_vm.sh "${inputFile}" "${_vm_name}"` here has no `||`
+        # error check — a failed/no-op destroy (e.g. the VM never existed on
+        # a first run) must NOT stop the pipeline. Mirror that explicitly,
+        # since the python destroy_vm() raises on real ssh/virsh failures.
+        try:
+            destroy_vm(definition, config, defaults, vm_name)
+        except SystemExit:
+            pass
+        except RuntimeError as e:
+            lc.warn("destroy before recreate failed for '{}' (continuing): {}".format(vm_name, e))
+
+        provision_vm(definition, config, defaults, vm_name)
+    lc._level -= 1
 
 
-def phase_reboot_and_wait(definition: dict) -> None:
-    vm_list = list(nodes(definition))
+def phase_reboot_and_wait_kept_nodes(definition, config, keep):
+    # bash gates both of these loops on the GLOBAL --keep flag alone (not on
+    # whether any given node was actually reused vs. recreated in phase 2) —
+    # matched literally here, even though it means a just-recreated node
+    # (which setup_vm.py already rebooted once) gets rebooted again.
+    if not keep:
+        return
 
-    section("Rebooting all nodes")
-    for vm_name in vm_list:
-        log(f"Restart {RED}{vm_name}{RESET}", extra_indent=1)
-        subprocess.run(
-            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-q",
-             f"root@{vm_name}", "reboot"],
-            check=False,
-        )
+    lc.log("Rebooting kept cluster nodes")
+    lc._level += 1
+    for vm_name, node_cfg in definition.get("nodes", {}).items():
+        if not node_cfg.get("kcluster"):
+            continue
+        if targets.is_existing_node(node_cfg):
+            # Not a VM this tool owns — nothing to reboot via libvirt.
+            continue
+        lc.log("Restart node {}{}{} (cluster {}{}{})".format(
+            lc._RED, vm_name, lc._RESET, lc._RED, node_cfg["kcluster"], lc._RESET))
+        # These are existing (kept) VMs — locate_kvm_host(), not resolve_kvm_host().
+        remote_host, virt_srv = lc.locate_kvm_host(definition, vm_name, config)
+        lc.reboot_vm(virt_srv, vm_name, remote_host=remote_host)
+    lc._level -= 1
 
     time.sleep(5)
-
-    section("Waiting for nodes to come back online")
-    for vm_name in vm_list:
-        wait_for_ssh(vm_name)
-
-
-def phase_install_k8s(definition: dict, json_file: str) -> None:
-    """
-    Install Kubernetes on all nodes.
-
-    All nodes are processed inside a single bash process so that the token[]
-    associative array (which tracks the first server per cluster) and
-    RANCHER1_IP persist across node iterations — exactly as setup_lab.sh does.
-    """
-    section("Installing Kubernetes on each node")
-
-    lines = [
-        "declare -A token",
-        "declare RANCHER1_IP",
-    ]
-
-    for vm_name, node_cfg in nodes(definition).items():
-        clu_name = node_cfg.get("kcluster", "")
-        if not clu_name:
-            lines.append(
-                f"echo 'WARNING: no kcluster defined for {vm_name}, skipping'"
-            )
+    lc.log("Waiting for cluster nodes to come back online")
+    lc._level += 1
+    for vm_name, node_cfg in definition.get("nodes", {}).items():
+        if not node_cfg.get("kcluster"):
             continue
+        lc.check_ssh_conn(vm_name)
+    lc._level -= 1
 
-        clu_type = kclusters(definition).get(clu_name, {}).get("clu_type", "")
-        if not clu_type:
-            lines.append(
-                f"echo 'WARNING: clu_type not defined for cluster {clu_name} ({vm_name}), skipping'"
-            )
+
+def _install_k8s_on_cluster(definition, clu_name, clu_type, clu_cfg):
+    lc.log("Installing \"{}{}{}\" cluster \"{}{}{}\"".format(
+        lc._RED, clu_type, lc._RESET, lc._RED, clu_name, lc._RESET))
+    lc._level += 1
+    distro = k8s.get_distro(clu_type)
+    token = None
+    rancher1_ip = None
+    for vm_name, node_cfg in definition.get("nodes", {}).items():
+        if node_cfg.get("kcluster") != clu_name:
             continue
-
-        lines += [
-            f"_vm_name={shlex.quote(vm_name)}",
-            f"clu_name={shlex.quote(clu_name)}",
-            "load_vm_vars",
-            "load_kclu_vars",
-            "load_def",   # sets ssh_command="ssh ... root@${_vm_name}"
-            f"echo 'Installing {clu_type} on {vm_name} for cluster {clu_name}'",
-            f"setup_{clu_type} || {{ echo 'FAILED: setup_{clu_type} on {vm_name}' >&2; exit 1; }}",
-        ]
-
-    r = bash_lab(json_file, "\n".join(lines))
-    if r.returncode != 0:
-        die("Kubernetes installation phase failed")
-
-
-def phase_cluster_addons(definition: dict, json_file: str) -> None:
-    section("Installing Kubernetes cluster addons")
-    installed: set[tuple] = set()
-
-    for clu_name, clu_cfg in kclusters(definition).items():
-        addons = clu_cfg.get("addons", [])
-        if not addons:
-            log(f"No addons for cluster {RED}{clu_name}{RESET}", extra_indent=1)
-            continue
-
-        mgm_node = clu_cfg.get("mgm_node", "")
-        vm_name = mgm_node or first_node_in_cluster(definition, clu_name)
-        if not vm_name:
-            warn(f"No node found for cluster '{clu_name}', skipping addons")
-            continue
-
-        log(
-            f"Installing cluster {RED}{clu_name}{RESET} "
-            f"addons from {RED}{vm_name}{RESET}",
-            extra_indent=1,
-        )
-        for addon in addons:
-            if (clu_name, addon) in installed:
-                continue
-            installer = shutil.which(f"install_{addon}")
-            if not installer:
-                die(f"Addon script 'install_{addon}' not found in PATH")
-            log(
-                f"Running addon {RED}{addon}{RESET} on {RED}{vm_name}{RESET} "
-                f"for cluster {RED}{clu_name}{RESET}",
-                extra_indent=2,
-            )
-            env = {**os.environ, "_vm_name": vm_name, "clu_name": clu_name}
-            run([installer, json_file], env=env)
-            installed.add((clu_name, addon))
-
-
-def phase_vm_addons(definition: dict, json_file: str) -> None:
-    section("Installing VM addons")
-    any_found = False
-
-    for vm_name in nodes(definition):
-        addons = vm_addons(definition, vm_name)
-        if not addons:
-            continue
-        any_found = True
-        log(f"Installing {RED}{vm_name}{RESET} addons", extra_indent=1)
-        for addon in addons:
-            installer = shutil.which(f"install_{addon}")
-            if not installer:
-                die(f"Addon script 'install_{addon}' not found in PATH")
-            log(
-                f"Running addon {RED}{addon}{RESET} on {RED}{vm_name}{RESET}",
-                extra_indent=2,
-            )
-            env = {**os.environ, "_vm_name": vm_name}
-            run([installer, json_file], env=env)
-
-    if not any_found:
-        log("No VM addons defined", extra_indent=1)
-
-
-# ─── Validation ───────────────────────────────────────────────────────────────
-
-def validate(definition: dict, path: str) -> None:
-    """Catch obvious definition mistakes before doing any work."""
-    if not definition.get("nodes"):
-        die(f"'{path}' has no 'nodes' section")
-
-    if "cluster" in definition and "kclusters" not in definition:
-        warn(
-            "Definition uses the old 'cluster' format (single cluster, no per-node kcluster).\n"
-            "         setup_lab.py only supports the 'kclusters' format for Kubernetes setup.\n"
-            "         VMs will be created but Kubernetes will NOT be installed."
-        )
-
-    for vm_name, cfg in definition.get("nodes", {}).items():
-        clu_name = cfg.get("kcluster", "")
-        if clu_name and clu_name not in definition.get("kclusters", {}):
-            die(
-                f"Node '{vm_name}' references kcluster '{clu_name}' "
-                f"which is not defined in 'kclusters'"
-            )
-
-
-# ─── Entry point ──────────────────────────────────────────────────────────────
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="lab-in-a-box: set up a lab from a JSON or YAML definition",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Supported input formats:\n"
-            "  JSON  —  passed directly to shell scripts (jq-compatible)\n"
-            "  YAML  —  converted to a temporary JSON file transparently\n"
-            "           Requires: pip install pyyaml\n\n"
-            "Examples:\n"
-            "  setup_lab.py mylab.json\n"
-            "  setup_lab.py mylab.yaml\n"
-            "  setup_lab.py --delay 5 mylab.yaml\n"
-        ),
-    )
-    parser.add_argument(
-        "definition",
-        help="Lab definition file (.json, .yaml, or .yml)",
-    )
-    parser.add_argument(
-        "--version", "-v",
-        action="version",
-        version=f"setup_lab.py {__version__}",
-    )
-    parser.add_argument(
-        "--delay",
-        type=int,
-        default=None,
-        metavar="MINUTES",
-        help=(
-            "Extra stabilisation delay in minutes after Kubernetes install "
-            "(overrides the 'delay_min' value in the definition file)"
-        ),
-    )
-    args = parser.parse_args()
-
-    definition = load_definition(args.definition)
-    validate(definition, args.definition)
-
-    json_file, is_temp = as_json_file(definition, args.definition)
-
-    try:
-        lab_name  = definition.get("common", {}).get("lab_name", args.definition)
-        delay_min = (
-            args.delay
-            if args.delay is not None
-            else int(definition.get("common", {}).get("delay_min", 2))
-        )
-        k8s = has_kclusters(definition)
-
-        if k8s:
-            log(
-                f"\n{BOLD}Setup lab {RED}{lab_name}{RESET}"
-                f"{BOLD} (VMs + Kubernetes clusters){RESET}"
-            )
+        if node_cfg.get("INSTALL_RKE2_TYPE", "server") == "agent":
+            token, rancher1_ip = distro.install_agent(vm_name, clu_name, clu_cfg, token, rancher1_ip)
         else:
-            log(f"\n{BOLD}Setup lab {RED}{lab_name}{RESET}{BOLD} (VMs only){RESET}")
+            token, rancher1_ip = distro.install_server(vm_name, clu_name, clu_cfg, token=token, rancher1_ip=rancher1_ip)
+    lc._level -= 1
 
-        if k8s:
-            phase_dns(definition, json_file)
 
-        phase_create_vms(definition, json_file)
+def _install_cluster_addons(definition, config, defaults, json_file, clu_name, clu_cfg):
+    addons = clu_cfg.get("addons", [])
+    if not addons:
+        lc.log("No Kubernetes cluster addons for \"{}{}{}\"".format(lc._RED, clu_name, lc._RESET))
+        return
 
-        if k8s:
-            phase_reboot_and_wait(definition)
-            phase_install_k8s(definition, json_file)
+    mgm_node = clu_cfg.get("mgm_node", "")
+    vm_name = mgm_node
+    if not vm_name:
+        for name, node_cfg in definition.get("nodes", {}).items():
+            if node_cfg.get("kcluster") == clu_name:
+                vm_name = name
+                break
 
-            total_wait = 2 + delay_min
-            section(f"Waiting {total_wait} min for cluster(s) to stabilise")
-            time.sleep(60 * total_wait)
+    clu_type = clu_cfg.get("clu_type", "")
 
-            phase_cluster_addons(definition, json_file)
+    lc.log("Installing cluster \"{}{}{}\" addon/s ( {} ) from \"{}{}{}\"".format(
+        lc._RED, clu_name, lc._RESET, " ".join(addons), lc._RED, vm_name, lc._RESET))
+    lc._level += 1
+    installed = set()
+    for addon in addons:
+        if addon in installed:
+            continue
+        installer = shutil.which("install_{}".format(addon))
+        if not installer:
+            lc.die("FAILED! Addon script \"install_{}\" not found".format(addon))
+        apps.check_requirements(apps.load_plugin(addon), targets.TARGET_CONTAINER, clu_type=clu_type)
+        lc.log("Running addon \"{}{}{}\" on \"{}{}{}\" for cluster \"{}{}{}\"".format(
+            lc._RED, addon, lc._RESET, lc._RED, vm_name, lc._RESET, lc._RED, clu_name, lc._RESET))
+        env = dict(os.environ)
+        env["_vm_name"] = vm_name
+        env["clu_name"] = clu_name
+        # bash never checks this call's exit code (no `||` on either addon
+        # invocation in setup_lab.sh) — a failing addon does not stop the
+        # pipeline. Matched exactly: run it, ignore the result, move on.
+        subprocess.run([installer, json_file], env=env)
+        installed.add(addon)
+        lc.log("Installed addon \"{}{}{}\" on cluster \"{}{}{}\"".format(
+            lc._RED, addon, lc._RESET, lc._RED, clu_name, lc._RESET))
+    lc._level -= 1
+    # bash prints its "No more addons" message from inside the per-addon loop
+    # (bash:209), so it fires after every addon rather than once at the end —
+    # clearly a misplaced statement, not intentional per-addon behaviour.
+    # Fixed here to print once, after all of this cluster's addons are done.
+    lc.log("No more addons for cluster \"{}{}{}\"".format(lc._RED, clu_name, lc._RESET))
 
-        phase_vm_addons(definition, json_file)
 
-    finally:
-        if is_temp:
-            try:
-                os.unlink(json_file)
-            except OSError:
-                pass
+def phase_install_k8s_and_addons(definition, config, defaults, json_file):
+    delay_min = int(definition.get("common", {}).get("delay_min", defaults.get("delay_min", 2)))
+    for clu_name in k8s.list_kclusters(definition):
+        clu_cfg = k8s.load_kclu_vars(definition, clu_name)
+        clu_type = clu_cfg.get("clu_type", "")
+
+        _install_k8s_on_cluster(definition, clu_name, clu_type, clu_cfg)
+
+        total_wait = 2 + delay_min
+        lc.log("Wait {} min for cluster \"{}{}{}\" to stabilise".format(total_wait, lc._RED, clu_name, lc._RESET))
+        time.sleep(60 * total_wait)
+
+        _install_cluster_addons(definition, config, defaults, json_file, clu_name, clu_cfg)
+
+
+def phase_vm_addons(definition, json_file):
+    for vm_name, node_cfg in definition.get("nodes", {}).items():
+        addons = node_cfg.get("addons", [])
+        if not addons:
+            continue
+        lc.log("Installing VM \"{}{}{}\" addons".format(lc._RED, vm_name, lc._RESET))
+        lc._level += 1
+        node_target = targets.node_kind(definition, vm_name)
+        for addon in addons:
+            installer = shutil.which("install_{}".format(addon))
+            if not installer:
+                lc.die("Addon script \"install_{}\" not found".format(addon))
+            apps.check_requirements(apps.load_plugin(addon), node_target)
+            lc.log("Running addon \"{}{}{}\" on \"{}{}{}\"".format(
+                lc._RED, addon, lc._RESET, lc._RED, vm_name, lc._RESET))
+            env = dict(os.environ)
+            env["_vm_name"] = vm_name
+            # Same as the cluster-addon loop: bash never checks this call's
+            # exit code either, so a failing addon must not stop the pipeline.
+            subprocess.run([installer, json_file], env=env)
+        lc._level -= 1
+
+
+def setup_lab(definition, config, defaults, json_file, keep=False):
+    lab_name = definition.get("common", {}).get("lab_name") or Path(json_file).name
+    has_k8s = bool(definition.get("kclusters"))
+    kind = "VMs + Kubernetes clusters" if has_k8s else "VMs only"
+    lc.log("\nSetup lab \"{}{}{}\" ({})".format(lc._RED, lab_name, lc._RESET, kind))
+
+    remote_dns_servers = config.get("REMOTE_DNS_SERVERS", "").split() or None
+
+    phase_services(definition, config, defaults)
+
+    if has_k8s:
+        phase_dns(definition, remote_dns_servers)
+
+    phase_create_vms(definition, config, defaults, json_file, keep)
+
+    if has_k8s:
+        phase_reboot_and_wait_kept_nodes(definition, config, keep)
+        phase_install_k8s_and_addons(definition, config, defaults, json_file)
+
+    phase_vm_addons(definition, json_file)
+
+    lc.log("LAB setup completed")
+
+
+def main():
+    args = sys.argv[1:]
+
+    if args and args[0] in ("--version", "-v"):
+        print("{} {}".format(Path(sys.argv[0]).name, __version__))
+        sys.exit(0)
+
+    if args and args[0] == "--help":
+        print(_HELP_TEXT)
+        sys.exit(0)
+
+    if args and args[0] in ("--input-definition", "--schema"):
+        fmt = args[1] if len(args) > 1 else "json"
+        sys.exit(subprocess.run(["lab_schema", "--base", fmt]).returncode)
+
+    keep = "--keep" in args
+    positional = [a for a in args if a != "--keep"]
+    if not positional:
+        lc.die("Usage: setup_lab.py [--keep] <lab.json>")
+    json_file = positional[0]
+
+    defaults = primary.load_defaults()
+    config = primary.load_config()
+    definition = primary.load_definition(json_file)
+
+    iso_loc        = defaults.get("ISO_LOC", "/var/lib/libvirt/images/sources")
+    lab_setup_path = defaults.get("LAB_SETUP_PATH", "/srv/www/htdocs/lab_creation")
+    vm_img_loc     = defaults.get("VM_IMG_LOC", "/var/lib/libvirt/images/").rstrip("/")
+    if not lc.validate_lab_definition(definition, config, iso_loc, lab_setup_path, vm_img_loc=vm_img_loc):
+        sys.exit(1)
+
+    total_cpu, total_mem, total_disk = lc.total_lab_resources(definition)
+    lc.log("This lab needs {} vCPU, {} MiB RAM, {} GiB disk in total across {} node(s)".format(
+        total_cpu, total_mem, total_disk, len(definition.get("nodes", {}))))
+
+    setup_lab(definition, config, defaults, json_file, keep=keep)
 
 
 if __name__ == "__main__":

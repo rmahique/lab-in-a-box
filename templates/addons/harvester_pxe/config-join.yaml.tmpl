@@ -1,0 +1,28 @@
+# See config-create.yaml.tmpl's header — same scheme, "join" mode. Rendered
+# per-node by scripts/setup_harvester_cluster.py for every non-"create" node.
+scheme_version: 1
+server_url: https://${harvester_vip}:443
+token: "${harvester_token}"
+os:
+  hostname: ${node_hostname}
+  ssh_authorized_keys:
+${harvester_ssh_keys_block}
+  password: "${harvester_password_hash}"
+  ntp_servers:
+  - 0.suse.pool.ntp.org
+  - 1.suse.pool.ntp.org
+  dns_nameservers:
+${harvester_dns_nameservers_block}
+install:
+  mode: join
+  management_interface:
+    interfaces:
+      - name: ${harvester_iface}
+    default_route: true
+    method: static
+    ip: ${node_ip}
+    subnetmask: ${harvester_netmask}
+    gateway: ${harvester_gateway}
+  device: ${harvester_device}
+  iso_url: ${harvester_iso_url}
+  persistentpartitionsize: ${harvester_persistent_size}

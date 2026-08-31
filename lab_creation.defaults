@@ -1,0 +1,30 @@
+# These defaults should not be changes unless you know what you are doing
+declare -A _BOOT_PACKAGES
+_BOOT_PACKAGES=(["sles-15.5"]="vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git"
+["sles-15.6"]="vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git"
+["sle-micro-5.5"]="vim-small iptables NetworkManager-cloud-setup wget git"
+["sle-micro-6.0"]="vim-small iptables NetworkManager-cloud-setup wget git"
+["opensuse-leap"]="vim-small apparmor-parser iptables NetworkManager-cloud-setup wget git"
+)
+# path for the library directory
+_lib_path=/usr/local/lib/lab_creation
+_templ_addons_loc=/usr/share/lab_creation/templates/addons/
+
+# The delay between stages, increase if load is high or resources are low. The current should work with "normal" hardware
+delay_min="2"
+delay_sec="$((60 * $delay_min))"
+
+# This is the source path for the lab automation scripts that maybe used during the combustion phase.
+sourcepath=/lab_creation/scripts/
+
+# This is the path for the materials of the lab that will be retrieved via HTTP
+LAB_SETUP_PATH="/srv/www/htdocs/lab_creation"
+
+# This is where the VM disk images will be placed
+VM_IMG_LOC='/var/lib/libvirt/images/'
+
+# This is the location of the source images used to build the VMs
+ISO_LOC='/var/lib/libvirt/images/sources'
+
+# This contains the location of the script containing the primary functions
+_primary_funtions='/usr/local/lib/lab_creation/primary_functions.bash'

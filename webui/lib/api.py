@@ -42,6 +42,9 @@ def dispatch(action, method, params, body):
         if action == "base" and method == "GET":
             return 200, discovery.base_schema()
 
+        if action == "status" and method == "GET":
+            return 200, discovery.status()
+
         if method == "POST":
             data = json.loads(body.decode("utf-8") or "{}") if body else {}
             if action == "validate":

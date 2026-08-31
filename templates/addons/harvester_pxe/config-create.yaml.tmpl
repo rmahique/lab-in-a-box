@@ -1,0 +1,32 @@
+# Harvester's own install-config scheme (scheme_version: 1) — NOT actual
+# cloud-init, despite this repo's earlier (now-removed) attempt at this
+# being misnamed templates/cloud-init.template_harvester_create. Rendered
+# per-node by scripts/setup_harvester_cluster.py for the one "create" node
+# in the cluster.
+scheme_version: 1
+token: "${harvester_token}"
+os:
+  hostname: ${node_hostname}
+  ssh_authorized_keys:
+${harvester_ssh_keys_block}
+  password: "${harvester_password_hash}"
+  ntp_servers:
+  - 0.suse.pool.ntp.org
+  - 1.suse.pool.ntp.org
+  dns_nameservers:
+${harvester_dns_nameservers_block}
+install:
+  mode: create
+  management_interface:
+    interfaces:
+      - name: ${harvester_iface}
+    default_route: true
+    method: static
+    ip: ${node_ip}
+    subnetmask: ${harvester_netmask}
+    gateway: ${harvester_gateway}
+  device: ${harvester_device}
+  iso_url: ${harvester_iso_url}
+  vip: ${harvester_vip}
+  vip_mode: ${harvester_vip_mode}
+  persistentpartitionsize: ${harvester_persistent_size}

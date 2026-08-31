@@ -4,7 +4,7 @@
 inputFile="$1"
 
 
-_VERSION="__LABVERSION__"
+_VERSION="b8ac777"
 [[ "${1}" == "--version" || "${1}" == "-v" ]] && echo "${0##*/} ${_VERSION}" && exit 0
 
 # load lab_creation defaults
