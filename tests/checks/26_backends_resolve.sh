@@ -4,6 +4,6 @@
 # calls, resolve_kvm_host()/locate_kvm_host() are mocked. Independent
 # container — see tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 python3 tests/checks/26_backends_resolve_test.py

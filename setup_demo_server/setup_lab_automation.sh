@@ -70,8 +70,8 @@ EOF
 # Derive MAC from last 3 octets of _myip using QEMU OUI (52:54:00)
 function generate_mac() {
     [[ -n "${_automation_mac}" ]] && return
-    _automation_mac=$(printf "52:54:00:%02x:%02x:%02x" \
-        $(echo "${_myip}" | awk -F. '{print $2, $3, $4}'))
+    IFS=. read -r _ _oct2 _oct3 _oct4 <<< "${_myip}"
+    _automation_mac=$(printf "52:54:00:%02x:%02x:%02x" "$_oct2" "$_oct3" "$_oct4")
 }
 
 # Get virt-install --osinfo from _QCOW_IMAGE filename; fall back to nearest supported version
@@ -99,9 +99,26 @@ function configure_image() {
     _msg="Copy image and resize" show_nicer_messages
     cp "${_QCOW_IMAGE}" /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2
     qemu-img resize /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2 ${_disk_size:-40}G
-    trap 'guestunmount /mnt 2>/dev/null' EXIT
+    trap 'unmount_image 2>/dev/null' EXIT
     _msg="Mount image for configuration" show_nicer_messages
     guestmount -i --rw -a /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2 /mnt/
+    # guestmount only mounts the guest's own filesystem — it does NOT bind
+    # /proc, /sys, /dev the way a real chroot jail needs. Confirmed live
+    # 2026-09-01: without /proc, `chroot /mnt/ zypper install NetworkManager`
+    # (install_packages() below) fails outright ("Warning: No repositories
+    # defined. Operating only with the installed resolvables." / "Failed to
+    # disable: Input/output error." on the systemctl calls) — NetworkManager
+    # never gets installed, wicked stays the active network stack, and the
+    # static IP .nmconnection file this whole flow writes (configure_os())
+    # never takes effect: the automation VM boots to a login prompt with NO
+    # IP on eth0 at all, silently, no error anywhere in this script's own
+    # log. This was masked for a long time by two OTHER, since-fixed issues
+    # (spice graphics failing outright, then --graphics=none itself causing
+    # a boot-time busy-loop) that both stopped the VM from ever reaching
+    # this point in the first place.
+    for _d in proc sys dev; do
+        mount --bind "/${_d}" "/mnt/${_d}"
+    done
 }
 
 function configure_os() {
@@ -139,6 +156,7 @@ function install_packages() {
     chroot /mnt/ bash -c "
         systemctl disable firewalld.service wicked.service
         systemctl enable sshd.service NetworkManager.service named apache2
+        systemctl disable jeos-firstboot.service jeos-firstboot-snapshot.service 2>/dev/null || true
     "
 }
 
@@ -155,10 +173,28 @@ function configure_ssh() {
 
 function install_lab_scripts() {
     _msg="Clone repository" show_nicer_messages
-    git clone https://github.com/SUSE-Technical-Marketing/lab-in-a-box.git /mnt/var/tmp/lab-in-a-box
+    # Clone to a real (non-FUSE) path first, then copy in — confirmed live
+    # 2026-09-01 on openSUSE Leap 16.0 (git 2.51.0): cloning DIRECTLY onto
+    # /mnt (guestmount's FUSE mount) fails deterministically with
+    # "update_ref failed ... trying to write ref 'refs/heads/main' with
+    # nonexistent object <sha>" — the same clone to a normal path succeeds
+    # immediately with that exact commit fully valid, so this is a git/FUSE
+    # ref-write incompatibility, not a network or repo problem. Leap 15.6's
+    # older git apparently tolerated this; 16.0's doesn't.
+    rm -rf /tmp/lab-in-a-box-clone
+    git clone https://github.com/SUSE-Technical-Marketing/lab-in-a-box.git /tmp/lab-in-a-box-clone
+    rm -rf /mnt/var/tmp/lab-in-a-box
+    cp -a /tmp/lab-in-a-box-clone /mnt/var/tmp/lab-in-a-box
+    rm -rf /tmp/lab-in-a-box-clone
     export _scripts_path=/var/tmp/lab-in-a-box/
     _msg="Run install_automation_node_scripts.sh" show_nicer_messages
-    chroot /mnt/ bash /var/tmp/lab-in-a-box/install_automation_node_scripts.sh
+    # install_automation_node_scripts.sh uses paths relative to ITS OWN repo
+    # root (templates/addons/*, scripts/install_*, ...) — it must run with
+    # that directory as cwd, not wherever this script's own caller happens
+    # to be (confirmed live 2026-09-01: without the cd, every relative copy
+    # in it fails with "cannot stat", non-fatal but silently skipping every
+    # addon template/script it's supposed to install).
+    chroot /mnt/ bash -c "cd /var/tmp/lab-in-a-box && bash install_automation_node_scripts.sh"
 }
 
 function configure_helm() {
@@ -284,10 +320,316 @@ EOF
     chmod 0644 /mnt/var/lib/named/${_mydomain}.lan /mnt/var/lib/named/${_mynetrev}.db
 }
 
+# ── Leap 16 exception ────────────────────────────────────────────────────
+#
+# guestmount's FUSE layer is broken specifically on openSUSE Leap 16.0 as a
+# lab-host — confirmed live 2026-09-01: guestfish (libguestfs's native RPC
+# interface, no FUSE involved) reads the exact same qcow2 cleanly on the
+# exact same host where guestmount's `ls` hits "Input/output error"
+# reading a real, populated directory (/etc/zypp/repos.d — 14 files).
+# libguestfs's own verbose trace shows its internal readdir/stat/xattr
+# calls all succeeding; the failure is specifically in guestmount's FUSE
+# reply layer. No older, compatible fuse3/libfuse3-3 build is available via
+# zypper on Leap 16 (only one version exists in its repos) to pin/downgrade
+# instead. Leap 15.6 and every other tested OS use the unchanged
+# guestmount+chroot path above — this is scoped to Leap 16 only, not a
+# rewrite of the whole mechanism.
+function _lab_host_is_leap16() {
+    . /etc/os-release 2>/dev/null
+    [[ "${ID}" == "opensuse-leap" && "${VERSION_ID}" == 16* ]]
+}
+
+# Does the whole configure_image()+configure_os()+install_packages()+
+# configure_ssh()+install_lab_scripts()+configure_helm()+configure_sshfs()+
+# configure_dns_server()+unmount_image() job in one guestfish session
+# instead — same sequence, same generated file content (the heredocs below
+# are the exact same text those functions produce), just delivered via
+# `upload`/`write`/`sh` instead of a live FUSE mount + chroot. guestfish's
+# own internal appliance boots a real minimal Linux environment, so `sh`
+# already has a working /proc,/sys,/dev with no bind-mount step needed.
+function configure_and_prepare_image_via_guestfish() {
+    _msg="Copy image and resize" show_nicer_messages
+    cp "${_QCOW_IMAGE}" /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2
+    qemu-img resize /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2 ${_disk_size:-40}G
+
+    # finish_automation_vm_setup_over_ssh() (below) needs to SSH from THIS
+    # host into the automation VM once it boots — the original,
+    # non-Leap-16 flow never SSHes anywhere from here (everything happens
+    # offline via guestmount), so it only ever authorized ROOT_SSH_PUB_KEY
+    # (the operator's own key, on whatever machine runs this script). That
+    # assumption breaks in the nested lab-host case: this script runs ON
+    # the lab-host VM, which doesn't hold the operator's private key.
+    # Ensure this host has its own keypair and authorize both.
+    [[ -f /root/.ssh/id_rsa ]] || ssh-keygen -b 4096 -N '' -t rsa -f /root/.ssh/id_rsa
+    local _lab_host_pubkey
+    _lab_host_pubkey="$(cat /root/.ssh/id_rsa.pub)"
+
+    local _stage
+    _stage="$(mktemp -d)"
+
+    # Static IP via wicked ifcfg, not a NetworkManager .nmconnection — this
+    # image's pristine default network stack is wicked (confirmed live
+    # 2026-09-01 via console screenshot: "wicked AutoIPv4/DHCPv4/DHCPv6
+    # supplicant service" at boot), and NetworkManager isn't installed at
+    # this point at all (that install itself needs internet — see below).
+    # Same wicked ifcfg shape configure_bridge() already uses elsewhere in
+    # this project for the exact same reason.
+    cat > "${_stage}/ifcfg-eth0" <<EOF
+BOOTPROTO='static'
+IPADDR='${_myip}'
+PREFIXLEN='${_mymask_cidr}'
+STARTMODE='auto'
+EOF
+    cat > "${_stage}/routes" <<EOF
+default ${_mygw} - -
+EOF
+    cat > "${_stage}/resolv.conf" <<EOF
+search ${_mydomain}
+nameserver ${_mydns}
+EOF
+
+    cat > "${_stage}/named.conf" <<EOF
+options {
+        directory "/var/lib/named";
+        managed-keys-directory "/var/lib/named/dyn/";
+        dump-file "/var/log/named_dump.db";
+        statistics-file "/var/log/named.stats";
+        listen-on port 53 { any; };
+        listen-on-v6 { any; };
+        allow-query { 127.0.0.1; 0.0.0.0/0; };
+        recursion yes;
+        dnssec-validation no;
+        forward only;
+        forwarders {
+            ${_mydns};
+        };
+};
+zone "." in {
+        type hint;
+        file "root.hint";
+};
+zone "localhost" in {
+        type master;
+        file "localhost.zone";
+};
+zone "0.0.127.in-addr.arpa" in {
+        type master;
+        file "127.0.0.zone";
+};
+zone "0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa" IN {
+        type master;
+        file "127.0.0.zone";
+};
+zone "${_mydomain}" in {
+        type master;
+        file "${_mydomain}.lan";
+        allow-update { none; };
+};
+zone "${_mynetrev}.in-addr.arpa" in {
+        type master;
+        file "${_mynetrev}.db";
+        allow-update { none; };
+};
+EOF
+
+    cat > "${_stage}/${_mynetrev}.db" <<EOF
+\$TTL 86400
+@   IN  SOA     ${AUTOMATION_HOSTNAME}. root.${_mydomain}. (
+        2019011601  ;Serial
+        3600        ;Refresh
+        1800        ;Retry
+        604800      ;Expire
+        86400       ;Minimum TTL
+)
+        IN  NS      ${AUTOMATION_HOSTNAME}.
+        IN  PTR     ${_mydomain}.
+
+${_myip//*.}      IN  PTR     ${AUTOMATION_HOSTNAME}.
+$(ip -4 --brief a show "${_bridge_name}" primary | awk -F'.' '{print $NF}' | cut -d/ -f1)      IN  PTR     $(hostname -f).
+
+EOF
+
+    cat > "${_stage}/${_mydomain}.lan" <<EOF
+\$TTL 86400
+@   IN  SOA     ${AUTOMATION_HOSTNAME}. root.${_mydomain}. (
+        2019011603  ;Serial
+        1m        ;Refresh
+        15m        ;Retry
+        3w        ;Expire
+        2h        ;Minimum TTL
+)
+        IN  NS      ${AUTOMATION_HOSTNAME}.
+        IN  A       ${_myip}
+        IN  MX 10   ${AUTOMATION_HOSTNAME}.
+
+${AUTOMATION_HOSTNAME//.$_mydomain}         IN  A       ${_myip}
+${MYREG//.$_mydomain}         IN  CNAME   ${AUTOMATION_HOSTNAME}
+bastion          IN  CNAME   ${AUTOMATION_HOSTNAME}.
+$(hostname)         IN  A       $(getent hosts "${HOSTNAME}" | awk '{print $1; exit}')
+
+EOF
+
+    cat > "${_stage}/download_latest_helm.sh" << 'HELMSCRIPT'
+#!/bin/bash
+curl -k "https://get.helm.sh/helm-$(curl -L --silent --show-error --fail 'https://get.helm.sh/helm-latest-version' 2>&1 | grep '^v[0-9]')-linux-MYARCH.tar.gz" \
+    --output /srv/www/htdocs/helm/helm-latest-linux-MYARCH.tar.gz
+curl -k https://raw.githubusercontent.com/helm/helm/main/KEYS --output /srv/www/htdocs/helm/KEYS
+chmod 0644 /srv/www/htdocs/helm/KEYS /srv/www/htdocs/helm/helm-latest-linux-MYARCH.tar.gz
+HELMSCRIPT
+    sed -i "s/MYARCH/${myarch:-amd64}/g" "${_stage}/download_latest_helm.sh"
+
+    cat > "${_stage}/install_helm.sh" <<HELMSCRIPT
+#!/bin/bash
+[ -d /tmp/helm ] || mkdir /tmp/helm
+curl -SsL "http://${AUTOMATION_HOSTNAME}/helm/helm-latest-linux-${myarch:-amd64}.tar.gz" -o /tmp/helm/helm-latest-linux-${myarch:-amd64}.tar.gz
+tar xf /tmp/helm/helm-latest-linux-${myarch:-amd64}.tar.gz -C /tmp/helm
+cp /tmp/helm/linux-${myarch:-amd64}/helm /usr/local/bin
+HELMSCRIPT
+
+    _msg="Clone repository" show_nicer_messages
+    rm -rf /tmp/lab-in-a-box
+    git clone https://github.com/SUSE-Technical-Marketing/lab-in-a-box.git /tmp/lab-in-a-box
+
+    _msg="Download latest helm and install it" show_nicer_messages
+    curl -k https://raw.githubusercontent.com/helm/helm/main/KEYS --output "${_stage}/KEYS"
+    curl -k "https://get.helm.sh/helm-$(curl -L --silent --show-error --fail \
+        'https://get.helm.sh/helm-latest-version' 2>&1 | grep '^v[0-9]')-linux-${myarch:-amd64}.tar.gz" \
+        --output "${_stage}/helm-latest-linux-${myarch:-amd64}.tar.gz"
+
+    local _gf="${_stage}/script.gf"
+    {
+        echo 'rm /var/lib/YaST2/reconfig_system'
+        echo "upload ${_stage}/resolv.conf /etc/resolv.conf"
+        echo "sh \"echo '${AUTOMATION_HOSTNAME}' > /etc/hostname\""
+        echo "upload ${_stage}/ifcfg-eth0 /etc/sysconfig/network/ifcfg-eth0"
+        echo "upload ${_stage}/routes /etc/sysconfig/network/routes"
+        echo 'sh "echo KEYMAP=us >> /etc/vconsole.conf"'
+        echo "ln-sf /usr/share/zoneinfo/${_timezone:-Europe/Zurich} /etc/localtime"
+
+        # zypper install / service enable / running install_automation_node_
+        # scripts.sh all need internet or already-installed packages this
+        # image doesn't ship — confirmed live 2026-09-01 that guestfish's
+        # own --network appliance interface never gets a usable IP
+        # (up, no DHCP lease, `getent hosts` fails), unlike a REAL booted
+        # VM's own network stack. Deferred to
+        # finish_automation_vm_setup_over_ssh(), run once wait_for_vm()
+        # confirms the VM is actually up and reachable at ${_myip} — plain
+        # SSH against a normally-booted host, no libguestfs involved at
+        # all, exactly like provisioning any other already-running KVM
+        # guest. Only jeos-firstboot is disabled here (needs no network,
+        # and must be done before first boot to have any effect).
+        echo 'sh "systemctl disable jeos-firstboot.service jeos-firstboot-snapshot.service 2>/dev/null || true"'
+
+        echo "sh \"ssh-keygen -b 4096 -N '' -t rsa -f /root/.ssh/id_rsa\""
+        echo 'sh "cp /root/.ssh/id_rsa.pub /srv/www/htdocs/id_rsa.pub && chmod 0644 /srv/www/htdocs/id_rsa.pub"'
+        echo "sh \"echo '${ROOT_SSH_PUB_KEY}' >> /root/.ssh/authorized_keys\""
+        echo "sh \"echo '${_lab_host_pubkey}' >> /root/.ssh/authorized_keys\""
+        echo "sh \"echo 'root:${root_pwd}' | chpasswd -c SHA512\""
+
+        echo 'rm-rf /var/tmp/lab-in-a-box'
+        # copy-in takes the LOCAL basename and creates it inside the given
+        # remote directory (i.e. this creates /var/tmp/lab-in-a-box because
+        # the local source dir is itself named lab-in-a-box) — not the same
+        # semantics as `cp -a src/. dst`, so the local clone dir above is
+        # named to match exactly what this needs to produce. Pure file
+        # copy, no network needed inside the guest for this part.
+        echo 'copy-in /tmp/lab-in-a-box /var/tmp'
+
+        echo 'mkdir-p /srv/www/htdocs/helm'
+        echo 'mkdir-p /srv/www/sources'
+        echo 'chmod 0755 /srv/www/htdocs/helm'
+        echo 'chmod 0755 /srv/www/sources'
+        echo "upload ${_stage}/KEYS /srv/www/htdocs/helm/KEYS"
+        echo 'chmod 0644 /srv/www/htdocs/helm/KEYS'
+        echo "upload ${_stage}/helm-latest-linux-${myarch:-amd64}.tar.gz /srv/www/htdocs/helm/helm-latest-linux-${myarch:-amd64}.tar.gz"
+        echo "upload ${_stage}/download_latest_helm.sh /usr/local/bin/download_latest_helm.sh"
+        echo "upload ${_stage}/install_helm.sh /srv/www/htdocs/helm/install_helm.sh"
+        echo 'chmod 0755 /usr/local/bin/download_latest_helm.sh'
+        echo 'chmod 0755 /srv/www/htdocs/helm/install_helm.sh'
+
+        echo "sh \"echo '${_virt_srv:-root@hypervisor}:/var/lib/libvirt/images/sources /srv/www/htdocs/sources fuse.sshfs  noauto,x-systemd.automount,_netdev,reconnect,identityfile=/root/.ssh/id_rsa,allow_other,default_permissions 0 0' >> /etc/fstab\""
+
+        echo "upload ${_stage}/named.conf /etc/named.conf"
+        echo "upload ${_stage}/${_mynetrev}.db /var/lib/named/${_mynetrev}.db"
+        echo "upload ${_stage}/${_mydomain}.lan /var/lib/named/${_mydomain}.lan"
+        echo "chmod 0644 /var/lib/named/${_mynetrev}.db"
+        echo "chmod 0644 /var/lib/named/${_mydomain}.lan"
+    } > "${_gf}"
+
+    _msg="Mount image for configuration (guestfish, Leap 16 exception)" show_nicer_messages
+    guestfish --rw -i -a /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2 -f "${_gf}"
+    local _rc=$?
+
+    # id_rsa.pub only exists inside the guest now — pull it out the same
+    # way configure_ssh() used to (via /mnt) so the rest of this script's
+    # own authorized_keys/pubkey-echo behavior is unaffected.
+    guestfish --ro -i -a /var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2 \
+        download /root/.ssh/id_rsa.pub "${_stage}/id_rsa.pub" 2>/dev/null
+    if [[ -s "${_stage}/id_rsa.pub" ]]; then
+        cat "${_stage}/id_rsa.pub" >> /root/.ssh/authorized_keys
+        echo -e "\n# Automation VM public key:\n$(cat "${_stage}/id_rsa.pub")\n"
+    fi
+
+    rm -rf /tmp/lab-in-a-box "${_stage}"
+    return "${_rc}"
+}
+
+# The rest of install_packages()/install_lab_scripts()'s original job
+# (zypper install, service enable, running install_automation_node_
+# scripts.sh — everything that needs real internet access or a fully
+# booted OS) — run once wait_for_vm() confirms the automation VM is
+# actually up, over plain SSH, exactly like provisioning any other
+# already-running KVM guest. The lab-in-a-box tree is already at
+# /var/tmp/lab-in-a-box (copied in offline, above).
+function finish_automation_vm_setup_over_ssh() {
+    _msg="Install required packages (post-boot, Leap 16 exception)" show_nicer_messages
+    ssh -o StrictHostKeyChecking=accept-new "root@${_myip}" \
+        "zypper --gpg-auto-import-keys install -y vim-small git rsync apache2 bind-utils bind docker podman libvirt-client jq virt-install salt-ssh ipcalc fuse3 sshfs netcat-openbsd"
+    ssh "root@${_myip}" "systemctl enable --now named apache2"
+
+    _msg="Run install_automation_node_scripts.sh (post-boot, Leap 16 exception)" show_nicer_messages
+    ssh "root@${_myip}" "cd /var/tmp/lab-in-a-box && bash install_automation_node_scripts.sh"
+}
+
 function unmount_image() {
     sync
+    # Unmount the /proc,/sys,/dev bind mounts configure_image() set up
+    # BEFORE guestunmount — guestunmount only knows about the guestmount
+    # FUSE mount itself, so these would otherwise stay mounted after /mnt
+    # is torn down out from under them.
+    for _d in dev sys proc; do
+        mountpoint -q "/mnt/${_d}" && umount "/mnt/${_d}"
+    done
+    # Confirmed live 2026-09-01: ssh-keygen (configure_ssh(), chrooted into
+    # /mnt) can leave an orphaned gpg-agent/scdaemon behind with its cwd
+    # still inside /mnt, holding the FUSE mount busy — guestunmount then
+    # fails ("Device or resource busy"), the qcow2 stays FUSE-mounted, and
+    # the subsequent virt-install fails outright ("Failed to get 'write'
+    # lock — Is another process using the image?"), so the automation VM
+    # never boots at all. Kill anything still holding /mnt open before
+    # attempting the real unmount, rather than let a single leftover
+    # process silently break the rest of the flow.
+    if command -v lsof &>/dev/null; then
+        lsof +D /mnt 2>/dev/null | awk 'NR>1{print $2}' | sort -u | xargs -r kill -9
+        sleep 1
+    fi
     guestunmount /mnt
     trap - EXIT
+    # guestunmount returning success only means the FUSE mountpoint is gone —
+    # libguestfs's own internal helper VM (what actually backs read/write
+    # access to the qcow2) can still be a moment behind releasing its own
+    # lock on the underlying file. Confirmed live 2026-09-01: create_vm()'s
+    # virt-install, run immediately after, intermittently failed with
+    # "Failed to get 'write' lock — Is another process using the image?"
+    # even though nothing was left holding /mnt itself by then. Poll briefly
+    # rather than a single fixed sleep, so the common case isn't slowed down.
+    local _qcow="/var/lib/libvirt/images/${AUTOMATION_HOSTNAME}.qcow2"
+    if command -v lsof &>/dev/null; then
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+            lsof "${_qcow}" &>/dev/null || break
+            sleep 1
+        done
+    fi
 }
 
 # "bridge" (default, today's exact unchanged behavior) puts the automation
@@ -388,16 +730,21 @@ configure_bridge
 generate_mac
 detect_vm_osinfo
 
-configure_image
-configure_os
-install_packages
-configure_ssh
-install_lab_scripts
-configure_helm
-configure_sshfs
-configure_dns_server
-unmount_image
+if _lab_host_is_leap16; then
+    configure_and_prepare_image_via_guestfish
+else
+    configure_image
+    configure_os
+    install_packages
+    configure_ssh
+    install_lab_scripts
+    configure_helm
+    configure_sshfs
+    configure_dns_server
+    unmount_image
+fi
 create_vm
 wait_for_vm
+_lab_host_is_leap16 && finish_automation_vm_setup_over_ssh
 configure_nat_port_forwarding
 configure_host_dns

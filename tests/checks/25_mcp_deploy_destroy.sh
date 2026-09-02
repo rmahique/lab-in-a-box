@@ -6,6 +6,6 @@
 # confirm never reaches the underlying function at all. Independent
 # container — see tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 python3 tests/checks/25_mcp_deploy_destroy_test.py

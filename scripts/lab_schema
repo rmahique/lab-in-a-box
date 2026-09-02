@@ -225,7 +225,31 @@ def base_lab_schema():
                     {"name": "INSTALL_RKE2_TYPE", "required": False, "type": "string", "default": "server", "enum": ["server", "agent"], "description": "Node role"},
                     {"name": "addons", "required": False, "type": "array", "description": "List of VM-level addon names (install_<addon> scripts)"},
                     {"name": "extra_dsk", "required": False, "type": "string", "description": "Additional disk paths or UUID=… entries (space-separated); per-disk bus: /dev/sdb,bus=scsi"},
-                    {"name": "config_method", "required": False, "type": "string", "description": "Overrides common.config_method for this node only"},
+                    # VM_MEM/VM_DSK/VM_CPU/VM_BOOT/VM_DSK_BUS/VM_NET_MODEL/VM_OSVARIANT/
+                    # VM_ROOT_PASS: load_vm_vars() (libs/lab_creation.py) merges 'common'
+                    # then overlays EVERY key present in a node's own dict, so all of
+                    # these are already genuinely overridable per-node at the code
+                    # level — this schema simply never exposed them as such before
+                    # (reported live 2026-09-01: the webui had no way to override
+                    # common's CPU/memory/disk defaults for an individual node,
+                    # because the fields to do so didn't exist here at all).
+                    {"name": "VM_MEM", "required": False, "type": "integer", "min": 256, "description": "Overrides common.VM_MEM for this node only"},
+                    {"name": "VM_DSK", "required": False, "type": "integer", "min": 1, "description": "Overrides common.VM_DSK for this node only"},
+                    {"name": "VM_CPU", "required": False, "type": "integer", "min": 1, "description": "Overrides common.VM_CPU for this node only"},
+                    {"name": "VM_BOOT", "required": False, "type": "string", "enum": ["uefi", "firmware=bios", "bios", "uefi=off", "hd"], "description": "Overrides common.VM_BOOT for this node only"},
+                    {"name": "VM_DSK_BUS", "required": False, "type": "string", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Overrides common.VM_DSK_BUS for this node only"},
+                    {"name": "VM_NET_MODEL", "required": False, "type": "string", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "Overrides common.VM_NET_MODEL for this node only"},
+                    {"name": "VM_MACHINE", "required": False, "type": "string", "enum": ["", "pc"],
+                     "description": "Overrides common.VM_MACHINE for this node only — set per-node when only "
+                     "one old guest in an otherwise-modern lab needs the legacy \"pc\" machine type"},
+                    {"name": "VM_OSVARIANT", "required": False, "type": "string", "description": "Overrides common.VM_OSVARIANT for this node only"},
+                    {"name": "VM_ROOT_PASS", "required": False, "type": "string", "description": "Overrides common.VM_ROOT_PASS for this node only (virt_customize only)"},
+                    {"name": "config_method", "required": False, "type": "string",
+                     "enum": [{"value": "", "label": "(default) Ignition+Combustion"}, "cloud-init", "virt_customize", "install_iso"],
+                     "description": "Overrides common.config_method for this node only"},
+                    {"name": "install_type", "required": False, "type": "string",
+                     "enum": [{"value": "", "label": "(default) auto-detect from ISO_IMAGE name"}, "autoyast", "kickstart", "preseed", "autoinstall"],
+                     "description": "Overrides common.install_type for this node only (config_method=install_iso only)"},
                     {"name": "network_renderer", "required": False, "type": "string", "enum": ["NetworkManager", "networkd"],
                      "description": "Overrides common.network_renderer for this node only — set per-node when a lab mixes guest OSes (e.g. SLE Micro nodes on NetworkManager, an Ubuntu node on networkd)"},
                     {"name": "ISO_IMAGE", "required": False, "type": "string", "description": "Overrides common.ISO_IMAGE for this node only"},

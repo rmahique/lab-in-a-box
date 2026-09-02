@@ -4,7 +4,7 @@
 # (07_webui_js_smoke.js, loaded via node's vm module — no jsdom/npm
 # dependency). Independent container — see tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 _pass=0
 _fail=0

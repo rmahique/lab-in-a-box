@@ -6,11 +6,9 @@
 # order, and validate_lab_definition's preflight checks (with subprocess.run
 # mocked so this runs in a container with no virsh/ping/jq installed). Run
 # from 10_lab_creation_core.sh, in its own container — see tests/run_tests.sh.
-import io
 import json
 import sys
 import tempfile
-from contextlib import redirect_stdout
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -419,19 +417,131 @@ check("validate_lab_definition: common.backend=harvester (no per-node override) 
       lc.validate_lab_definition(harvester_via_common, single_host_cfg, "/iso", "/lab") is True)
 
 
+# ── common.ISO_IMAGE only required when a node lacks its own override ───────
+# Regression test for a real bug reported live 2026-09-01: a lab where every
+# node pins its own ISO_IMAGE never needs a common default at all, but
+# validate_lab_definition() rejected it outright. config_method="virt_customize"
+# on every node (same trick the harvester tests above use) keeps this test
+# scoped to the ISO_IMAGE-required logic — it skips the separate ignition/
+# combustion-template-existence checks that "" (the default config_method)
+# would otherwise also trigger.
+common_no_iso = dict(base_common)
+common_no_iso["ISO_IMAGE"] = ""
+# "echo ok" -> SSH reachability check for the image-exists-on-hypervisor
+# check; everything else (the "test -f" image check itself) falls through
+# to the default FakeCompleted(returncode=0) — succeeds.
+lc.subprocess.run = FakeRun(responses=[("echo ok", FakeCompleted(returncode=0, stdout="ok"))])
+
+lab_all_nodes_override_iso = _lab_def({
+    "common": common_no_iso,
+    "nodes": {
+        "vm1": {"myip": "192.168.1.70", "ISO_IMAGE": "vm1.qcow2", "config_method": "virt_customize"},
+        "vm2": {"myip": "192.168.1.71", "ISO_IMAGE": "vm2.qcow2", "config_method": "virt_customize"},
+    },
+})
+check("validate_lab_definition: empty common.ISO_IMAGE passes when every node overrides it",
+      lc.validate_lab_definition(lab_all_nodes_override_iso, single_host_cfg, "/iso", "/lab") is True)
+
+lab_one_node_missing_iso = _lab_def({
+    "common": common_no_iso,
+    "nodes": {
+        "vm1": {"myip": "192.168.1.72", "ISO_IMAGE": "vm1.qcow2", "config_method": "virt_customize"},
+        "vm2": {"myip": "192.168.1.73", "config_method": "virt_customize"},
+    },
+})
+check("validate_lab_definition: empty common.ISO_IMAGE still fails when a node has no override",
+      lc.validate_lab_definition(lab_one_node_missing_iso, single_host_cfg, "/iso", "/lab") is False)
+
+
+# ── config_method="" (Ignition+Combustion) warns for a non-Micro image ──────
+# Regression test for a real bug reported live 2026-09-01: a node with
+# config_method="" (the default) and a plain SLES/Leap "kvm-and-xen" image
+# (not SLE Micro) never gets its static IP configured, since Ignition/
+# Combustion is silently a no-op on a guest with no ignition support built
+# in. This should warn (not error — a bad heuristic shouldn't block a
+# deploy), and only for the true Ignition-default case.
+import io as _io
+from contextlib import redirect_stdout as _redirect_stdout
+
+lc.subprocess.run = FakeRun(responses=[("echo ok", FakeCompleted(returncode=0, stdout="ok"))])
+
+lab_ignition_non_micro = _lab_def({
+    "common": dict(base_common, **{"ISO_IMAGE": "SLES15-SP6-Minimal-VM.x86_64-kvm-and-xen-GM.qcow2"}),
+    "nodes": {"vm1": {"myip": "192.168.1.80"}},  # config_method omitted -> Ignition+Combustion
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    # Not asserting ok is True here: config_method="" (Ignition) also
+    # requires real ignition/combustion template files to exist at
+    # lab_setup_path, a separate, pre-existing check unrelated to this
+    # fix — "/lab" (this test's fixture path) never has them, so this
+    # particular lab genuinely fails preflight for that reason regardless.
+    # What's under test is specifically that the mismatch gets flagged as
+    # a WARNING (not folded into/blocked by that unrelated error).
+    lc.validate_lab_definition(lab_ignition_non_micro, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: config_method='' + non-Micro image warns about the mismatch",
+      "is likely unsupported on ISO_IMAGE" in buf.getvalue())
+check("validate_lab_definition: the mismatch is reported as a WARNING, not an ERROR",
+      "[WARN]" in buf.getvalue().split("is likely unsupported on ISO_IMAGE")[0].splitlines()[-1])
+
+lab_ignition_micro = _lab_def({
+    "common": dict(base_common, **{"ISO_IMAGE": "SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2"}),
+    "nodes": {"vm1": {"myip": "192.168.1.81"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_ignition_micro, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: config_method='' + a genuine SLE Micro image warns about nothing",
+      "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
+
+# config_method="cloud-init" on the same "kvm-and-xen" Minimal-VM image is
+# ALSO unsupported (that image family uses JeOS Firstboot, not cloud-init —
+# see _IMAGE_CONFIG_METHOD_SUPPORT's sources) — confirmed live 2026-09-02
+# against two real such images on nuc6 (neither has a cloud-init binary or
+# systemd unit), and the actual root cause of an unreachable VM reported the
+# same day. Unlike the config_method="" case above, switching to cloud-init
+# does NOT fix this image family — only virt_customize does.
+lab_cloudinit_non_micro = _lab_def({
+    "common": dict(base_common, **{
+        "ISO_IMAGE": "SLES15-SP6-Minimal-VM.x86_64-kvm-and-xen-GM.qcow2",
+        "config_method": "cloud-init",
+    }),
+    "nodes": {"vm1": {"myip": "192.168.1.82"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_cloudinit_non_micro, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: cloud-init on a kvm-and-xen Minimal-VM image also warns (JeOS Firstboot, not cloud-init)",
+      "is likely unsupported on ISO_IMAGE" in buf.getvalue())
+
+# ... but an image this heuristic doesn't recognize at all is left alone,
+# regardless of config_method — "if distribution is not in the list then
+# just continue" (explicit design requirement, not an oversight).
+lab_cloudinit_unknown_image = _lab_def({
+    "common": dict(base_common, **{
+        "ISO_IMAGE": "some-completely-unrecognized-image.qcow2",
+        "config_method": "cloud-init",
+    }),
+    "nodes": {"vm1": {"myip": "192.168.1.83"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_cloudinit_unknown_image, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: an unrecognized ISO_IMAGE is never warned about",
+      "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
+
+
 # ── config_method enum validation ────────────────────────────────────────────
 # Regression test for a real bug reported live 2026-09-02: a lab.json with
 # config_method="virt-customize" (a "virt_customize" typo, hyphen instead of
 # underscore) matched none of create_vm()'s config_method branches, so it
 # silently never called virt-install at all — no VM, no error, anywhere.
-lc.subprocess.run = img_check_ok
 lab_bad_config_method = _lab_def({
     "common": base_common,
     "nodes": {"vm1": {"myip": "192.168.1.90", "config_method": "virt-customize"}},
 })
 ok = lc.validate_lab_definition(lab_bad_config_method, single_host_cfg, "/iso", "/lab")
 check("validate_lab_definition: an invalid config_method value fails preflight", ok is False)
-
 
 
 # ── installer-ISO vs. config_method mismatch ─────────────────────────────────
@@ -448,8 +558,8 @@ lab_iso_wrong_method = _lab_def({
         "ISO_IMAGE": "ubuntu-24.04-live-server-amd64.iso",
     }},
 })
-buf = io.StringIO()
-with redirect_stdout(buf):
+buf = _io.StringIO()
+with _redirect_stdout(buf):
     ok = lc.validate_lab_definition(lab_iso_wrong_method, single_host_cfg, "/iso", "/lab")
 check("validate_lab_definition: an installer ISO with a non-install_iso config_method fails preflight",
       ok is False and "is an installer ISO but config_method is" in buf.getvalue())
@@ -464,8 +574,8 @@ lab_iso_right_method = _lab_def({
         "ISO_IMAGE": "ubuntu-24.04-live-server-amd64.iso",
     }},
 })
-buf = io.StringIO()
-with redirect_stdout(buf):
+buf = _io.StringIO()
+with _redirect_stdout(buf):
     lc.validate_lab_definition(lab_iso_right_method, single_host_cfg, "/iso", "/lab")
 check("validate_lab_definition: an installer ISO with config_method=install_iso is not flagged",
       "is an installer ISO but config_method is" not in buf.getvalue())
@@ -488,42 +598,11 @@ lab_explicit_empty_override = _lab_def({
     }),
     "nodes": {"vm1": {"myip": "192.168.1.93", "config_method": ""}},
 })
-buf = io.StringIO()
-with redirect_stdout(buf):
+buf = _io.StringIO()
+with _redirect_stdout(buf):
     lc.validate_lab_definition(lab_explicit_empty_override, single_host_cfg, "/iso", "/lab")
 check("validate_lab_definition: an explicit per-node config_method=\"\" wins over a non-empty "
       "common.config_method, instead of silently inheriting it",
-      "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
-
-# ... but cloud-init on that same kvm-and-xen Minimal-VM image (no override)
-# still warns — that image family uses JeOS Firstboot, not cloud-init.
-lab_cloudinit_kvm_and_xen = _lab_def({
-    "common": dict(base_common, **{
-        "ISO_IMAGE": "SLES15-SP6-Minimal-VM.x86_64-kvm-and-xen-GM.qcow2",
-        "config_method": "cloud-init",
-    }),
-    "nodes": {"vm1": {"myip": "192.168.1.94"}},
-})
-buf = io.StringIO()
-with redirect_stdout(buf):
-    lc.validate_lab_definition(lab_cloudinit_kvm_and_xen, single_host_cfg, "/iso", "/lab")
-check("validate_lab_definition: cloud-init on a kvm-and-xen Minimal-VM image warns (JeOS Firstboot, not cloud-init)",
-      "is likely unsupported on ISO_IMAGE" in buf.getvalue())
-
-# ... and an image this heuristic doesn't recognize at all is left alone,
-# regardless of config_method — "if distribution is not in the list then
-# just continue" (explicit design requirement, not an oversight).
-lab_cloudinit_unknown_image = _lab_def({
-    "common": dict(base_common, **{
-        "ISO_IMAGE": "some-completely-unrecognized-image.qcow2",
-        "config_method": "cloud-init",
-    }),
-    "nodes": {"vm1": {"myip": "192.168.1.95"}},
-})
-buf = io.StringIO()
-with redirect_stdout(buf):
-    lc.validate_lab_definition(lab_cloudinit_unknown_image, single_host_cfg, "/iso", "/lab")
-check("validate_lab_definition: an unrecognized ISO_IMAGE is never warned about",
       "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
 
 

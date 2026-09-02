@@ -478,6 +478,23 @@ class LibvirtBackend(VMBackend):
         if result.returncode != 0:
             die("Failed to resize VM image \"{}\" to \"{}G\"".format(vm_name, vm_dsk_gb))
 
+        if disk_format == "raw":
+            # GPT keeps a backup header+table at the very end of the disk —
+            # growing the raw file with qemu-img resize leaves that backup
+            # copy sitting in the middle of the disk instead, at the old
+            # end. Confirmed live 2026-09-01: this alone doesn't stop the
+            # kernel/GRUB reading the (unaffected) primary header, but shows
+            # up as "GPT: Use GNU Parted to correct GPT errors." in dmesg,
+            # and was the leading suspect in a lab-host VM's root filesystem
+            # appearing to reset to its pristine first-boot snapshot after a
+            # reboot. Never needed for qcow2 (each VM's own disk is created
+            # at its final size there, never grown after the fact), so
+            # scoped to the raw path only.
+            log("- Repair GPT backup header/table after resize (raw disks only)")
+            result = ssh_run(self.remote_host, "sgdisk -e {}".format(dest), check=False)
+            if result.returncode != 0:
+                die("Failed to repair GPT backup header on \"{}\" after resize".format(vm_name))
+
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
         os_variant="slem5.4", boot="uefi", config_method="",  # boot: "uefi", "firmware=bios", "hd", …

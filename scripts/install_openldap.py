@@ -9,7 +9,7 @@
 #   openldap_name    : [OPTIONAL] Deployment and service name          (default: openldap)
 #   openldap_version : [OPTIONAL] Helm chart version                   (empty = latest)
 
-__version__ = "ca2d2d5"
+__version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "openldap",
@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent / "libs")):
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
     if Path(_candidate).is_dir() and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 

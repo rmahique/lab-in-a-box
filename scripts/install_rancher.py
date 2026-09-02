@@ -17,7 +17,7 @@
 #   rancher_cert_repo_url  : [OPTIONAL] cert-manager Helm repo URL            (default: https://charts.jetstack.io)
 #   cert_manager_ver       : [OPTIONAL] cert-manager version flag             (empty = latest, e.g. --version v1.14.4)
 
-__version__ = "ca2d2d5"
+__version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "rancher",
@@ -32,7 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent / "libs")):
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
     if Path(_candidate).is_dir() and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 

@@ -194,6 +194,45 @@ check("create_vm: vm_machine='pc' adds --machine pc to the virt-install invocati
       "--machine" in argv and argv[argv.index("--machine") + 1] == "pc")
 
 
+# ── copy_vm_image / disk_format: found live on nuc6 (2026-08-31) — create_vm's
+# disk_format="raw" landed its own new disk at <vm_name>.raw, but
+# copy_vm_image() (which actually populates the disk with the source
+# image's content, called BEFORE create_vm) still unconditionally wrote to
+# <vm_name>.qcow2 regardless — create_vm's --import would then have found
+# nothing at .raw and silently created a blank, non-bootable disk instead
+# of using the copied image. Also: a plain `cp` renamed to .raw would not
+# even be a valid raw disk (the source is genuinely QCOW2-container
+# content) — needs a real `qemu-img convert -O raw`, not a rename.
+subproc_calls.clear()
+backend.copy_vm_image("source.qcow2", "vm1", "40", config_method="cloud-init")
+cmds = [" ".join(c) for c in subproc_calls]
+check("copy_vm_image: default disk_format still plain `cp` to <vm_name>.qcow2, unchanged",
+      any("cp" in c and "vm1.qcow2" in c for c in cmds)
+      and not any("qemu-img convert" in c for c in cmds))
+check("copy_vm_image: default disk_format resizes with -f qcow2",
+      any("qemu-img resize -f qcow2" in c and "vm1.qcow2" in c for c in cmds))
+check("copy_vm_image: default disk_format never runs a GPT repair (qcow2 disks aren't grown post-copy)",
+      not any("sgdisk" in c for c in cmds))
+
+subproc_calls.clear()
+backend.copy_vm_image("source.qcow2", "vm1", "40", config_method="cloud-init", disk_format="raw")
+cmds = [" ".join(c) for c in subproc_calls]
+check("copy_vm_image: disk_format='raw' converts (not cp's) the source into <vm_name>.raw",
+      any("qemu-img convert -O raw" in c and "source.qcow2" in c and "vm1.raw" in c for c in cmds))
+check("copy_vm_image: disk_format='raw' never does a plain cp of the source image",
+      not any("cp /iso/source.qcow2" in c for c in cmds))
+check("copy_vm_image: disk_format='raw' resizes with -f raw against the .raw path",
+      any("qemu-img resize -f raw" in c and "vm1.raw" in c for c in cmds))
+# GPT backup header/table repair: growing a raw GPT-partitioned disk with
+# qemu-img resize leaves the backup GPT structures at the old end of the
+# disk instead of the new one — confirmed live 2026-09-01 as the likely
+# cause of a lab-host VM's root filesystem appearing to reset to its
+# pristine first-boot Btrfs snapshot after a reboot (dmesg: "GPT: Use GNU
+# Parted to correct GPT errors."). sgdisk -e moves them back to the end.
+check("copy_vm_image: disk_format='raw' repairs the GPT backup header/table after resize",
+      any("sgdisk -e" in c and "vm1.raw" in c for c in cmds))
+
+
 # ── Bug 3: delete_vm must not undefine the domain before removing storage ───
 # (found live, twice: a bare `undefine --nvram` succeeded regardless of
 # whether the domain was running, removing its definition before the real

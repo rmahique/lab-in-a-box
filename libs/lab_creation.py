@@ -248,9 +248,18 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     kclusters = definition.get("kclusters") or {}
 
     # ── 2. common: required fields ────────────────────────────────────────────
+    # common.ISO_IMAGE is only required when some node doesn't supply its own
+    # override (nodes.<name>.ISO_IMAGE) — a lab where every node pins its own
+    # image is valid and never needs a common default at all.
     iso = _jq_or(common.get("ISO_IMAGE"))
     if _empty(iso):
-        err("common.ISO_IMAGE is required")
+        nodes_missing_iso = [
+            n for n, cfg in (definition.get("nodes") or {}).items()
+            if _empty(_jq_or((cfg or {}).get("ISO_IMAGE")))
+        ]
+        if nodes_missing_iso:
+            err("common.ISO_IMAGE is required (or set ISO_IMAGE per-node) — missing for: {}".format(
+                ", ".join(sorted(nodes_missing_iso))))
 
     for req in ("VM_MEM", "VM_DSK", "VM_CPU"):
         if _empty(_jq_or(common.get(req))):

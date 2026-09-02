@@ -5,7 +5,7 @@
 # can't silently drift from what actually ships. Independent container — see
 # tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 _pass=0
 _fail=0

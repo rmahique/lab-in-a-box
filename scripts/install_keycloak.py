@@ -12,7 +12,7 @@
 #   keycloak_admin      : [OPTIONAL] admin username (default: admin)
 #   keycloak_password   : [OPTIONAL] admin password (default: keycloak123)
 
-__version__ = "ca2d2d5"
+__version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "keycloak",
@@ -25,7 +25,7 @@ PLUGIN = {
 import sys
 from pathlib import Path
 
-for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent / "libs")):
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
     if Path(_candidate).is_dir() and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 

@@ -330,18 +330,30 @@ class OpenSUSELeap15Profile(_SuseZypperProfile):
 
 class OpenSUSELeap16Profile(_SuseZypperProfile):
     name = "opensuse-leap-16"
+    # Confirmed live 2026-09-01 against a real openSUSE Leap 16.0 host: the
+    # two changes below match exactly what SLES16Profile already found on
+    # the same SUSE-16-generation package set (see its own comments) —
+    # gpgme-devel was renamed libgpgme-devel, and cri-tools has no
+    # replacement anywhere in Leap 16's repos either. Every other package in
+    # this list (including sensors, ftsteutates-sensors's own dependency)
+    # confirmed installable as-is; ftsteutates-sensors/minikube-bash-completion/
+    # kubectl-who-can/kubevirt-virtctl/kubernetes1.28-client remain
+    # unverified (not tested this pass — none of them block create_vm/
+    # bootstrap, only their own optional features) and stay in
+    # unmapped_packages rather than being guessed at.
     packages = [
-        "libvirt", "podman", "docker", "cri-tools", "gpgme-devel",
+        "libvirt", "podman", "docker", "libgpgme-devel",
         "device-mapper-devel", "libbtrfs-devel", "git-core", "mc",
         "bridge-utils", "tcpdump", "sensors", "netcat-openbsd", "gptfdisk",
         "libvirt-daemon-qemu", "qemu-tools", "virt-install", "libguestfs",
     ]
     unmapped_packages = [
-        # OBS-devel-origin on 15.x; availability on Leap 16's restructured
-        # repos (single repo-oss replacing 15.x's OSS/Update split) is
-        # unverified against a real host — warned, not guessed at.
         "minikube-bash-completion", "kubectl-who-can", "kubevirt-virtctl",
         "kubernetes1.28-client", "ftsteutates-sensors",
+        # cri-tools: confirmed live 2026-09-01 genuinely unavailable on Leap
+        # 16, same as SLES 16 (see SLES16Profile's own comment) — "No
+        # matching items found", no renamed equivalent found either.
+        "cri-tools",
     ]
 
 
