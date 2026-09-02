@@ -146,6 +146,7 @@ def provision_vm(definition, config, defaults, vm_name):
         iso_loc=iso_loc, mydns=env.get("mydns", ""),
         vcluster=env.get("vcluster", ""),
         mymac=mymac,
+        vm_machine=env.get("VM_MACHINE", ""),
     )
 
     clean_ssh_keys(vm_name, env.get("myip", ""))

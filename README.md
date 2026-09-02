@@ -368,6 +368,7 @@ Optional node-level fields:
 | `kvm_host` | Pin this VM to a specific hypervisor in a [multi-host lab](#multi-host-labs) |
 | `extra_dsk` | Additional disk(s) to attach — `"/dev/sdb"`, or `"/dev/sdb,bus=scsi"` to override the default bus per disk |
 | `salt_states` | Salt states to apply (cloud-init method only) |
+| `VM_MACHINE` | virt-install machine type override — `""` (default, virt-install's own choice, currently `q35`) or `"pc"` (legacy i440fx), for an old guest whose kernel/GRUB can't find its root disk under q35 — see [Deploying a legacy image (CentOS 7)](#deploying-a-legacy-image-centos-7) |
 
 Optional kcluster fields:
 
@@ -457,6 +458,44 @@ Stand up an Uyuni server with an activation key, then register a second VM again
   }
 }
 ```
+
+### Deploying a legacy image (CentOS 7)
+
+CentOS 7 (and other pre-built `.qcow2` images that old) has neither Ignition/Combustion nor
+cloud-init built in, so `config_method` must be `virt_customize` (see
+[VM provisioning](#vm-provisioning)) — it edits the qcow2 filesystem directly instead of relying
+on an in-guest agent. Two more overrides matter for an image this old:
+
+- `VM_BOOT: "bios"` — CentOS 7's GRUB expects legacy BIOS, not this project's UEFI default.
+- `VM_MACHINE: "pc"` — confirmed live against a 2015 CentOS 7 GenericCloud image (kernel
+  `3.10.0-229`): booted under virt-install's own machine-type default (currently `q35`), it hangs
+  forever in a dracut emergency shell (`Not all disks have been found`) — its virtio-blk root disk
+  never shows up in time under Q35's PCIe topology. The identical disk boots straight through
+  under the legacy i440fx chipset (`"pc"`). This is a chipset/old-kernel incompatibility, not
+  anything specific to this project — the same override applies to any sufficiently old guest.
+
+```jsonc
+{
+  "nodes": {
+    "legacy1.mydemo.lab": {
+      "myip": "192.168.88.120",
+      "config_method": "virt_customize",
+      "ISO_IMAGE": "CentOS-7-x86_64-GenericCloud-20150628_01.qcow2",
+      "VM_BOOT": "bios",
+      "VM_MACHINE": "pc"
+    }
+  },
+  "common": { "VM_MEM": "2048", "VM_DSK": "30", "VM_CPU": "1", "VM_ROOT_PASS": "12345678" }
+}
+```
+
+```shell
+setup_lab.py legacy.json
+```
+
+`VM_ROOT_PASS` (in `common`, or per-node) sets the root password `virt_customize` bakes into the
+image directly — omit it to reuse `ROOT_PWD_HASH` from `lab_creation.cfg` instead, the same
+fallback cloud-init and Ignition use.
 
 <p align="right"><a href="#top">↑ back to top</a></p>
 

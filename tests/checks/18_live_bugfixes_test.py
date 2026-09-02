@@ -169,6 +169,31 @@ check("create_vm: disk_format='raw' uses a .raw path with an explicit driver.typ
       ".raw" in disk_arg and ".qcow2" not in disk_arg and "driver.type=raw" in disk_arg)
 
 
+# ── vm_machine: a 2015-era CentOS 7 GenericCloud image (kernel 3.10.0-229)
+# hangs in a dracut emergency shell ("Not all disks have been found") when
+# booted under virt-install's own q35 default — confirmed live 2026-09-02
+# on a completely unmodified clone of the source image (so this is a
+# genuine chipset/old-kernel incompatibility, not anything config_method-
+# specific). --machine pc (legacy i440fx) boots it cleanly. Left empty by
+# default so every already-working image is unaffected.
+subproc_calls.clear()
+backend.create_vm(
+    "vm1", "2", "4096", "40", "network=default,model=virtio",
+    config_method="virt_customize", ign_file="vm1.ign", com_file="vm1",
+)
+check("create_vm: no vm_machine given -> no --machine flag at all, virt-install picks its own default",
+      "--machine" not in subproc_calls[-1])
+
+subproc_calls.clear()
+backend.create_vm(
+    "vm1", "2", "4096", "40", "network=default,model=virtio",
+    config_method="virt_customize", ign_file="vm1.ign", com_file="vm1", vm_machine="pc",
+)
+argv = subproc_calls[-1]
+check("create_vm: vm_machine='pc' adds --machine pc to the virt-install invocation",
+      "--machine" in argv and argv[argv.index("--machine") + 1] == "pc")
+
+
 # ── Bug 3: delete_vm must not undefine the domain before removing storage ───
 # (found live, twice: a bare `undefine --nvram` succeeded regardless of
 # whether the domain was running, removing its definition before the real

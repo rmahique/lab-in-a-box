@@ -194,6 +194,11 @@ def base_lab_schema():
                     {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Disk bus type for the primary disk"},
                     {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "NIC device model"},
                     {"name": "VM_OSVARIANT", "required": False, "type": "string", "default": "slem5.4", "description": "OS variant for virt-install (osinfo-query os)"},
+                    {"name": "VM_MACHINE", "required": False, "type": "string", "default": "",
+                     "enum": [{"value": "", "label": "(default) virt-install's own choice, currently q35"}, "pc"],
+                     "description": "virt-install machine type override — set to \"pc\" (legacy i440fx) for an "
+                     "old guest whose kernel/GRUB can't find its root disk under q35 (confirmed live for a "
+                     "2015-era CentOS 7 GenericCloud image); leave unset for every image that already works"},
                     {"name": "config_method", "required": False, "type": "string", "default": "",
                      "enum": [{"value": "", "label": "(default) Ignition+Combustion"}, "cloud-init", "virt_customize", "install_iso"],
                      "description": "Provisioning method"},
