@@ -4,6 +4,6 @@
 # this environment; see backends.py's own HarvesterBackend docstring).
 # Independent container — see tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 python3 tests/checks/27_harvester_backend_test.py

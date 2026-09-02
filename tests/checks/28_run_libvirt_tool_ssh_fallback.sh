@@ -5,6 +5,6 @@
 # and _has_local_binary are mocked. Independent container — see
 # tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 python3 tests/checks/28_run_libvirt_tool_ssh_fallback_test.py

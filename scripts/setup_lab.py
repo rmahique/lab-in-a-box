@@ -19,7 +19,7 @@ Usage:
     setup_lab.py [--keep] <lab.json>
 """
 
-__version__ = "f183058"
+__version__ = "__LABVERSION__"
 _SCHEMA_VERSION = "1.0"
 
 import os
@@ -29,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent / "libs")):
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
     if Path(_candidate).is_dir() and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
@@ -150,7 +150,18 @@ def phase_create_vms(definition, config, defaults, json_file, keep):
         except RuntimeError as e:
             lc.warn("destroy before recreate failed for '{}' (continuing): {}".format(vm_name, e))
 
-        provision_vm(definition, config, defaults, vm_name)
+        # A single node's boot-wait timing out (check_ssh_conn's own die(),
+        # inside provision_vm()) must not abort the whole multi-node deploy —
+        # reported live 2026-09-01: one slow/failed node ("ERROR: retry
+        # limit ( 100 ) exceeded waiting for X to boot.") killed the entire
+        # run instead of continuing with the rest. Mirrors the destroy_vm()
+        # error handling just above: log and move on to the next node.
+        try:
+            provision_vm(definition, config, defaults, vm_name)
+        except SystemExit:
+            lc.warn("provisioning '{}' failed (continuing with the remaining nodes)".format(vm_name))
+        except RuntimeError as e:
+            lc.warn("provisioning '{}' failed (continuing with the remaining nodes): {}".format(vm_name, e))
     lc._level -= 1
 
 

@@ -478,6 +478,23 @@ class LibvirtBackend(VMBackend):
         if result.returncode != 0:
             die("Failed to resize VM image \"{}\" to \"{}G\"".format(vm_name, vm_dsk_gb))
 
+        if disk_format == "raw":
+            # GPT keeps a backup header+table at the very end of the disk —
+            # growing the raw file with qemu-img resize leaves that backup
+            # copy sitting in the middle of the disk instead, at the old
+            # end. Confirmed live 2026-09-01: this alone doesn't stop the
+            # kernel/GRUB reading the (unaffected) primary header, but shows
+            # up as "GPT: Use GNU Parted to correct GPT errors." in dmesg,
+            # and was the leading suspect in a lab-host VM's root filesystem
+            # appearing to reset to its pristine first-boot snapshot after a
+            # reboot. Never needed for qcow2 (each VM's own disk is created
+            # at its final size there, never grown after the fact), so
+            # scoped to the raw path only.
+            log("- Repair GPT backup header/table after resize (raw disks only)")
+            result = ssh_run(self.remote_host, "sgdisk -e {}".format(dest), check=False)
+            if result.returncode != 0:
+                die("Failed to repair GPT backup header on \"{}\" after resize".format(vm_name))
+
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
         os_variant="slem5.4", boot="uefi", config_method="",  # boot: "uefi", "firmware=bios", "hd", …
@@ -486,6 +503,9 @@ class LibvirtBackend(VMBackend):
         install_type="", iso_image="", iso_loc="", mydns="",
         vcluster="", mymac=None,  # unused here — already embedded in `network` by check_or_generate_mac()
         disk_format="qcow2",  # "qcow2" (default, unchanged) or "raw" — see below
+        vm_machine="",  # "" (default, unchanged) lets virt-install pick its own
+                         # machine type (currently q35) — see below for why this
+                         # ever needs overriding
     ):
         """
         Create a VM on a KVM hypervisor via virt-install, covering all 6
@@ -508,6 +528,18 @@ class LibvirtBackend(VMBackend):
 
         extra_disks entries look like "/dev/sdb,bus=scsi" or "UUID=xxx,bus=sata"
         (a path or a UUID= reference, with an optional per-disk bus override).
+
+        vm_machine overrides virt-install's own machine-type default
+        (currently "q35" — chosen by virt-install/libosinfo, not something
+        this project has ever set explicitly). Confirmed live 2026-09-02: a
+        2015-era CentOS 7 GenericCloud image (kernel 3.10.0-229) hangs in a
+        dracut emergency shell under q35 ("Not all disks have been found" —
+        its virtio-blk root disk never appears in time under Q35's PCIe
+        topology), on a completely unmodified clone of the source image, so
+        this is a genuine old-guest/chipset incompatibility, not anything
+        config_method-specific. The identical disk boots straight through
+        with `--machine pc` (the legacy i440fx chipset). Left empty by
+        default — unchanged behavior for every image that already works.
         """
         vm_img_loc = self.vm_img_loc
         remote_host = self.remote_host
@@ -556,6 +588,8 @@ class LibvirtBackend(VMBackend):
             "--graphics", "spice,listen=0.0.0.0",
             "--network", network, "--noautoconsole",
         ]
+        if vm_machine:
+            base_args += ["--machine", vm_machine]
 
         if config_method == "":
             ign = ign_file or vm_name

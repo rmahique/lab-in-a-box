@@ -91,6 +91,83 @@ def resolve_install_type(install_type, iso_image):
     return itype
 
 
+# Vendor-documented (or live-confirmed) provisioning-method support per image
+# family, matched against ISO_IMAGE by filename — used only to warn, never to
+# block: an image matching nothing below is left alone, since this is a
+# best-effort heuristic, not a guarantee (same convention as
+# resolve_install_type() above).
+#
+# Sources:
+#   - SLES Minimal VM variants — https://documentation.suse.com/smart/virtualization-cloud/html/minimal-vm/index.html:
+#     the plain "kvm-and-xen" variant (this project's own ISO_LOC images,
+#     e.g. "SLES15-SP6-Minimal-VM.x86_64-kvm-and-xen-GM.qcow2") uses JeOS
+#     Firstboot — not cloud-init and not Ignition. Only the separate "for
+#     OpenStack" variant ships cloud-init, which is why this pattern
+#     requires "kvm-and-xen" specifically rather than matching any
+#     "Minimal-VM" filename. Confirmed live 2026-09-02 via virt-ls/virt-cat
+#     against two real such images on nuc6: neither has a cloud-init binary
+#     or systemd unit. openSUSE Leap ships an identically-named
+#     "openSUSE-Leap-15.x-Minimal-VM.x86_64-kvm-and-xen.qcow2" image from the
+#     same build pipeline, so the same pattern (not distro-specific) covers
+#     it too rather than needing a separate Leap entry.
+#   - SLE Micro (5.x/6.x) Ignition+Combustion — https://documentation.suse.com/sle-micro/5.2/html/SLE-Micro-all/cha-images-combustion.html
+#   - RHEL/CentOS/CentOS Stream/Rocky Linux/AlmaLinux 8, 9, 10 "GenericCloud"
+#     images ship cloud-init pre-installed and enabled —
+#     https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_managing_cloud-init_for_rhel_9/introduction-to-cloud-init_cloud-content ,
+#     https://wiki.almalinux.org/cloud/Generic-cloud.html ,
+#     https://docs.rockylinux.org/10/guides/virtualization/cloud-init/01_fundamentals/
+#     (a plain/minimal ISO install of any of these does NOT have cloud-init
+#     by default — this heuristic assumes the pre-built qcow2/kvm image this
+#     project actually deploys via config_method=cloud-init, matching how
+#     ISO_IMAGE is used everywhere else in this project).
+#   - CentOS/RHEL 7: no positive vendor confirmation either way for
+#     cloud-init; this project's own CLAUDE.md already recommends
+#     virt_customize for it, so it's scoped that narrowly here too.
+#   - CentOS/RHEL 6: EOL November 2020; upstream cloud-init packaging for
+#     el6 was dropped around 2019 — https://forum.proxmox.com/threads/cloud-init-build-on-centos-6.55832/
+#   - Debian 10+ official cloud images — https://cloud.debian.org/images/cloud/:
+#     the "generic" variant ships cloud-init; the "nocloud" variant
+#     deliberately does NOT run cloud-init at all (boots straight to a root
+#     prompt), so it's matched separately, before the general Debian rule.
+#   - Fedora Cloud Base images (28+) ship cloud-init —
+#     https://fedoramagazine.org/setting-up-a-vm-on-fedora-server-using-cloud-images-and-virt-install-version-3/
+#   - Ubuntu server/cloud images have shipped cloud-init since 18.04 LTS (and
+#     informally earlier) — https://help.ubuntu.com/community/CloudInit
+#
+# "virt_customize" edits the qcow2 filesystem directly (no in-guest agent
+# required), so it works against essentially any image — included in every
+# entry below and never itself a reason to warn.
+_IMAGE_CONFIG_METHOD_SUPPORT = (
+    (r"el6|rhel-?6|centos-?6", "RHEL/CentOS 6 (EOL — cloud-init not packaged upstream)", {"virt_customize"}),
+    (r"el7|rhel-?7|centos-?7", "RHEL/CentOS 7", {"virt_customize"}),
+    (r"sle?-?micro", "SLE Micro 5.x/6.x", {"", "virt_customize"}),
+    (r"minimal-vm.*kvm-and-xen", "SLES 15/16 or openSUSE Leap 15.x Minimal VM (KVM/Xen)", {"virt_customize"}),
+    (r"nocloud", "Debian 10+ (nocloud variant)", {"virt_customize"}),
+    (r"debian", "Debian 10+ (generic cloud image)", {"cloud-init", "virt_customize"}),
+    (r"fedora", "Fedora 28+ (Cloud Base image)", {"cloud-init", "virt_customize"}),
+    (r"rocky", "Rocky Linux 8/9/10 (GenericCloud image)", {"cloud-init", "virt_customize"}),
+    (r"alma", "AlmaLinux 8/9/10 (GenericCloud image)", {"cloud-init", "virt_customize"}),
+    (r"rhel|centos", "RHEL/CentOS(-Stream) 8/9/10", {"cloud-init", "virt_customize"}),
+    (r"ubuntu", "Ubuntu 18.04+ (cloud/server image)", {"cloud-init", "install_iso", "virt_customize"}),
+)
+
+
+def _supported_config_methods(iso_image):
+    """
+    Best-effort (ISO_IMAGE filename) -> (label, supported config_methods)
+    lookup — see _IMAGE_CONFIG_METHOD_SUPPORT's sources above. Patterns are
+    checked in order (most specific first: the versioned RHEL/CentOS 6/7
+    patterns and the SLE Micro/Debian-nocloud patterns before their broader
+    families' rules), first match wins. Returns None when nothing matches —
+    an unrecognized image is left alone, never warned about.
+    """
+    iso_lower = (iso_image or "").lower()
+    for pattern, label, supported in _IMAGE_CONFIG_METHOD_SUPPORT:
+        if re.search(pattern, iso_lower):
+            return label, supported
+    return None
+
+
 def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None, vm_img_loc=None):
     """
     Preflight-validate an already-loaded lab definition. Mirrors
@@ -171,9 +248,18 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     kclusters = definition.get("kclusters") or {}
 
     # ── 2. common: required fields ────────────────────────────────────────────
+    # common.ISO_IMAGE is only required when some node doesn't supply its own
+    # override (nodes.<name>.ISO_IMAGE) — a lab where every node pins its own
+    # image is valid and never needs a common default at all.
     iso = _jq_or(common.get("ISO_IMAGE"))
     if _empty(iso):
-        err("common.ISO_IMAGE is required")
+        nodes_missing_iso = [
+            n for n, cfg in (definition.get("nodes") or {}).items()
+            if _empty(_jq_or((cfg or {}).get("ISO_IMAGE")))
+        ]
+        if nodes_missing_iso:
+            err("common.ISO_IMAGE is required (or set ISO_IMAGE per-node) — missing for: {}".format(
+                ", ".join(sorted(nodes_missing_iso))))
 
     for req in ("VM_MEM", "VM_DSK", "VM_CPU"):
         if _empty(_jq_or(common.get(req))):
@@ -244,6 +330,76 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         if not _empty(node_backend) and node_backend not in BACKENDS:
             err("nodes.{}: backend '{}' is invalid — must be one of: {}".format(
                 node, node_backend, ", ".join(sorted(BACKENDS))))
+
+        # A per-node "config_method": "" is a meaningful, explicit override
+        # (bash/CLAUDE.md's own convention: empty string IS the value that
+        # selects Ignition+Combustion) — it must win over a non-empty
+        # common.config_method, not be treated as "unset" and fall through
+        # to it. _empty() can't make that distinction (both "absent" and
+        # "explicitly empty" look identical after it), so this checks key
+        # presence directly instead — matching load_vm_vars()'s own plain
+        # per-node-always-overwrites merge (the actual runtime behavior).
+        # Confirmed live 2026-09-02: without this, a node explicitly opting
+        # back into Ignition+Combustion under a cloud-init-default `common`
+        # silently kept inheriting "cloud-init" for every check below.
+        if "config_method" in node_cfg:
+            eff_config_method = _jq_or(node_cfg.get("config_method"))
+        else:
+            eff_config_method = _jq_or(common.get("config_method"))
+
+        # Mirrors scripts/lab_schema's config_method enum. An unrecognized
+        # value (e.g. a "virt_customize" typo'd as "virt-customize") isn't
+        # rejected by create_vm() either — none of its config_method
+        # branches match, so it silently skips virt-install entirely and
+        # never defines the VM at all, with no error anywhere. Confirmed
+        # live 2026-09-02 against a real lab.json with exactly this typo.
+        if not _empty(eff_config_method) and eff_config_method not in (
+                "cloud-init", "virt_customize", "install_iso"):
+            err("nodes.{}: config_method '{}' is invalid — must be one of: "
+                "\"\" (Ignition+Combustion), cloud-init, virt_customize, install_iso".format(
+                    node, eff_config_method))
+
+        node_iso = _jq_or(node_cfg.get("ISO_IMAGE"))
+        eff_iso = node_iso if not _empty(node_iso) else iso
+
+        # An ISO_IMAGE ending in ".iso" is a genuine installer medium, not a
+        # pre-built bootable disk — every config_method except "install_iso"
+        # treats ISO_IMAGE as an existing disk to `cp` + `qemu-img resize`
+        # (copy_vm_image()), which fails hard on real ISO9660 content
+        # regardless of distro: reported live 2026-09-02 as "qemu-img: ...
+        # Image is not in qcow2 format" for an Ubuntu live-server .iso used
+        # with the inherited config_method="cloud-init" default. This is a
+        # deterministic crash, not a heuristic, so it's an error rather than
+        # a warning — and it takes priority over (suppresses) the softer
+        # image/method compatibility warning below, which would otherwise
+        # also fire and just add noise on top of the real problem.
+        iso_is_installer_medium = not _empty(eff_iso) and str(eff_iso).lower().endswith(".iso")
+        if iso_is_installer_medium and (eff_config_method or "") != "install_iso":
+            err("nodes.{}: ISO_IMAGE '{}' is an installer ISO but config_method is '{}' — "
+                "only config_method=\"install_iso\" boots an ISO directly (--cdrom + a fresh "
+                "disk); every other config_method copies/resizes it as if it were an existing "
+                "disk image and will fail.".format(
+                    node, eff_iso, eff_config_method or "\"\" (Ignition+Combustion)"))
+
+        # Only run the image/method compatibility check when config_method
+        # itself is one of the known-valid values — an already-invalid value
+        # (caught above) would otherwise also get a redundant "unsupported"
+        # warning on top of the "invalid" error. Same reasoning for the
+        # installer-ISO mismatch just above.
+        cm_valid = (_empty(eff_config_method) or eff_config_method in (
+            "cloud-init", "virt_customize", "install_iso")) and not (
+                iso_is_installer_medium and (eff_config_method or "") != "install_iso")
+        match = _supported_config_methods(eff_iso) if (cm_valid and not _empty(eff_iso)) else None
+        if match:
+            label, supported = match
+            cm_norm = eff_config_method if not _empty(eff_config_method) else ""
+            if cm_norm not in supported:
+                warn("nodes.{}: config_method '{}' is likely unsupported on ISO_IMAGE '{}' "
+                     "(detected as {}) — the vendor-documented/confirmed method(s) for this "
+                     "image family are: {}. This is a best-effort filename heuristic, not a "
+                     "guarantee — some images may genuinely differ from their family's norm.".format(
+                         node, cm_norm or "\"\" (Ignition+Combustion)", eff_iso, label,
+                         ", ".join(sorted(m or "\"\" (Ignition+Combustion)" for m in supported))))
 
         # Existing (pre-provisioned) nodes are never created/destroyed by
         # this tool, so hypervisor-existence and image checks don't apply —
@@ -1126,10 +1282,24 @@ def prepare_cloud_init(vm_name, lab_setup_path, variables):
                 exists for the USB-delivery lab-host VM, whose own IP is
                 unknown at build time (unlike every other node this project
                 creates, provisioned with a real, known address baked in).
+
+                `_vm_name` is always injected here (overriding anything the
+                caller passed under that key): bash's version ran in the same
+                shell as its caller, so template_user-data/template_meta-data
+                referencing `${_vm_name}` just saw whatever the enclosing
+                loop's global `_vm_name` already held — no explicit passing
+                needed. This function's caller (setup_vm.py) never puts
+                `_vm_name` in the `env` dict it builds (it only ever reads
+                `vm_name` as a separate local), so every cloud-init node's
+                instance-id/local-hostname/fqdn/hostname silently rendered
+                empty until this was added — confirmed live 2026-09-02 by
+                reading a real generated *_meta-data/*_user-data pair off
+                the automation VM.
     """
     base = Path(lab_setup_path) / "cloud-init"
     log("- Create cloud-init files for \"{}{}{}\"".format(_RED, vm_name, _RESET))
     render_vars = dict(variables)
+    render_vars["_vm_name"] = vm_name
     render_vars["ROOT_SSH_KEY"] = Path("/root/.ssh/id_rsa.pub").read_text().strip()
     render_vars["network_renderer"] = render_vars.get("network_renderer") or "NetworkManager"
     dhcp = not (render_vars.get("myip") or "").strip()

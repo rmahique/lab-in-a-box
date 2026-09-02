@@ -163,6 +163,45 @@ setup_lab.phase_create_vms(definition5, config, defaults, "lab.json", keep=False
 check("phase_create_vms: without --keep, the VM is always destroyed and recreated",
       calls["destroy"] == ["vm1"] and calls["provision"] == ["vm1"])
 
+# One node's provision_vm() dying (check_ssh_conn's own die() on a boot-wait
+# timeout, mirrored here as SystemExit) must not abort the whole multi-node
+# deploy — reported live 2026-09-01: it used to take the entire run down.
+for k in calls:
+    calls[k].clear()
+
+
+def _provision_second_node_dies(definition, config, defaults, vm_name):
+    calls["provision"].append(vm_name)
+    if vm_name == "vm_slow":
+        raise SystemExit(1)
+
+
+setup_lab.provision_vm = _provision_second_node_dies
+setup_lab.lc.vm_is_reusable = lambda *a, **kw: False
+definition6 = {"nodes": {
+    "vm_first": {"myip": "10.0.0.10", "mymac": "aa:bb:cc:dd:ee:10"},
+    "vm_slow": {"myip": "10.0.0.11", "mymac": "aa:bb:cc:dd:ee:11"},
+    "vm_last": {"myip": "10.0.0.12", "mymac": "aa:bb:cc:dd:ee:12"},
+}}
+setup_lab.phase_create_vms(definition6, config, defaults, "lab.json", keep=False)
+check("phase_create_vms: a node whose provision_vm() dies doesn't stop the remaining nodes",
+      calls["provision"] == ["vm_first", "vm_slow", "vm_last"])
+
+for k in calls:
+    calls[k].clear()
+
+
+def _provision_second_node_raises(definition, config, defaults, vm_name):
+    calls["provision"].append(vm_name)
+    if vm_name == "vm_slow":
+        raise RuntimeError("SSH command failed")
+
+
+setup_lab.provision_vm = _provision_second_node_raises
+setup_lab.phase_create_vms(definition6, config, defaults, "lab.json", keep=False)
+check("phase_create_vms: a node whose provision_vm() raises RuntimeError doesn't stop the rest either",
+      calls["provision"] == ["vm_first", "vm_slow", "vm_last"])
+
 
 # ── main(): --version / --help / --keep parsing ──────────────────────────────
 import io

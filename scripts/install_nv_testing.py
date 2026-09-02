@@ -8,7 +8,7 @@
 #   nv_testing_ns   : [OPTIONAL] Kubernetes namespace                  (default: demo)
 #   nv_testing_name : [OPTIONAL] Service name and ingress hostname     (default: nv-testing)
 
-__version__ = "ca2d2d5"
+__version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "nv_testing",
@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent / "libs")):
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
     if Path(_candidate).is_dir() and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 

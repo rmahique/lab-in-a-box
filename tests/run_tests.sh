@@ -17,7 +17,7 @@
 set -uo pipefail
 # Always run from the repo root regardless of the caller's cwd, since every
 # podman invocation below bind-mounts "$(pwd)" as the repo.
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit
 
 _image="lab-in-a-box-tests"
 

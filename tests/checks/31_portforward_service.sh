@@ -4,6 +4,6 @@
 # (setup_demo_server/lab.cfg.template's _network_mode=nat). Independent
 # container — see tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 python3 tests/checks/31_portforward_service_test.py

@@ -266,6 +266,7 @@ function fieldRow(field, outPath, repeatMode) {
     }
   }
   input._field = field;
+  if (repeatMode) input.dataset.repeat = "1";
   applyFieldDefault(input, state.commonDefaults[field.name]);
 
   if (repeatMode) input.dataset.field = field.name;         // serialized per-instance
@@ -317,7 +318,19 @@ function fieldRow(field, outPath, repeatMode) {
  * like, used both at field-creation time and when a common value cascades
  * into already-rendered fields. Never touches the user's actual typed value
  * (placeholders don't override input.value; a select's value is only synced
- * to a new default before the user has ever changed it themselves). */
+ * to a new default before the user has ever changed it themselves).
+ *
+ * Repeat-group instance fields (nodes/kclusters, dataset.repeat) are the one
+ * exception: their select's OWN .value is never auto-set to the default,
+ * even before the user touches it — only the option relabeling runs. A
+ * flat/common select auto-filling its default is harmless (it's the exact
+ * value setup_lab.py would have used anyway), but for a per-node override
+ * field it silently wrote an explicit value into the saved lab.json for
+ * every instance the user never actually configured (reported live
+ * 2026-09-01: INSTALL_RKE2_TYPE always present, "server", regardless of
+ * whether that node's role was ever actually selected) — leaving it unset
+ * lets the node genuinely inherit common/the addon's own default instead,
+ * matching how a plain text field's placeholder-only default already works. */
 function applyFieldDefault(input, liveVal) {
   const field = input._field;
   const hasDefault = liveVal != null || field.default != null;
@@ -331,7 +344,7 @@ function applyFieldDefault(input, liveVal) {
       opt.textContent = (!fixedLabel && isDefault) ? `${opt.dataset.label} (default)` : opt.dataset.label;
       opt.className = isDefault ? "opt-default" : "";
     });
-    if (!input.dataset.userTouched) {
+    if (!input.dataset.userTouched && input.dataset.repeat !== "1") {
       input.value = Array.from(input.options).some((o) => o.value === def) ? def : "";
     }
     return;
@@ -505,6 +518,41 @@ function refreshLab() {
   $("#validateResult").hidden = true;
 }
 
+// ---- refresh available images without losing the form ---------------------
+// Reported live 2026-09-01: the only way to get a fresh ISO_IMAGE list was
+// to re-select the component/base topology, which wipes every value already
+// typed in. This re-fetches just the "status" snapshot (already used for the
+// status panel) and rebuilds ONLY the ISO_IMAGE field(s) currently on the
+// form — via fieldRow(), so the rebuilt widget gets the exact same wiring
+// (cascade/validation/userTouched) a freshly-rendered one would — leaving
+// every other field's value untouched. The field's current value is kept
+// even if it no longer matches any listed image (added as a synthetic extra
+// option) rather than silently dropped.
+async function refreshImages() {
+  try {
+    const s = await apiGet("status");
+    const images = s.images || [];
+    const targets = Array.from($("#schemaForm").querySelectorAll("[data-outpath],[data-field]"))
+      .filter((elm) => elm._field && elm._field.name === "ISO_IMAGE");
+    targets.forEach((old) => {
+      const outPath = old.dataset.outpath ? JSON.parse(old.dataset.outpath).slice(0, -1) : [];
+      const repeatMode = old.dataset.repeat === "1";
+      const field = Object.assign({}, old._field, { enum: images.length ? images.slice() : undefined });
+      const oldValue = old.value;
+      if (oldValue && !images.includes(oldValue)) field.enum = (field.enum || []).concat(oldValue);
+      const newRow = fieldRow(field, outPath, repeatMode);
+      const newInput = newRow.querySelector("select,input");
+      newInput.value = oldValue;
+      if (old.dataset.userTouched) newInput.dataset.userTouched = old.dataset.userTouched;
+      old.closest(".field").replaceWith(newRow);
+    });
+    loadStatus();
+    toast(targets.length
+      ? `Image list refreshed (${images.length} available).`
+      : "Image list refreshed — no ISO_IMAGE field on this form.");
+  } catch (e) { toast("Refresh error: " + e.message); }
+}
+
 // ---- lab actions -----------------------------------------------------------
 async function validateLab() {
   const box = $("#validateResult");
@@ -525,7 +573,10 @@ function downloadLab() {
 async function saveLab() {
   try {
     const r = await apiPost("save", { filename: $("#labName").value.trim() || "lab", config: state.lab });
-    toast("Saved on server: " + r.saved);
+    // r.path is the full server-side path (api.py's "save" action already
+    // returns it) — show it, not just the basename, so it's actually
+    // findable (reported live 2026-09-01: the toast never said where).
+    toast("Saved: " + (r.path || r.saved));
   } catch (e) { toast("Save error: " + e.message); }
 }
 
@@ -536,6 +587,7 @@ window.addEventListener("DOMContentLoaded", () => {
   $("#validateBtn").addEventListener("click", validateLab);
   $("#downloadBtn").addEventListener("click", downloadLab);
   $("#saveBtn").addEventListener("click", saveLab);
+  $("#refreshImagesBtn").addEventListener("click", refreshImages);
 
   // "Required only" — hides every non-required field via CSS on the form
   // element itself, so it stays in effect across re-renders (selectComponent/

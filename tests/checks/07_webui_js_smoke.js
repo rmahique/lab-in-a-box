@@ -80,6 +80,33 @@ check("pattern match accepted",
     input.value === "");
 }
 
+// -- applyFieldDefault: repeat-group select never auto-fills its value ------
+// Regression test for a real bug reported live 2026-09-01: INSTALL_RKE2_TYPE
+// (a per-node/repeatable field with a schema default) always showed up in
+// the saved lab.json for every node, even ones whose role was never
+// actually chosen — because the select's own .value, not just its
+// placeholder-equivalent labeling, was being set to the default.
+{
+  const field = { name: "INSTALL_RKE2_TYPE", type: "string", default: "server" };
+  const opts = [
+    { value: "", dataset: { blank: "1" }, className: "" },
+    { value: "server", dataset: { label: "server", fixedLabel: "" }, className: "" },
+    { value: "agent", dataset: { label: "agent", fixedLabel: "" }, className: "" },
+  ];
+  const input = { _field: field, tagName: "SELECT", dataset: { repeat: "1" }, options: opts, value: "" };
+  sandbox.applyFieldDefault(input, undefined);
+  check("select: repeat-group field's value stays unset even though it has a schema default",
+    input.value === "");
+  check("select: repeat-group field still gets its default option labeled/marked",
+    opts[1].className === "opt-default");
+  // Same field shape but NOT in a repeat group (dataset.repeat unset) —
+  // existing common/flat-field behavior must be unchanged.
+  const flatInput = { _field: field, tagName: "SELECT", dataset: {}, options: opts.map((o) => ({ ...o })), value: "" };
+  sandbox.applyFieldDefault(flatInput, undefined);
+  check("select: a flat (non-repeat) field with the same default still auto-fills its value",
+    flatInput.value === "server");
+}
+
 if (failures) {
   console.error(failures + " check(s) failed");
   process.exit(1);

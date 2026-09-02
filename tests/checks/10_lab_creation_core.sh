@@ -6,6 +6,6 @@
 # with subprocess.run/ssh_run mocked. Independent container — see
 # tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 python3 tests/checks/10_lab_creation_core_test.py

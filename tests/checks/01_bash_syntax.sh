@@ -2,7 +2,7 @@
 # bash -n over every .sh file in the repo. Each script under tests/checks/
 # runs in its own independent, disposable container — see tests/run_tests.sh.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit
 
 _pass=0
 _fail=0
