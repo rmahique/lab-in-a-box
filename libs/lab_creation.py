@@ -129,10 +129,19 @@ def resolve_install_type(install_type, iso_image):
 #     the "generic" variant ships cloud-init; the "nocloud" variant
 #     deliberately does NOT run cloud-init at all (boots straight to a root
 #     prompt), so it's matched separately, before the general Debian rule.
+#     That pattern requires "debian" alongside "nocloud" (not just "nocloud"
+#     alone) — confirmed live 2026-09-03 that a bare "nocloud" substring
+#     match false-positived on an unrelated image, Alibaba's own
+#     "aliyun_2_1903_x64_20G_nocloud_alibase_*.qcow2" naming (its "nocloud"
+#     means something else in Alibaba's own build pipeline — the image
+#     genuinely has cloud-init, confirmed via virt-cat on the real file).
 #   - Fedora Cloud Base images (28+) ship cloud-init —
 #     https://fedoramagazine.org/setting-up-a-vm-on-fedora-server-using-cloud-images-and-virt-install-version-3/
 #   - Ubuntu server/cloud images have shipped cloud-init since 18.04 LTS (and
 #     informally earlier) — https://help.ubuntu.com/community/CloudInit
+#   - Alibaba Cloud Linux (Aliyun Linux) 2/3 "alibase" images ship cloud-init
+#     — confirmed live 2026-09-03 via virt-cat against a real
+#     aliyun_2_1903_x64_20G_nocloud_alibase_20230103.qcow2.
 #
 # "virt_customize" edits the qcow2 filesystem directly (no in-guest agent
 # required), so it works against essentially any image — included in every
@@ -142,13 +151,14 @@ _IMAGE_CONFIG_METHOD_SUPPORT = (
     (r"el7|rhel-?7|centos-?7", "RHEL/CentOS 7", {"virt_customize"}),
     (r"sle?-?micro", "SLE Micro 5.x/6.x", {"", "virt_customize"}),
     (r"minimal-vm.*kvm-and-xen", "SLES 15/16 or openSUSE Leap 15.x Minimal VM (KVM/Xen)", {"virt_customize"}),
-    (r"nocloud", "Debian 10+ (nocloud variant)", {"virt_customize"}),
+    (r"debian.*nocloud|nocloud.*debian", "Debian 10+ (nocloud variant)", {"virt_customize"}),
     (r"debian", "Debian 10+ (generic cloud image)", {"cloud-init", "virt_customize"}),
     (r"fedora", "Fedora 28+ (Cloud Base image)", {"cloud-init", "virt_customize"}),
     (r"rocky", "Rocky Linux 8/9/10 (GenericCloud image)", {"cloud-init", "virt_customize"}),
     (r"alma", "AlmaLinux 8/9/10 (GenericCloud image)", {"cloud-init", "virt_customize"}),
     (r"rhel|centos", "RHEL/CentOS(-Stream) 8/9/10", {"cloud-init", "virt_customize"}),
     (r"ubuntu", "Ubuntu 18.04+ (cloud/server image)", {"cloud-init", "install_iso", "virt_customize"}),
+    (r"aliyun|alinux|alibaba", "Alibaba Cloud Linux 2/3 (alibase image)", {"cloud-init", "virt_customize"}),
 )
 
 

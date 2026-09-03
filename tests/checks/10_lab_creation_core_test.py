@@ -530,6 +530,42 @@ with _redirect_stdout(buf):
 check("validate_lab_definition: an unrecognized ISO_IMAGE is never warned about",
       "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
 
+# Regression test for a real bug reported live 2026-09-03: the Debian
+# "nocloud variant" pattern was a bare "nocloud" substring match, which
+# false-positived on Alibaba's own "aliyun_2_1903_x64_20G_nocloud_alibase_
+# *.qcow2" naming ("nocloud" means something else in Alibaba's own build
+# pipeline there) — the image genuinely has cloud-init (confirmed live via
+# virt-cat), but the old pattern would have wrongly warned it's
+# virt_customize-only. Fixed by requiring "debian" alongside "nocloud".
+lab_cloudinit_aliyun = _lab_def({
+    "common": dict(base_common, **{
+        "ISO_IMAGE": "aliyun_2_1903_x64_20G_nocloud_alibase_20230103.qcow2",
+        "config_method": "cloud-init",
+    }),
+    "nodes": {"vm1": {"myip": "192.168.1.84"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_cloudinit_aliyun, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: Alibaba Cloud Linux's own \"nocloud\" filename quirk doesn't "
+      "false-positive as Debian's nocloud (no-cloud-init) variant",
+      "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
+
+# ... but the real Debian nocloud variant still correctly warns (guards
+# against the fix above being too permissive in the other direction).
+lab_cloudinit_debian_nocloud = _lab_def({
+    "common": dict(base_common, **{
+        "ISO_IMAGE": "debian-12-nocloud-amd64.qcow2",
+        "config_method": "cloud-init",
+    }),
+    "nodes": {"vm1": {"myip": "192.168.1.85"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_cloudinit_debian_nocloud, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: Debian's own nocloud variant (no cloud-init) still warns",
+      "is likely unsupported on ISO_IMAGE" in buf.getvalue())
+
 
 # ── config_method enum validation ────────────────────────────────────────────
 # Regression test for a real bug reported live 2026-09-02: a lab.json with
