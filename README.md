@@ -497,6 +497,10 @@ setup_lab.py legacy.json
 image directly — omit it to reuse `ROOT_PWD_HASH` from `lab_creation.cfg` instead, the same
 fallback cloud-init and Ignition use.
 
+More distros (AlmaLinux, Debian, Rocky Linux, Alibaba Cloud Linux, and a documented
+not-yet-working attempt at Raspberry Pi OS) are in **[EXAMPLES.md](EXAMPLES.md)**, kept separate
+so this section doesn't grow without bound.
+
 <p align="right"><a href="#top">↑ back to top</a></p>
 
 ---
