@@ -1857,9 +1857,23 @@ def prepare_install_iso(
             "  late-commands:\n"
             "    - mkdir -p /target/etc/ssh/sshd_config.d\n"
             "    - printf 'PermitRootLogin yes\\nPasswordAuthentication yes\\n' > /target/etc/ssh/sshd_config.d/99-lab.conf\n"
+            # No `identity:` section above (it would force a separate default
+            # user this project doesn't want — root-only access is the
+            # point) — but `identity` is also autoinstall's only mechanism
+            # for setting /etc/hostname at install time, so without it
+            # curtin leaves the installed system's hostname at whatever the
+            # live installer environment defaulted to ("localhost", not even
+            # "ubuntu") — confirmed live 2026-09-03 (`hostname` inside the
+            # freshly-installed, fully-reachable VM read back "localhost").
+            # meta-data's local-hostname doesn't help either: it's a
+            # cloud-init concept, and cloud-init's own NoCloud datasource
+            # (the seed cdrom) is detached again right after this install
+            # finishes, so nothing ever re-reads it on a later real boot.
+            # Set directly instead, the same way the sshd config above is.
+            "    - echo {vm_name} > /target/etc/hostname\n"
         ).format(
             mymac=mymac, myip=myip, mymask=mymask, mygw=mygw, mydns=mydns, mydomain=mydomain,
-            root_pwd_hash=root_pwd_hash, root_ssh_pubkey=root_ssh_pubkey,
+            root_pwd_hash=root_pwd_hash, root_ssh_pubkey=root_ssh_pubkey, vm_name=vm_name,
         )
         (out_dir / "user-data").write_text(user_data)
         (out_dir / "meta-data").write_text(

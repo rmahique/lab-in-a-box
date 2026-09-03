@@ -194,6 +194,129 @@ check("create_vm: vm_machine='pc' adds --machine pc to the virt-install invocati
       "--machine" in argv and argv[argv.index("--machine") + 1] == "pc")
 
 
+# ── config_method="install_iso" (Ubuntu autoinstall): two real bugs found
+# live 2026-09-03, back to back, on the same VM:
+#
+# 1. Boot order: a bare `--cdrom PATH` (no explicit order) alongside the
+#    disk's old boot.order=2 left SeaBIOS with only the (empty) disk in its
+#    boot list — it booted straight into "Boot failed: not a bootable disk /
+#    No bootable device" and sat there for the VM's entire lifetime (zero
+#    installer output, zero network activity, ~11 minutes of real CPU time
+#    spread across 18 hours of wall-clock, confirmed via `virsh screenshot`).
+#
+# 2. Once the boot order was fixed and the installer actually started,
+#    subiquity found and parsed the autoinstall config fine but then stopped
+#    at an interactive prompt — "Confirmation is required to continue. Add
+#    'autoinstall' to your kernel command line to avoid this. Continue with
+#    autoinstall? (yes|no)" — and sat there forever with --noautoconsole and
+#    nobody at the console (also confirmed via `virsh screenshot`). Subiquity
+#    gates unattended mode on literally seeing "autoinstall" on
+#    /proc/cmdline, regardless of the seed config's own content. The normal
+#    fix (`--location URL` + `--extra-args autoinstall`) doesn't work here:
+#    `--extra-args` only applies to a `--location` boot, and `--location`
+#    itself only works for install trees the *client* can read directly — a
+#    local path on the remote hypervisor fails with "Cannot access install
+#    tree on remote connection".
+#
+# Both fixed together: extract the ISO's own casper/vmlinuz+initrd on the
+# hypervisor (xorriso, no mount needed) and boot them directly via
+# `--boot kernel=,initrd=,cmdline=autoinstall` — a boot mechanism entirely
+# separate from cdrom/hd boot order, so it settles bug 1 too. --cdrom stays
+# attached as a device (the extracted initrd's own init script mounts it as
+# the install source once booted).
+_real_os_unlink = backends.os.unlink
+backends.os.unlink = lambda path: None  # mkisofs/scp are mocked, so the seed
+                                          # .iso this branch tries to unlink
+                                          # after "uploading" was never really
+                                          # created — avoid a real ENOENT.
+subproc_calls.clear()
+backend.create_vm(
+    "vm1", "2", "4096", "40", "network=default,model=virtio",
+    config_method="install_iso", install_type="autoinstall",
+    iso_image="ubuntu-24.04-live-server-amd64.iso", iso_loc="/iso",
+)
+backends.os.unlink = _real_os_unlink
+extract_call = next(c for c in subproc_calls if "xorriso" in c[-1])
+check("create_vm (autoinstall): extracts vmlinuz+initrd from the ISO via xorriso (no mount needed)",
+      "-extract /casper/vmlinuz" in extract_call[-1] and "-extract /casper/initrd" in extract_call[-1]
+      and "/iso/ubuntu-24.04-live-server-amd64.iso" in extract_call[-1])
+install_call = next(c for c in subproc_calls if "virt-install" in c[0])
+boot_arg = install_call[install_call.index("--boot") + 1]
+check("create_vm (autoinstall): --boot carries kernel=, initrd=, and cmdline=autoinstall",
+      "kernel=" in boot_arg and "initrd=" in boot_arg and "cmdline=autoinstall" in boot_arg)
+check("create_vm (autoinstall): --cdrom is still attached (the initrd mounts it as the install source)",
+      "--cdrom" in install_call
+      and "ubuntu-24.04-live-server-amd64.iso" in install_call[install_call.index("--cdrom") + 1])
+check("create_vm (autoinstall): no disk carries a per-device boot.order= "
+      "(direct kernel boot bypasses cdrom/hd boot order entirely)",
+      not any("boot.order" in a for a in install_call))
+
+# ── config_method="install_iso" (autoinstall): post-install boot reset.
+# Found live 2026-09-03, immediately after fixing the confirmation-prompt
+# bug above: virt-install's own "Restarting guest" step (part of --wait -1
+# finishing) brought the domain back up on the exact same kernel/initrd/
+# cmdline as the installer boot, since nothing about that lower-level --boot
+# mechanism knows the install is now done. The freshly-installed VM booted
+# straight back into the live installer's initrd hunting for a live
+# filesystem on /dev/sr0 and hung at "Attempt interactive netboot from a
+# URL?" forever — confirmed via `virsh screenshot`. A --location-based
+# install wouldn't need any of this (virt-install's own installer-aware
+# machinery resets the boot config itself), but --location doesn't work over
+# a remote hypervisor connection here (see the comment above). Fixed by
+# destroying the auto-restarted domain, resetting it to plain disk boot via
+# virt-xml, detaching the now-stale seed cdrom, then starting it for real —
+# --edit on a *running* domain only touches the offline definition, so the
+# destroy has to come first or the very next start just reboots the old
+# (bad) config again (also confirmed live).
+calls_after_install = subproc_calls[subproc_calls.index(install_call) + 1:]
+destroy_call = next((c for c in calls_after_install if "destroy" in c), None)
+edit_call = next((c for c in calls_after_install if "--edit" in c), None)
+remove_call = next((c for c in calls_after_install if "--remove-device" in c), None)
+start_call = next((c for c in calls_after_install if "start" in c), None)
+check("create_vm (autoinstall): destroys the auto-restarted domain before touching its boot config",
+      destroy_call is not None)
+check("create_vm (autoinstall): virt-xml --edit resets boot to kernel=,initrd=,cmdline=,hd",
+      edit_call is not None
+      and edit_call[edit_call.index("--boot") + 1] == "kernel=,initrd=,cmdline=,hd")
+check("create_vm (autoinstall): virt-xml --remove-device detaches the stale seed cdrom",
+      remove_call is not None and "seed_vm1.iso" in remove_call[remove_call.index("--disk") + 1])
+check("create_vm (autoinstall): destroy happens before the boot-config edit",
+      destroy_call is not None and edit_call is not None
+      and calls_after_install.index(destroy_call) < calls_after_install.index(edit_call))
+check("create_vm (autoinstall): the domain is started again after the boot-config reset",
+      start_call is not None and edit_call is not None
+      and calls_after_install.index(edit_call) < calls_after_install.index(start_call))
+
+
+# ── prepare_install_iso() autoinstall hostname: found live 2026-09-03, on the
+# same VM as the two bugs above, once it actually finished installing and
+# booted the real (fixed) disk — `hostname` inside the freshly-installed,
+# fully SSH-reachable VM read back "localhost", not "venus.mydemo.lab". The
+# autoinstall user-data deliberately has no `identity:` section (it would
+# force a separate default user this project doesn't want — root-only
+# access is the point), but `identity` is autoinstall's only mechanism for
+# setting /etc/hostname at install time, so without it curtin just leaves
+# whatever the live installer environment defaulted to. meta-data's
+# local-hostname doesn't help either — that's a cloud-init concept, and the
+# seed cdrom (cloud-init's own NoCloud datasource) is detached again right
+# after this install finishes, so nothing ever re-reads it on a later real
+# boot. Fixed with an explicit late-command, the same mechanism already used
+# two lines above it for the sshd config.
+pubkey_path = Path("/root/.ssh/id_rsa.pub")
+pubkey_path.parent.mkdir(parents=True, exist_ok=True)
+if not pubkey_path.exists():
+    pubkey_path.write_text("ssh-rsa AAAAtest test@test\n")
+with tempfile.TemporaryDirectory() as tmp:
+    lc.prepare_install_iso(
+        "venus.mydemo.lab", tmp, "autoinstall", "ubuntu-24.04-live-server-amd64.iso",
+        "52:54:00:aa:bb:cc", "192.168.88.116", "24", "192.168.88.1", "192.168.88.73",
+        "mydemo.lab", "x",
+    )
+    autoinstall_user_data = (Path(tmp) / "install_iso" / "venus.mydemo.lab" / "user-data").read_text()
+check("prepare_install_iso (autoinstall): a late-command sets /etc/hostname to the real node name",
+      "echo venus.mydemo.lab > /target/etc/hostname" in autoinstall_user_data)
+
+
 # ── copy_vm_image / disk_format: found live on nuc6 (2026-08-31) — create_vm's
 # disk_format="raw" landed its own new disk at <vm_name>.raw, but
 # copy_vm_image() (which actually populates the disk with the source
