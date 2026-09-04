@@ -141,6 +141,16 @@ h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mu
   margin:0;padding:1rem;overflow:auto;flex:1;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   background:var(--field-bg);white-space:pre;min-height:200px;
 }
+.view-tabs{display:flex;gap:.2rem;background:var(--code);border-radius:7px;padding:.15rem}
+.view-tab{
+  border:0;background:transparent;color:var(--muted);font-size:.76rem;font-weight:600;
+  padding:.3rem .65rem;border-radius:5px;cursor:pointer;
+}
+.view-tab.active{background:var(--panel);color:var(--ink);box-shadow:var(--shadow)}
+.lab-diagram{overflow:auto;flex:1;background:var(--field-bg);min-height:200px}
+.lab-diagram .empty-state{margin:0}
+#diagramCanvas{padding:1rem}
+#diagramCanvas svg{max-width:100%;height:auto}
 .validate-result{margin:.6rem 1rem 0;padding:.55rem .7rem;border-radius:7px;font-size:.82rem;white-space:pre-wrap}
 .validate-result.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
 .validate-result.err{background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger)}

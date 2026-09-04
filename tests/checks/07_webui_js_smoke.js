@@ -107,6 +107,47 @@ check("pattern match accepted",
     flatInput.value === "server");
 }
 
+// -- buildMermaidDiagram: architecture preview diagram --------------------
+check("no nodes -> nothing to draw", sandbox.buildMermaidDiagram({}) === null);
+
+{
+  // A clustered node, a standalone node, cluster-level and node-level
+  // addons, and an `existing` (Phase 5 pre-provisioned host) node — one
+  // definition exercising every branch at once.
+  const lab = {
+    nodes: {
+      "node1.mydemo.lab": { myip: "192.168.88.101", kcluster: "clu1" },
+      "node2.mydemo.lab": { myip: "192.168.88.102", existing: true, addons: ["mariadb"] },
+    },
+    kclusters: {
+      clu1: { clu_type: "rke2", addons: ["rancher", "longhorn"] },
+    },
+  };
+  const def = sandbox.buildMermaidDiagram(lab);
+  check("diagram starts with a valid mermaid graph declaration", def.startsWith("graph TB"));
+  check("clustered node renders inside its kcluster's subgraph",
+    /subgraph n_clu_clu1\["clu1 \(rke2\)"\][\s\S]*n_node1_mydemo_lab\["node1\.mydemo\.lab<br\/>192\.168\.88\.101"\][\s\S]*end/.test(def));
+  check("standalone node (no kcluster) renders outside any subgraph",
+    def.includes('n_node2_mydemo_lab["node2.mydemo.lab<br/>192.168.88.102"]')
+    && !new RegExp("subgraph[\\s\\S]*n_node2_mydemo_lab[\\s\\S]*end").test(def.split("subgraph")[1] || ""));
+  check("cluster-level addons render as linked boxes off the cluster",
+    def.includes('(["rancher"])') && def.includes('(["longhorn"])'));
+  check("node-level addons render as linked boxes off that node",
+    def.includes('(["mariadb"])') && / -\.-> n_node2_mydemo_lab_addon_0_mariadb/.test(def));
+  check("an `existing` node gets the dashed-border class applied",
+    def.includes("classDef existingNode") && / class n_node2_mydemo_lab existingNode;/.test(def));
+  check("a node that is NOT `existing` is never included in the existingNode class list",
+    !new RegExp("class [^;]*n_node1_mydemo_lab[^;]* existingNode;").test(def));
+}
+
+{
+  // Quotes/newlines in a hostname would break mermaid's own quoted-label
+  // syntax outright — confirm they're neutralized rather than passed through.
+  const def = sandbox.buildMermaidDiagram({ nodes: { 'weird"host\nname': { myip: "10.0.0.1" } } });
+  check("quotes and newlines in a node name are neutralized, not passed through raw",
+    !def.includes('"weird"host') && !/\n.*name/.test(def.split("\n").find((l) => l.includes("weird"))));
+}
+
 if (failures) {
   console.error(failures + " check(s) failed");
   process.exit(1);

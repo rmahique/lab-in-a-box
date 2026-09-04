@@ -64,8 +64,16 @@
       <div class="panel-head">
         <h2>lab.json</h2>
         <span class="badge" id="sectionCount">0 sections</span>
+        <div class="view-tabs" role="tablist" aria-label="lab.json view">
+          <button type="button" class="view-tab active" id="viewTabJson" role="tab" aria-selected="true">JSON</button>
+          <button type="button" class="view-tab" id="viewTabDiagram" role="tab" aria-selected="false">Diagram</button>
+        </div>
       </div>
       <pre id="labPreview" class="lab-preview">{}</pre>
+      <div id="labDiagram" class="lab-diagram" hidden>
+        <p class="empty-state" id="diagramEmpty">Add nodes to the lab to see an architecture preview.</p>
+        <div id="diagramCanvas"></div>
+      </div>
       <div id="validateResult" class="validate-result" hidden></div>
       <div class="lab-actions">
         <input id="labName" type="text" value="lab" spellcheck="false" aria-label="lab file name">
@@ -80,6 +88,11 @@
   <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>__LABVERSION__</code></footer>
 
   <div id="toast" class="toast" hidden></div>
+  <!-- Vendored, not CDN-loaded: this project's automation VM may run on a
+       network-restricted training/demo host with no outbound internet, and
+       the diagram must keep working there. mermaid.js 10.9.1, unmodified —
+       see webui/htdocs/vendor/mermaid.LICENSE.txt (MIT). -->
+  <script src="vendor/mermaid.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
