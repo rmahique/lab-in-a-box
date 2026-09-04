@@ -162,6 +162,21 @@ class K3sDistro(K8sDistro):
                 "INSTALL_K3S_CHANNEL={} "
                 "sh -s - server --tls-san {}.{}".format(clu_rel, clu_name, mydomain)
             )
+            # Confirmed live 2026-09-04: k3s's own install.sh does not
+            # reliably leave the service running — on this project's own
+            # default SL-Micro image (a transactional-update/immutable-root
+            # OS), a pending "please reboot your machine" flag left over
+            # from installing k3s's own package dependencies made install.sh
+            # skip its start step entirely, silently (`systemctl enable`
+            # succeeded, `systemctl start` was simply never called — no
+            # error, no warning, just an enabled-but-inactive unit). The
+            # service starts fine immediately with no reboot actually
+            # needed. RKE2Distro._install() below already never relies on
+            # its own vendor script for this (always an explicit
+            # `systemctl enable --now` afterward) — mirrored here so K3s
+            # gets the same guarantee instead of trusting get.k3s.io's
+            # script to have started it.
+            ssh_run(hostname, "systemctl enable --now k3s")
             token = ssh_output(hostname, "cat /var/lib/rancher/k3s/server/node-token")
             return token, hostname
         else:
@@ -174,6 +189,7 @@ class K3sDistro(K8sDistro):
                 "K3S_TOKEN={} "
                 "sh -".format(clu_rel, rancher1_ip, token)
             )
+            ssh_run(hostname, "systemctl enable --now k3s-agent")
             return token, rancher1_ip
 
 
