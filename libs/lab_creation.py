@@ -687,9 +687,9 @@ def vm_is_reusable(virt_srv, vm_name, mymac, myip, remote_host=None):
 _SSH_BASE = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-q"]
 
 
-def ssh_run(hostname, cmd, check=True, input_text=None, capture=False):
+def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="root"):
     """
-    Run a shell command on a remote host as root via SSH.
+    Run a shell command on a remote host via SSH (root by default).
 
     Args:
         hostname   : Target host (IP or FQDN).
@@ -697,11 +697,15 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False):
         check      : Raise RuntimeError on non-zero exit code.
         input_text : Text to send to the remote command's stdin.
         capture    : If True, capture stdout+stderr instead of streaming.
+        user       : Remote SSH user — override when the target doesn't
+                     allow root login (e.g. Harvester's default "rancher"
+                     user; root SSH is disabled by Harvester's own default
+                     hardening, confirmed live 2026-08-30).
 
     Returns:
         subprocess.CompletedProcess
     """
-    args = _SSH_BASE + ["root@{}".format(hostname), cmd]
+    args = _SSH_BASE + ["{}@{}".format(user, hostname), cmd]
     result = subprocess.run(
         args,
         universal_newlines=True,

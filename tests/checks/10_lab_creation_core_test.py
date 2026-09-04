@@ -93,6 +93,19 @@ fake = FakeRun(responses=[("cat /etc/hostname", FakeCompleted(stdout="  myhost\n
 lc.subprocess.run = fake
 check("ssh_output: strips stdout", lc.ssh_output("host1", "cat /etc/hostname") == "myhost")
 
+# ssh_run's optional `user` override (default stays "root") — added for
+# Harvester's default "rancher" admin user, whose root SSH is disabled by
+# Harvester's own default hardening.
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.ssh_run("host1", "echo hi")
+check("ssh_run: defaults to root@<hostname> when user is omitted", "root@host1" in fake.calls[0][0])
+
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.ssh_run("host1", "echo hi", user="rancher")
+check("ssh_run: user= overrides the SSH login name", "rancher@host1" in fake.calls[0][0])
+
 
 # ── ensure_lab_ssh_key / distribute_lab_ssh_key ──────────────────────────────
 # One keypair for the whole lab, generated and kept ON the lab-host VM

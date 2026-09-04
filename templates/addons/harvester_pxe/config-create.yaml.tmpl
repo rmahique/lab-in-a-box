@@ -3,19 +3,25 @@
 # being misnamed templates/cloud-init.template_harvester_create. Rendered
 # per-node by scripts/setup_harvester_cluster.py for the one "create" node
 # in the cluster.
+#
+# The three "_extra_lines"/"_block" markers below (harvester_system_settings_
+# block, harvester_os_extra_lines, harvester_install_extra_lines) are all
+# optional, cluster.json-driven passthrough blocks — see
+# templates/harvester-cluster.json.example for the keys that feed them.
+# Each renders as "" (nothing) when its cluster.json keys are omitted, so a
+# cluster.json with none of them set produces byte-for-byte today's output.
 scheme_version: 1
 token: "${harvester_token}"
-os:
+${harvester_system_settings_block}os:
   hostname: ${node_hostname}
   ssh_authorized_keys:
 ${harvester_ssh_keys_block}
   password: "${harvester_password_hash}"
   ntp_servers:
-  - 0.suse.pool.ntp.org
-  - 1.suse.pool.ntp.org
+${harvester_ntp_servers_block}
   dns_nameservers:
 ${harvester_dns_nameservers_block}
-install:
+${harvester_os_extra_lines}install:
   mode: create
   management_interface:
     interfaces:
@@ -30,3 +36,4 @@ install:
   vip: ${harvester_vip}
   vip_mode: ${harvester_vip_mode}
   persistentpartitionsize: ${harvester_persistent_size}
+${harvester_install_extra_lines}

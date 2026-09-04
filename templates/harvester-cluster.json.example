@@ -30,8 +30,36 @@
   "vm_cpu": 12,
   "vm_dsk": 260,
   "os_variant": "generic",
+
+  "_comment_optional_install": "everything below is OPTIONAL -- every key here can be omitted, in which case the rendered install-config is byte-for-byte what this project has always produced. All of it comes straight from docs.harvesterhci.io's config reference; this project doesn't validate or interpret any of these values itself.",
+  "_comment_ntp": "defaults to the two SUSE pool servers already baked into the template when omitted",
+  "ntp_servers": ["0.suse.pool.ntp.org", "1.suse.pool.ntp.org"],
+  "_comment_os_environment": "os.environment -- e.g. HTTP proxy support for a lab behind one",
+  "os_environment": {
+    "HTTP_PROXY": "http://proxy.example.lab:3128",
+    "HTTPS_PROXY": "http://proxy.example.lab:3128"
+  },
+  "_comment_data_disk": "install.data_disk -- a SEPARATE disk from 'device' above for VM data storage, if the node has one",
+  "data_disk": "/dev/vdb",
+  "_comment_wipe": "install.wipe_all_disks -- useful for a lab that reuses the same disk across repeated Harvester installs; clears any stale COS_OEM-labeled partitions from a previous install",
+  "wipe_all_disks": false,
+  "_comment_cidrs": "install.cluster_pod_cidr / cluster_service_cidr / cluster_dns -- override only if Harvester's defaults (10.52.0.0/16 / 10.53.0.0/16) collide with something this lab's own network already uses",
+  "cluster_pod_cidr": "10.52.0.0/16",
+  "cluster_service_cidr": "10.53.0.0/16",
+  "_comment_replica_count": "install.harvester.storage_class.replica_count (1-3) -- Harvester's own default is 3, which silently degrades on a cluster with fewer than 3 nodes, exactly the shape of the 2-node example below. Set explicitly on any cluster smaller than 3 nodes.",
+  "storage_class_replica_count": 1,
+  "_comment_system_settings": "system_settings -- a generic, flat name:value passthrough applied to Harvester's config at INSTALL time (top-level system_settings: key). See post_install_settings below for the Setting-API equivalent applied AFTER the cluster is up, for anything not settable this way -- which options belong in which bucket isn't fully mapped out yet (see TODO), so both are offered.",
+  "system_settings": {},
+  "_comment_post_install": "post_install_settings -- same flat name:value shape as system_settings, but applied via `kubectl apply` against harvesterhci.io/v1beta1 Setting objects once the cluster is Active (fetches a kubeconfig from the 'create' node first). NOT live-tested against a real cluster yet. Omit kubeconfig_path to save the fetched kubeconfig at /etc/lab_creation/harvester-<version>.kubeconfig.",
+  "post_install_settings": {},
+  "kubeconfig_path": "/etc/lab_creation/harvester-v1.7.1.kubeconfig",
+
   "nodes": [
     { "name": "harvester1.mydemo.lab", "mac": "52:54:00:ab:cd:e1", "ip": "192.168.88.143", "role": "create" },
-    { "name": "harvester2.mydemo.lab", "mac": "52:54:00:ab:cd:e2", "ip": "192.168.88.144", "role": "join" }
+    {
+      "name": "harvester2.mydemo.lab", "mac": "52:54:00:ab:cd:e2", "ip": "192.168.88.144", "role": "join",
+      "_comment_harvester_role": "install.role (default/management/worker/witness) -- a DIFFERENT axis from 'role' above (which is create/join, an install MODE). Optional; omit for Harvester's own default node classification.",
+      "harvester_role": "witness"
+    }
   ]
 }
