@@ -536,6 +536,53 @@ check("reboot_vm: tries shutdown before giving up and resetting",
 backends.socket.create_connection = socket.create_connection
 
 
+# ── push_provisioning_files (cloud-init): quote vm_name-derived paths ───────
+# Found in code review 2026-09-05: the remote shell command that assembles
+# the NoCloud cidata ISO on the hypervisor built its rm-f/-o/mv paths from
+# vm_name (a lab.json node hostname, never validated against shell
+# metacharacters) unquoted — a name with an embedded space broke those
+# paths outright, and a shell metacharacter could inject into the command.
+# The "for i in {vm}*" glob and the "${{i/{vm}_/}}" pattern-expansion stay
+# unquoted on purpose (mirrors bash's own unquoted-glob behavior — see the
+# comment above sources= in push_provisioning_files itself), but every
+# other use of vm_name here doesn't need to be a glob and is now
+# shlex.quote()'d. This whole cloud-init branch of push_provisioning_files
+# had no test coverage at all before this.
+rsync_calls = []
+
+
+def _fake_rsync_run(args, **kwargs):
+    rsync_calls.append(args)
+    return FakeResult(returncode=0)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    ci_dir = Path(tmp) / "cloud-init"
+    ci_dir.mkdir()
+    for suffix in ("user-data", "meta-data", "network-config"):
+        (ci_dir / "two words_{}".format(suffix)).write_text("x")
+
+    backend2 = backends.LibvirtBackend(
+        "qemu+ssh://root@hv1/system?keyfile=.ssh/id_rsa",
+        remote_host="hv1", iso_loc="/iso", vm_img_loc="/var/lib/libvirt/images",
+        lab_setup_path=tmp,
+    )
+    rsync_calls.clear()
+    sync_ssh_calls.clear()
+    backends.subprocess.run = _fake_rsync_run
+    backend2.push_provisioning_files("two words", config_method="cloud-init")
+
+ci_call = next(c for h, c, kw in sync_ssh_calls if "mkisofs" in c)
+check("push_provisioning_files (cloud-init): rm -f target is quoted",
+      "rm -f '/var/lib/libvirt/images/two words_ci.iso'" in ci_call)
+check("push_provisioning_files (cloud-init): mkisofs -o target is quoted",
+      "-o '/tmp/ci_two words.iso'" in ci_call)
+check("push_provisioning_files (cloud-init): the final mv's source and destination are both quoted",
+      "mv '/tmp/ci_two words.iso' '/var/lib/libvirt/images/two words_ci.iso'" in ci_call)
+check("push_provisioning_files (cloud-init): the cp step's variable expansions are quoted",
+      'cp "${i}" "/tmp/${i/two words_/}"' in ci_call)
+
+
 # ── Bug 5: mgradm install's pg_hba/IPv6 race must be pre-empted, not ────────
 # recovered from after the fact
 # (found live on cutoveruyuni2.mydemo.lab, 2026-08-28: the original recovery

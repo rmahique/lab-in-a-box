@@ -29,6 +29,7 @@ keep this move zero-risk; a later task can switch them over.
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -872,14 +873,28 @@ class LibvirtBackend(VMBackend):
             if r.returncode != 0:
                 die("failed to rsync '{}' files for '{}'".format(config_method, vm_name))
 
+            # vm_name (a lab.json node hostname, never validated against shell
+            # metacharacters) is interpolated unquoted into "for i in {vm}*"
+            # and the "${{i/{vm}_/}}" pattern below — that's deliberate (see
+            # the sources= comment above: this mirrors bash's own unquoted-
+            # glob behavior, and a bash pattern-expansion context can't be
+            # single-quoted the normal way regardless). Every OTHER use of
+            # vm_name here (the cp target, the iso paths) doesn't need to be
+            # a glob, so those are shlex.quote()'d — found in code review
+            # 2026-09-05, same class of bug already fixed elsewhere this
+            # session (a vm_name with a space or shell metacharacter must
+            # not be able to break, or inject into, this remote command).
+            ci_iso = shlex.quote("{}/{}_ci.iso".format(vm_img_loc, vm_name))
+            tmp_iso = shlex.quote("/tmp/ci_{}.iso".format(vm_name))
             remote_cmd = (
-                "cd {lsp}/{cm}/; "
-                "for i in {vm}*; do cp ${{i}} /tmp/${{i/{vm}_/}}; done ; "
-                "rm -f {img}/{vm}_ci.iso; "
-                "mkisofs -J -l -R -V cidata -iso-level 3 -o /tmp/ci_{vm}.iso "
+                "cd {lsp_q}; "
+                "for i in {vm}*; do cp \"${{i}}\" \"/tmp/${{i/{vm}_/}}\"; done ; "
+                "rm -f {ci_iso}; "
+                "mkisofs -J -l -R -V cidata -iso-level 3 -o {tmp_iso} "
                 "/tmp/user-data /tmp/meta-data /tmp/network-config "
-                "&& mv /tmp/ci_{vm}.iso {img}/{vm}_ci.iso"
-            ).format(lsp=lab_setup_path, cm=config_method, vm=vm_name, img=vm_img_loc)
+                "&& mv {tmp_iso} {ci_iso}"
+            ).format(lsp_q=shlex.quote("{}/{}/".format(lab_setup_path, config_method)),
+                      vm=vm_name, ci_iso=ci_iso, tmp_iso=tmp_iso)
             r = ssh_run(remote_host, remote_cmd, check=False)
             if r.returncode != 0:
                 die("failed to build cidata ISO for '{}'".format(vm_name))
