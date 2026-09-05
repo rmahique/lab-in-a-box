@@ -35,25 +35,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 一个 JSON/YAML 文件，一条命令。**
-以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；`setup_lab.py` 会按正确的顺序把一切都构建出来。
+`setup_lab.py` · **一个 JSON/YAML 文件，一条命令。**
+以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；它会按正确的顺序把一切都构建出来。
 
-**🧩 41 个开箱即用的插件。**
+`install_<addon>` · **41 个开箱即用的插件。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Manager/Uyuni（激活密钥、RBAC、Content Lifecycle Management、Ansible 集成等）、用于安全培训的漏洞演示应用，以及更多。
 
-**🖥️ 动态 Web 界面。**
-[lab-builder](#web-ui-lab-builder) 直接根据各插件自身的 schema 生成表单——只要给脚本加一个字段，界面无需任何前端改动即可识别它。
+[`lab-builder`](#web-ui-lab-builder) · **动态 Web 界面。**
+直接根据各插件自身的 schema 生成表单——只要给脚本加一个字段，界面无需任何前端改动即可识别它。
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 支持多台虚拟化主机。**
+`KVM_HOSTS` · **支持多台虚拟化主机。**
 一份实验环境定义可以把虚拟机分布到多台 KVM 主机上，既可以根据空闲 CPU/内存/磁盘自动选择，也可以按节点固定指定。
 
-**🧪 完全容器化的测试套件。**
-每项检查都在各自独立的一次性 `podman` 容器中运行，并接入了 pre-commit 钩子。
+`podman` · **完全容器化的测试套件。**
+每项检查都在各自独立的一次性容器中运行，并接入了 pre-commit 钩子。
 
-**🔌 可插拔的系统配置方式。**
+`config_method` · **可插拔的系统配置方式。**
 Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-customize`（用于不支持 cloud-init/Ignition 的老旧发行版），或基于脚本的 ISO 安装（AutoYaST/Kickstart/Preseed/AutoInstall）。
 
 </td>
@@ -717,8 +717,10 @@ setup_lab.py --keep rancher-cluster.json
    _network_mode="nat"
    _nat_network_name="labnat"          # 图中所示为默认值——一个新的 libvirt 虚拟网络，不是你主机真正的局域网
    _nat_network_cidr="192.168.150.0/24" # 图中所示为默认值
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 图中所示为默认值——<外部端口>:<内部端口>/<协议>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 图中所示为默认值——“<宿主机真实 IP 上的端口>:<automation VM 上的端口>/<协议>”
    ```
+
+   这会把**宿主机自身真实、可从外部访问的 IP**（`<外部端口>`）上的 22/80/443 端口，转发到 **automation VM 的私有 NAT 地址**（`<内部端口>`）上的相同端口——此时这个私有网络里唯一在监听的就是 automation VM，所以这里的“内部”始终指“在 automation VM 上”。（下面的第 5 步会复用同样的 `<外部端口>:<内部端口>/<协议>` 语法，把端口转发到某个*实验室*虚拟机上——前提是这台虚拟机已经存在；届时“内部”指的是那台虚拟机自己的私有 NAT 地址，而不是 automation VM 的。）
 
 2. **像往常一样运行安装程序：**
 

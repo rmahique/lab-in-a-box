@@ -35,25 +35,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 JSON/YAML ファイル1つ、コマンド1つ。**
-VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。`setup_lab.py` が正しい順序ですべてを構築する。
+`setup_lab.py` · **JSON/YAML ファイル1つ、コマンド1つ。**
+VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。正しい順序ですべてを構築する。
 
-**🧩 41種類のアドオンをすぐに利用可能。**
+`install_<addon>` · **41種類のアドオンをすぐに利用可能。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Manager/Uyuni（アクティベーションキー、RBAC、Content Lifecycle Management、Ansible 連携など）、セキュリティトレーニング用の脆弱なデモアプリなど。
 
-**🖥️ 動的な Web UI。**
-[lab-builder](#web-ui-lab-builder) は各アドオン自身のスキーマからフォームを直接生成する — スクリプトにフィールドを追加すれば、フロントエンドを一切変更せずに UI がそれを取り込む。
+[`lab-builder`](#web-ui-lab-builder) · **動的な Web UI。**
+各アドオン自身のスキーマからフォームを直接生成する — スクリプトにフィールドを追加すれば、フロントエンドを一切変更せずに UI がそれを取り込む。
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 マルチハイパーバイザー対応。**
+`KVM_HOSTS` · **マルチハイパーバイザー対応。**
 1つのラボ定義で複数の KVM ホストに VM を分散配置できる。空き CPU/RAM/ディスクによる自動選択、またはノードごとの固定指定が可能。
 
-**🧪 完全にコンテナ化されたテストスイート。**
-すべてのチェックが使い捨ての `podman` コンテナで実行され、pre-commit フックに組み込まれている。
+`podman` · **完全にコンテナ化されたテストスイート。**
+すべてのチェックが使い捨てのコンテナで実行され、pre-commit フックに組み込まれている。
 
-**🔌 差し替え可能なプロビジョニング。**
+`config_method` · **差し替え可能なプロビジョニング。**
 Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-customize`（cloud-init/Ignition 未対応の古いディストリビューション向け）、またはスクリプト化された ISO インストール（AutoYaST/Kickstart/Preseed/AutoInstall）。
 
 </td>
@@ -717,8 +717,10 @@ setup_lab.py --keep rancher-cluster.json
    _network_mode="nat"
    _nat_network_name="labnat"          # 表示されているデフォルト値 — 新しい libvirt 仮想ネットワークであり、ホストの実際の LAN ではない
    _nat_network_cidr="192.168.150.0/24" # 表示されているデフォルト値
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 表示されているデフォルト値 — <外部>:<内部>/<プロトコル>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 表示されているデフォルト値 — 「<ハイパーバイザーの実IP上のポート>:<automation VM 上のポート>/<プロトコル>」
    ```
+
+   これにより、**ハイパーバイザー自身の実際に外部到達可能な IP**（`<外部>`）上のポート 22/80/443 が、**automation VM のプライベート NAT アドレス**（`<内部>`）上の同じポートへ転送される — この時点でこのプライベートネットワーク上で待ち受けているのは automation VM だけなので、ここでの「内部」は常に「automation VM 上」を意味する。（後述のステップ5では、同じ `<外部>:<内部>/<プロトコル>` という構文を再利用して、代わりに *lab* VM（作成済みのもの）へ転送する — その場合の「内部」は automation VM ではなく、そのラボ VM 自身のプライベート NAT アドレスを指す。）
 
 2. **いつも通りセットアップを実行する：**
 

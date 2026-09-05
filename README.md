@@ -33,25 +33,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 One JSON/YAML file, one command.**
-Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; `setup_lab.py` builds it all in the right order.
+`setup_lab.py` · **One JSON/YAML file, one command.**
+Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; it builds everything in the right order.
 
-**🧩 41 ready-made add-ons.**
+`install_<addon>` · **41 ready-made add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Manager/Uyuni (activation keys, RBAC, Content Lifecycle Management, Ansible integration, and more), vulnerable demo apps for security training, and more.
 
-**🖥️ A dynamic web UI.**
-[lab-builder](#web-ui-lab-builder) renders forms straight from the add-ons' own schemas — add a field to a script, and the UI picks it up with zero front-end changes.
+[`lab-builder`](#web-ui-lab-builder) · **A dynamic web UI.**
+Renders forms straight from the add-ons' own schemas — add a field to a script, and the UI picks it up with zero front-end changes.
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 Multi-hypervisor aware.**
+`KVM_HOSTS` · **Multi-hypervisor aware.**
 One lab definition can spread VMs across several KVM hosts, auto-selected by free CPU/RAM/disk, or pinned per node.
 
-**🧪 Fully containerized test suite.**
-Every check runs in its own disposable `podman` container, wired into a pre-commit hook.
+`podman` · **Fully containerized test suite.**
+Every check runs in its own disposable container, wired into a pre-commit hook.
 
-**🔌 Pluggable provisioning.**
+`config_method` · **Pluggable provisioning.**
 Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` (legacy distros with no cloud-init/Ignition support), or a scripted ISO install (AutoYaST/Kickstart/Preseed/AutoInstall).
 
 </td>
@@ -749,8 +749,10 @@ This changes nothing about the [default Quick Start](#quick-start) flow if you d
    _network_mode="nat"
    _nat_network_name="labnat"          # default shown — a new libvirt virtual network, not your host's real LAN
    _nat_network_cidr="192.168.150.0/24" # default shown
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # default shown — <external>:<internal>/<protocol>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # default shown — "<port on the HYPERVISOR's real IP>:<port on the AUTOMATION VM>/<protocol>"
    ```
+
+   This forwards ports 22/80/443 on the **hypervisor's own real, externally-reachable IP** (`<external>`) through to the same ports on the **automation VM's private NAT address** (`<internal>`) — the automation VM is the only thing listening on this private network at this point, so "internal" always means "on the automation VM" here. (Step 5 below reuses this exact same `<external>:<internal>/<protocol>` syntax to forward into a *lab* VM instead, once one exists — there, "internal" shifts to mean that VM's own private NAT address, not the automation VM's.)
 
 2. **Run the setup exactly as usual:**
 

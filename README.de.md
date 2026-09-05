@@ -35,25 +35,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 Eine JSON/YAML-Datei, ein Befehl.**
-VMs, Kubernetes-Cluster (RKE2/K3s) und Add-ons deklarativ beschreiben; `setup_lab.py` baut alles in der richtigen Reihenfolge auf.
+`setup_lab.py` · **Eine JSON/YAML-Datei, ein Befehl.**
+VMs, Kubernetes-Cluster (RKE2/K3s) und Add-ons deklarativ beschreiben; es baut alles in der richtigen Reihenfolge auf.
 
-**🧩 41 fertige Add-ons.**
+`install_<addon>` · **41 fertige Add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Manager/Uyuni (Aktivierungsschlüssel, RBAC, Content Lifecycle Management, Ansible-Integration und mehr), verwundbare Demo-Apps für Sicherheitsschulungen, und mehr.
 
-**🖥️ Eine dynamische Web-UI.**
-[lab-builder](#web-ui-lab-builder) generiert Formulare direkt aus dem eigenen Schema der Add-ons — ein Feld zu einem Skript hinzufügen, und die UI übernimmt es ohne Frontend-Änderungen.
+[`lab-builder`](#web-ui-lab-builder) · **Eine dynamische Web-UI.**
+Generiert Formulare direkt aus dem eigenen Schema der Add-ons — ein Feld zu einem Skript hinzufügen, und die UI übernimmt es ohne Frontend-Änderungen.
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 Multi-Hypervisor-fähig.**
+`KVM_HOSTS` · **Multi-Hypervisor-fähig.**
 Eine einzige Lab-Definition kann VMs über mehrere KVM-Hosts verteilen, automatisch nach freier CPU/RAM/Disk ausgewählt oder pro Knoten fest zugewiesen.
 
-**🧪 Vollständig containerisierte Testsuite.**
-Jede Prüfung läuft in ihrem eigenen wegwerfbaren `podman`-Container, eingebunden in einen Pre-Commit-Hook.
+`podman` · **Vollständig containerisierte Testsuite.**
+Jede Prüfung läuft in ihrem eigenen wegwerfbaren Container, eingebunden in einen Pre-Commit-Hook.
 
-**🔌 Austauschbare Provisionierung.**
+`config_method` · **Austauschbare Provisionierung.**
 Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` (ältere Distributionen ohne cloud-init/Ignition-Unterstützung) oder eine skriptgesteuerte ISO-Installation (AutoYaST/Kickstart/Preseed/AutoInstall).
 
 </td>
@@ -717,8 +717,10 @@ Das ändert nichts am [Standard-Schnellstart](#quick-start)-Ablauf, sofern man e
    _network_mode="nat"
    _nat_network_name="labnat"          # gezeigter Standardwert — ein neues virtuelles libvirt-Netzwerk, nicht das echte LAN des Hosts
    _nat_network_cidr="192.168.150.0/24" # gezeigter Standardwert
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # gezeigter Standardwert — <extern>:<intern>/<Protokoll>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # gezeigter Standardwert — "<Port auf der ECHTEN IP des HYPERVISORS>:<Port auf der AUTOMATION-VM>/<Protokoll>"
    ```
+
+   Damit werden die Ports 22/80/443 auf der **echten, von außen erreichbaren IP des Hypervisors** (`<extern>`) auf dieselben Ports auf der **privaten NAT-Adresse der Automation-VM** (`<intern>`) weitergeleitet — zu diesem Zeitpunkt ist die Automation-VM das Einzige, das in diesem privaten Netzwerk lauscht, „intern" bedeutet hier also immer „auf der Automation-VM". (Schritt 5 weiter unten verwendet dieselbe Syntax `<extern>:<intern>/<Protokoll>`, um stattdessen an eine *Lab*-VM weiterzuleiten, sobald eine existiert — dort bedeutet „intern" die private NAT-Adresse dieser VM, nicht die der Automation-VM.)
 
 2. **Das Setup genau wie gewohnt ausführen:**
 
