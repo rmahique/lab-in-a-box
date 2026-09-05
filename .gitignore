@@ -1,2 +1,4 @@
 setup_demo_server/lab.cfg
 templates/lab_creation.cfg
+__pycache__/
+*.pyc

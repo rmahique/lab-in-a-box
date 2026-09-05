@@ -1,0 +1,129 @@
+name: CI
+
+# Runs on every push and pull request against main/dev. Three independent
+# jobs, matching the project's own local conventions (see tests/run_tests.sh
+# and README.md#testing) rather than reimplementing separate logic here:
+#
+#   python311   - every .py file (and scripts/lab_schema, and every
+#                 install_<addon> script) must at minimum PARSE and IMPORT
+#                 cleanly on Python 3.11, the project's pinned minimum.
+#   addon-schemas - every install_<addon> script must print its own
+#                 configuration schema without crashing (--schema, both
+#                 JSON and YAML) -- this is the same contract the web UI
+#                 relies on to render its forms.
+#   test-suite  - the authoritative gate: the project's own containerized
+#                 test suite (tests/run_tests.sh), unchanged. Every check
+#                 that already runs locally before a commit runs here too.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  python311:
+    name: Python 3.11 syntax + import check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile every .py file (+ lab_schema) on 3.11
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            python3.11 -m py_compile "$f" || fail=1
+          done < <(find . -name '*.py' -not -path './.git/*' -not -path '*/__pycache__/*' -print0)
+          python3.11 -m py_compile scripts/lab_schema || fail=1
+          exit "$fail"
+      - name: Import every shared library module on 3.11
+        run: |
+          python3.11 - <<'PY'
+          import sys
+          sys.path.insert(0, "libs")
+          import addon_common, backends, k8s, lab_creation, primary, services, spacecmd_common
+          print("all libs/ modules imported cleanly on", sys.version)
+          PY
+
+  addon-schemas:
+    name: Every add-on prints its schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime deps needed for --schema yaml
+        run: pip install -q pyyaml
+      - name: setup_lab.py --input-definition (base topology schema)
+        # lab_schema is resolved via PATH (shutil.which), not a hardcoded
+        # install path — matches how it's actually deployed alongside every
+        # other script under /usr/local/bin on a real automation VM.
+        run: |
+          export PATH="$PWD/scripts:$PATH"
+          python3.11 scripts/setup_lab.py --input-definition
+          python3.11 scripts/setup_lab.py --input-definition yaml
+      - name: install_<addon> --schema, for every addon
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/scripts:$PATH"
+          fail=0
+          for f in scripts/install_*.py; do
+            echo "== $f =="
+            python3.11 "$f" --schema >/dev/null || { echo "FAIL (json): $f"; fail=1; }
+            python3.11 "$f" --schema yaml >/dev/null || { echo "FAIL (yaml): $f"; fail=1; }
+          done
+          exit "$fail"
+
+  test-suite:
+    name: Containerized test suite (tests/run_tests.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y podman
+      - name: Run the project's own test suite
+        run: tests/run_tests.sh
+
+  shellcheck:
+    name: shellcheck (bash sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck .githooks, setup_demo_server, active scripts
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: "."
+          # legacy_bash/ is frozen, superseded-by-Python code (see README) —
+          # not held to current lint standards. tests/ has its own
+          # containerized suite as the real gate.
+          ignore_paths: ".git legacy_bash tests"
+          # install_ds389 (never ported to Python — see README's "Under the
+          # hood") and the 4 bash helpers it needs at runtime
+          # (lab_creation.bash/k8s_functions.bash/primary_functions.bash/
+          # extensions.sh, deployed alongside the Python libs by
+          # install_automation_node_scripts.sh's own "one directory, one
+          # loop" comment — see there) are permanently unported, same
+          # "frozen, not held to current lint standards" stance as
+          # legacy_bash/ above. Found in code review 2026-09-05: these were
+          # never actually excluded, so this job has likely been failing on
+          # their own pre-existing warnings since the workflow was added,
+          # unrelated to whatever change a given run's diff actually made.
+          ignore_names: "install_ds389 lab_creation.bash k8s_functions.bash primary_functions.bash extensions.sh"
+          additional_files: ".githooks/*"
+          severity: warning
+        env:
+          # SC1090/SC1091 (can't follow a dynamic/non-constant source path)
+          # and SC2154 (var referenced but not assigned) are both expected
+          # and structural here, not bugs: these scripts source config and
+          # reference variables that only exist via lab_creation.cfg,
+          # process_templates' eval-based injection, or an operator's own
+          # env — never resolvable from a static CI checkout.
+          SHELLCHECK_OPTS: -e SC1090 -e SC1091 -e SC2154

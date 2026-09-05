@@ -1,0 +1,7 @@
+version: 2
+renderer: ${network_renderer}
+ethernets:
+  id0:
+    match:
+      macaddress: "${mymac}"
+    dhcp4: true

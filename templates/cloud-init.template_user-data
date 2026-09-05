@@ -17,6 +17,8 @@ users:
     lock_passwd: false
     ssh_authorized_keys: ["${ROOT_SSH_KEY}"]
     hashed_passwd: "${ROOT_PWD_HASH}"
+$( if [[ "${ISO_IMAGE,,}" == *ubuntu* ]]; then
+cat <<CI_UBUNTU
 write_files:
   - path:  /etc/netplan/50-cloud-init.yaml
     permissions: '0640'
@@ -28,10 +30,10 @@ write_files:
              id0:
                match:
                  macaddress: "${mymac}"
-               addresses: 
+               addresses:
                  - ${myip}/${mymask}
                routes:
-                 - to: default
+                 - to: 0.0.0.0/0
                    via: ${mygw}
                nameservers:
                  search: [${mydomain}]
@@ -40,4 +42,11 @@ write_files:
 runcmd:
   - netplan generate
   - netplan apply
-$( if [[ "${ci_options}" == *"grub_ubuntu"* ]]; then echo '  - ln -s /usr/sbin/grub-mkconfig /usr/sbin/grub2-mkconfig'; echo '  - ln -s /boot/grub /boot/grub2'; echo '  - sed "s/GRUB_TIMEOUT_STYLE.*/GRUB_TIMEOUT_STYLE=menu/;s/GRUB_TIMEOUT.*/GRUB_TIMEOUT=8/" -i /etc/default/grub -i /etc/default/grub.d/50-cloudimg-settings.cfg'; echo '  - grub-mkconfig -o /boot/grub/grub.cfg';fi )
+CI_UBUNTU
+  if [[ "${ci_options}" == *"grub_ubuntu"* ]]; then
+    echo '  - ln -s /usr/sbin/grub-mkconfig /usr/sbin/grub2-mkconfig'
+    echo '  - ln -s /boot/grub /boot/grub2'
+    echo '  - sed "s/GRUB_TIMEOUT_STYLE.*/GRUB_TIMEOUT_STYLE=menu/;s/GRUB_TIMEOUT.*/GRUB_TIMEOUT=8/" -i /etc/default/grub -i /etc/default/grub.d/50-cloudimg-settings.cfg'
+    echo '  - grub-mkconfig -o /boot/grub/grub.cfg'
+  fi
+fi )

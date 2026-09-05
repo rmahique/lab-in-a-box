@@ -1,0 +1,42 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  network:
+    network:
+      version: 2
+      ethernets:
+        id0:
+          match:
+            macaddress: $mymac
+          set-name: eth0
+          dhcp4: no
+          addresses:
+            - $myip/$mymask
+          gateway4: $mygw
+          nameservers:
+            addresses:
+              - $mydns
+            search:
+              - $mydomain
+  storage:
+    layout:
+      name: lvm
+  user-data:
+    disable_root: false
+    users:
+      - name: root
+        lock_passwd: false
+        hashed_passwd: "$ROOT_PWD_HASH"
+        ssh_authorized_keys:
+          - $ROOT_SSH_PUBKEY
+    chpasswd:
+      expire: false
+  ssh:
+    install-server: true
+    allow-pw: true
+  late-commands:
+    - mkdir -p /target/etc/ssh/sshd_config.d
+    - printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' > /target/etc/ssh/sshd_config.d/99-lab.conf

@@ -1,0 +1,53 @@
+#!/bin/bash
+# Part of lab-in-a-box, issues one MCP client certificate signed by this
+# host's lab-mcp CA (see install_automation_node_scripts.sh's cert
+# generation — mirrors the existing self-signed-cert pattern already used
+# for the webui's own HTTPS).
+#
+# Usage: lab-mcp-issue-client-cert <name>
+#
+# Prints the paths of the generated key/cert. Copy both, plus
+# /etc/lab-mcp/tls/ca.crt, to wherever the MCP client runs — there is no
+# automated transmission mechanism (copying a private key over the network
+# safely needs an operator's own judgment call, not a script's).
+
+set -euo pipefail
+
+_name="${1:-}"
+if [[ -z "${_name}" ]]; then
+  echo "Usage: $(basename "$0") <name>" >&2
+  exit 1
+fi
+
+_tls_dir=/etc/lab-mcp/tls
+_ca_key="${_tls_dir}/ca.key"
+_ca_crt="${_tls_dir}/ca.crt"
+if [[ ! -f "${_ca_key}" || ! -f "${_ca_crt}" ]]; then
+  echo "ERROR: ${_tls_dir}/{ca.key,ca.crt} not found — run install_automation_node_scripts.sh first" >&2
+  exit 1
+fi
+
+_out_dir="${_tls_dir}/clients"
+mkdir -p "${_out_dir}"
+_key="${_out_dir}/${_name}.key"
+_csr="${_out_dir}/${_name}.csr"
+_crt="${_out_dir}/${_name}.crt"
+
+if [[ -f "${_key}" || -f "${_crt}" ]]; then
+  echo "ERROR: ${_key} or ${_crt} already exists — remove it first if you want to reissue" >&2
+  exit 1
+fi
+
+openssl req -newkey rsa:2048 -nodes -subj "/CN=${_name}" -keyout "${_key}" -out "${_csr}" &>/dev/null
+openssl x509 -req -in "${_csr}" -CA "${_ca_crt}" -CAkey "${_ca_key}" -CAcreateserial \
+    -days 825 -out "${_crt}" &>/dev/null
+rm -f "${_csr}"
+chmod 0600 "${_key}"
+chmod 0644 "${_crt}"
+
+echo "Issued client cert for '${_name}':"
+echo "  key:  ${_key}"
+echo "  cert: ${_crt}"
+echo "  ca:   ${_ca_crt}"
+echo
+echo "Copy all three to wherever your MCP client runs (this key never leaves this host automatically)."
