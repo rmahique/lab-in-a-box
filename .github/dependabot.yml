@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keep the marketplace Actions used by ci.yml pinned to current versions.
+  # This project has no third-party Python dependencies to track (stdlib
+  # only), so this is the only ecosystem that applies.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

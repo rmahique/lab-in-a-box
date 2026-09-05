@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+# lab_schema — parse a lab-in-a-box install script and emit its option schema.
+# Part of lab-in-a-box
+# Author/s: Raul Mahiques
+# License: GPLv3
+#
+# Usage:
+#   lab_schema <script_path> [json|yaml]
+#
+# Reads the structured comment block starting at "JSON section:" in the given
+# script and outputs a machine-readable schema of every configurable option.
+# Requires python3; YAML output additionally requires pyyaml (pip install pyyaml).
+
+import json
+import re
+import sys
+from pathlib import Path
+
+SCHEMA_VERSION = "1.0"
+
+# Infer field type from its name suffix
+def _infer_type(name):
+    if re.search(r'_ns$|_namespace$', name):        return "namespace"
+    if re.search(r'_version$|_ver$', name):          return "version"
+    if re.search(r'_repo_url$|_url$', name):         return "url"
+    if re.search(r'_port$', name):                   return "port"
+    if re.search(r'_pass$|_pwd$|_password$', name):  return "password"
+    if re.search(r'_super_privileged$|_enabled$', name): return "boolean"
+    if re.search(r'_replicas$|_pg_version$', name):  return "integer"
+    return "string"
+
+def parse_script(path):
+    """
+    Extract the JSON section comment block from a lab-in-a-box install script.
+    Returns a dict ready for JSON/YAML serialisation.
+    """
+    text = Path(path).read_text(errors="replace")
+    lines = text.splitlines()
+
+    addon = section = description = ""
+    fields = []
+    in_block = False
+    in_mandatory = False
+    current = None      # field currently accumulating continuation lines
+
+    for line in lines:
+        # ── Find section header ─────────────────────────────────────────────
+        if not in_block:
+            if "JSON section:" in line:
+                m = re.search(r'["“]([^"”]+)["”]', line)
+                if m:
+                    section = addon = m.group(1)
+                # Description: everything after the closing quote + optional decorators
+                desc_part = re.sub(r'^.*["”]\s*[─—–\-]*\s*', '', line)
+                desc_part = re.sub(r'^#\s*', '', desc_part)
+                desc_part = re.sub(r'\s*[─]+\s*$', '', desc_part).strip()
+                description = desc_part
+                in_block = True
+            continue
+
+        # ── Stop at first non-comment line ──────────────────────────────────
+        if line and not line.startswith("#"):
+            break
+
+        # ── Track MANDATORY / OPTIONAL / EXPERIMENTAL block headers ─────────
+        stripped = line.lstrip("#").strip()
+        if re.match(r'MANDATORY\b', stripped):
+            in_mandatory = True
+            current = None
+            continue
+        if re.match(r'(OPTIONAL|EXPERIMENTAL)\b', stripped):
+            in_mandatory = False
+            current = None
+            continue
+
+        # ── Parse field lines: "#   field_name  : … (default: val)" ────────
+        m = re.match(r'^#   ([A-Za-z_][A-Za-z0-9_-]*)\s*:(.*)', line)
+        if m:
+            current = {
+                "name":         m.group(1),
+                "_in_mandatory": in_mandatory,
+                "_rest":        m.group(2).strip(),
+            }
+            fields.append(current)
+            continue
+
+        # ── Blank comment line ends the current field's accumulation ────────
+        if stripped == "":
+            current = None
+            continue
+
+        # ── Continuation line: append to the current field's raw text ───────
+        # (free-standing prose outside any field — e.g. NOTE blocks — is ignored)
+        if current is not None:
+            current["_rest"] = f'{current["_rest"]} {stripped}'.strip()
+
+    # ── Finalise: split each field's joined raw text into required/default/desc
+    for f in fields:
+        rest = re.sub(r'\s+', ' ', f.pop("_rest")).strip()
+        required = f.pop("_in_mandatory") or bool(re.search(r'\[MANDATORY\]', rest))
+        rest = re.sub(r'\[(OPTIONAL|MANDATORY)\]\s*', '', rest)
+
+        default = ""
+        dm = re.search(r'\(default:\s*([^)]+)\)', rest)
+        if dm:
+            default = dm.group(1).strip()
+            rest = re.sub(r'\s*\(default:[^)]+\)', '', rest)
+
+        # Optional explicit "(options: a, b, c)" annotation — a fixed set of
+        # valid values for this field, driving a dropdown in the web UI
+        # instead of free text. Not inferred from free-form description
+        # prose (too easy to false-positive on unrelated quoted examples);
+        # an addon author opts in by adding this annotation explicitly.
+        enum = None
+        om = re.search(r'\(options:\s*([^)]+)\)', rest)
+        if om:
+            enum = [v.strip() for v in om.group(1).split(",") if v.strip()]
+            rest = re.sub(r'\s*\(options:[^)]+\)', '', rest)
+
+        # Optional explicit "(pattern: regex)" annotation for format
+        # validation in the web UI (e.g. an IP/MAC shape). Same opt-in
+        # rationale as "(options: ...)" above. NOTE: the capture is
+        # `[^)]+` — a pattern containing a literal ")" isn't supported by
+        # this simple annotation syntax.
+        pattern = None
+        pm = re.search(r'\(pattern:\s*([^)]+)\)', rest)
+        if pm:
+            pattern = pm.group(1).strip()
+            rest = re.sub(r'\s*\(pattern:[^)]+\)', '', rest)
+
+        # Optional explicit "(min: N)" / "(max: N)" annotations for numeric
+        # range validation in the web UI.
+        min_val = max_val = None
+        mnm = re.search(r'\(min:\s*(-?\d+)\)', rest)
+        if mnm:
+            min_val = int(mnm.group(1))
+            rest = re.sub(r'\s*\(min:-?\d+\)', '', rest)
+        mxm = re.search(r'\(max:\s*(-?\d+)\)', rest)
+        if mxm:
+            max_val = int(mxm.group(1))
+            rest = re.sub(r'\s*\(max:-?\d+\)', '', rest)
+
+        f["required"]    = required
+        f["default"]     = default
+        f["type"]        = _infer_type(f["name"])
+        f["description"] = rest.strip()
+        if enum:
+            f["enum"] = enum
+        if pattern:
+            f["pattern"] = pattern
+        if min_val is not None:
+            f["min"] = min_val
+        if max_val is not None:
+            f["max"] = max_val
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "addon":          addon,
+        "section":        section,
+        "description":    description,
+        "fields":         fields,
+    }
+
+
+def base_lab_schema():
+    """
+    Schema of the base lab definition (common / nodes / kclusters).
+
+    Single source of truth: `setup_lab.sh --schema` emits this via `lab_schema
+    --base`, and the web builder imports it directly. `nodes` and `kclusters`
+    are keyed maps (hostname / cluster name -> settings), marked "repeatable"
+    so a consumer knows to collect one-or-more instances rather than a single
+    object.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "component": "lab-definition",
+        "description": "lab-in-a-box lab definition file — passed as the first "
+                       "argument to setup_lab.py and setup_vm.py",
+        "sections": {
+            "common": {
+                "description": "Shared settings applied to every VM in the lab",
+                "fields": [
+                    {"name": "ISO_IMAGE", "required": True, "type": "string", "description": "Source QCOW2 image filename (must exist in ISO_LOC on the hypervisor)"},
+                    {"name": "VM_MEM", "required": True, "type": "integer", "min": 256, "description": "RAM in MiB (e.g. 8192)"},
+                    {"name": "VM_DSK", "required": True, "type": "integer", "min": 1, "description": "Disk size in GiB (e.g. 80)"},
+                    {"name": "VM_CPU", "required": True, "type": "integer", "min": 1, "description": "vCPU count"},
+                    {"name": "mymask", "required": False, "type": "integer", "description": "Network prefix length (default: auto-detected from host)"},
+                    {"name": "mygw", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "Default gateway IP (default: auto-detected)"},
+                    {"name": "mydns", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "DNS server IP (default: auto-detected)"},
+                    {"name": "mynet_reverse", "required": False, "type": "string", "description": "Reverse DNS zone prefix e.g. 88.168.192 (default: derived from first node IP)"},
+                    {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: derived from automation VM hostname)"},
+                    {"name": "VM_BOOT", "required": False, "type": "string", "default": "uefi", "enum": ["uefi", "firmware=bios", "bios", "uefi=off", "hd"], "description": "virt-install boot mode"},
+                    {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Disk bus type for the primary disk"},
+                    {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "NIC device model"},
+                    {"name": "VM_OSVARIANT", "required": False, "type": "string", "default": "slem5.4", "description": "OS variant for virt-install (osinfo-query os)"},
+                    {"name": "VM_MACHINE", "required": False, "type": "string", "default": "",
+                     "enum": [{"value": "", "label": "(default) virt-install's own choice, currently q35"}, "pc"],
+                     "description": "virt-install machine type override — set to \"pc\" (legacy i440fx) for an "
+                     "old guest whose kernel/GRUB can't find its root disk under q35 (confirmed live for a "
+                     "2015-era CentOS 7 GenericCloud image); leave unset for every image that already works"},
+                    {"name": "config_method", "required": False, "type": "string", "default": "",
+                     "enum": [{"value": "", "label": "(default) Ignition+Combustion"}, "cloud-init", "virt_customize", "install_iso"],
+                     "description": "Provisioning method"},
+                    {"name": "network_renderer", "required": False, "type": "string", "default": "NetworkManager",
+                     "enum": ["NetworkManager", "networkd", "sysconfig"],
+                     "description": "cloud-init network-config's \"renderer\" value (config_method=cloud-init only) — the default matches SLE Micro/SLES/Leap's own default network stack; set to \"networkd\" for guests whose distro defaults to systemd-networkd instead (e.g. Ubuntu Server, Debian's generic cloud image), or \"sysconfig\" for guests using legacy ifcfg-file networking with NetworkManager not even enabled (e.g. Alibaba Cloud Linux 2's alibase image) — otherwise their static IP is silently never applied"},
+                    {"name": "install_type", "required": False, "type": "string", "default": "",
+                     "enum": [{"value": "", "label": "(default) auto-detect from ISO_IMAGE name"}, "autoyast", "kickstart", "preseed", "autoinstall"],
+                     "description": "For install_iso only"},
+                    {"name": "VM_ROOT_PASS", "required": False, "type": "string", "default": "", "description": "Plaintext root password for virt_customize; omit to reuse ROOT_PWD_HASH from lab_creation.cfg (same as cloud-init/Ignition)"},
+                    {"name": "lab_name", "required": False, "type": "string", "description": "Human-readable lab name shown in log output"},
+                    {"name": "backend", "required": False, "type": "string", "default": "libvirt", "enum": ["libvirt", "harvester"], "description": "Compute backend for every node in this lab, unless overridden per-node"},
+                    {"name": "services", "required": False, "type": "array", "description": "Lab-support services to configure+enable before VMs are created: dns, http (both already running from the automation VM bootstrap; listing them is a no-op today), pxe (see the top-level \"pxe\" section), portforward (DNAT-forwards each node's own \"forwarded_ports\" field from the KVM host's real IP — see that per-node field). Omit for today's default (nothing extra runs)."},
+                ],
+            },
+            "nodes": {
+                "description": "Map of fully-qualified VM hostname to per-node settings. Keys override common values.",
+                "repeatable": True,
+                "key_label": "hostname (FQDN)",
+                "fields": [
+                    {"name": "myip", "required": True, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "VM IP address"},
+                    {"name": "mymac", "required": False, "type": "string", "pattern": r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", "description": "VM MAC address (generated and conflict-checked if omitted)"},
+                    {"name": "kcluster", "required": False, "type": "string", "description": "kcluster name this node belongs to (must exist in kclusters)"},
+                    {"name": "INSTALL_RKE2_TYPE", "required": False, "type": "string", "default": "server", "enum": ["server", "agent"], "description": "Node role"},
+                    {"name": "addons", "required": False, "type": "array", "description": "List of VM-level addon names (install_<addon> scripts)"},
+                    {"name": "extra_dsk", "required": False, "type": "string", "description": "Additional disk paths or UUID=… entries (space-separated); per-disk bus: /dev/sdb,bus=scsi"},
+                    # VM_MEM/VM_DSK/VM_CPU/VM_BOOT/VM_DSK_BUS/VM_NET_MODEL/VM_OSVARIANT/
+                    # VM_ROOT_PASS: load_vm_vars() (libs/lab_creation.py) merges 'common'
+                    # then overlays EVERY key present in a node's own dict, so all of
+                    # these are already genuinely overridable per-node at the code
+                    # level — this schema simply never exposed them as such before
+                    # (reported live 2026-09-01: the webui had no way to override
+                    # common's CPU/memory/disk defaults for an individual node,
+                    # because the fields to do so didn't exist here at all).
+                    {"name": "VM_MEM", "required": False, "type": "integer", "min": 256, "description": "Overrides common.VM_MEM for this node only"},
+                    {"name": "VM_DSK", "required": False, "type": "integer", "min": 1, "description": "Overrides common.VM_DSK for this node only"},
+                    {"name": "VM_CPU", "required": False, "type": "integer", "min": 1, "description": "Overrides common.VM_CPU for this node only"},
+                    {"name": "VM_BOOT", "required": False, "type": "string", "enum": ["uefi", "firmware=bios", "bios", "uefi=off", "hd"], "description": "Overrides common.VM_BOOT for this node only"},
+                    {"name": "VM_DSK_BUS", "required": False, "type": "string", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Overrides common.VM_DSK_BUS for this node only"},
+                    {"name": "VM_NET_MODEL", "required": False, "type": "string", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "Overrides common.VM_NET_MODEL for this node only"},
+                    {"name": "VM_MACHINE", "required": False, "type": "string", "enum": ["", "pc"],
+                     "description": "Overrides common.VM_MACHINE for this node only — set per-node when only "
+                     "one old guest in an otherwise-modern lab needs the legacy \"pc\" machine type"},
+                    {"name": "VM_OSVARIANT", "required": False, "type": "string", "description": "Overrides common.VM_OSVARIANT for this node only"},
+                    {"name": "VM_ROOT_PASS", "required": False, "type": "string", "description": "Overrides common.VM_ROOT_PASS for this node only (virt_customize only)"},
+                    {"name": "config_method", "required": False, "type": "string",
+                     "enum": [{"value": "", "label": "(default) Ignition+Combustion"}, "cloud-init", "virt_customize", "install_iso"],
+                     "description": "Overrides common.config_method for this node only"},
+                    {"name": "install_type", "required": False, "type": "string",
+                     "enum": [{"value": "", "label": "(default) auto-detect from ISO_IMAGE name"}, "autoyast", "kickstart", "preseed", "autoinstall"],
+                     "description": "Overrides common.install_type for this node only (config_method=install_iso only)"},
+                    {"name": "network_renderer", "required": False, "type": "string", "enum": ["NetworkManager", "networkd", "sysconfig"],
+                     "description": "Overrides common.network_renderer for this node only — set per-node when a lab mixes guest OSes (e.g. SLE Micro nodes on NetworkManager, an Ubuntu/Debian node on networkd, an Alibaba Cloud Linux node on sysconfig)"},
+                    {"name": "ISO_IMAGE", "required": False, "type": "string", "description": "Overrides common.ISO_IMAGE for this node only"},
+                    {"name": "kvm_host", "required": False, "type": "string", "description": "Pin this VM to a specific KVM host from KVM_HOSTS; omit to auto-select by resource availability"},
+                    {"name": "existing", "required": False, "type": "boolean", "description": "Pre-provisioned host (baremetal or already-running VM) — the tool will not create or destroy it, only SSH to it; omit for today's default (a VM this tool creates)"},
+                    {"name": "backend", "required": False, "type": "string", "enum": ["libvirt", "harvester"], "description": "Compute backend for this node; omit to use common.backend or the configured default"},
+                    {"name": "pxe_kernel", "required": False, "type": "string", "description": "PXE boot kernel path for this node (only used when the \"pxe\" service is enabled via common.services); omit to skip generating a PXE boot entry for this node"},
+                    {"name": "pxe_initrd", "required": False, "type": "string", "description": "PXE boot initrd path for this node (pxe service only)"},
+                    {"name": "pxe_append", "required": False, "type": "string", "description": "PXE boot kernel command-line arguments for this node (pxe service only)"},
+                    {"name": "forwarded_ports", "required": False, "type": "array",
+                     "description": "Ports to DNAT-forward from the KVM host's real IP to this node's own myip (only used when the \"portforward\" service is enabled via common.services — meant for nodes on a NAT'd network, see lab.cfg's _network_mode). Each entry is \"<external>:<internal>/<protocol>\", e.g. \"8080:80/TCP\"."},
+                ],
+            },
+            "kclusters": {
+                "description": "Map of cluster name to Kubernetes cluster configuration",
+                "repeatable": True,
+                "key_label": "cluster name",
+                "fields": [
+                    {"name": "clu_type", "required": True, "type": "string", "enum": ["rke2", "k3s"], "description": "Cluster type"},
+                    {"name": "clu_rel", "required": True, "type": "string", "description": "Release channel: stable, latest, or a version string"},
+                    {"name": "mydomain", "required": True, "type": "string", "description": "DNS domain for this cluster (e.g. mydemo.lab)"},
+                    {"name": "addons", "required": False, "type": "array", "description": "List of cluster-level addon names (install_<addon> scripts)"},
+                    {"name": "mgm_node", "required": False, "type": "string", "description": "Hostname of the node that runs addon installers (default: first server node)"},
+                ],
+            },
+            "pxe": {
+                "description": "Optional TFTP/PXE-boot/DHCP service config, used only when \"pxe\" is listed in common.services. Runs as one small podman container on the automation VM.",
+                "fields": [
+                    {"name": "pxe_bridge", "required": False, "type": "string", "default": "br0", "description": "Bridge interface the PXE service binds to"},
+                    {"name": "pxe_dhcp_mode", "required": False, "type": "string", "default": "off",
+                     "enum": [
+                         {"value": "off", "label": "(default) off — no DHCP; an external DHCP server must already supply PXE boot options itself"},
+                         {"value": "proxy", "label": "proxy — PXE proxyDHCP; leases still come from an external DHCP server, this only answers the PXE-specific options"},
+                         {"value": "full", "label": "full — this service is the DHCP server"},
+                     ],
+                     "description": "DHCP role"},
+                    {"name": "pxe_dhcp_range_start", "required": False, "type": "string", "description": "DHCP range start — required when pxe_dhcp_mode is \"full\""},
+                    {"name": "pxe_dhcp_range_end", "required": False, "type": "string", "description": "DHCP range end — required when pxe_dhcp_mode is \"full\""},
+                    {"name": "pxe_dhcp_lease", "required": False, "type": "string", "default": "12h", "description": "DHCP lease time — \"full\" mode only"},
+                    {"name": "pxe_boot_filename", "required": False, "type": "string", "default": "lpxelinux.0", "description": "PXE boot filename handed out to clients (override for UEFI/iPXE chainloading)"},
+                ],
+            },
+        },
+    }
+
+
+def _emit(schema, fmt):
+    if fmt == "json":
+        print(json.dumps(schema, indent=2, ensure_ascii=False))
+    else:
+        try:
+            import yaml
+        except ImportError:
+            print("ERROR: pyyaml is required for YAML output (pip install pyyaml)", file=sys.stderr)
+            sys.exit(1)
+        print(yaml.dump(schema, default_flow_style=False, allow_unicode=True, sort_keys=False))
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: {Path(sys.argv[0]).name} <script_path>|--base [json|yaml]", file=sys.stderr)
+        sys.exit(1)
+
+    # --base emits the base lab-definition schema (common/nodes/kclusters)
+    if sys.argv[1] == "--base":
+        fmt = sys.argv[2] if len(sys.argv) > 2 else "json"
+        if fmt not in ("json", "yaml"):
+            print(f"ERROR: format must be 'json' or 'yaml', got '{fmt}'", file=sys.stderr)
+            sys.exit(1)
+        _emit(base_lab_schema(), fmt)
+        return
+
+    script_path = sys.argv[1]
+    fmt         = sys.argv[2] if len(sys.argv) > 2 else "json"
+
+    if fmt not in ("json", "yaml"):
+        print(f"ERROR: format must be 'json' or 'yaml', got '{fmt}'", file=sys.stderr)
+        sys.exit(1)
+
+    if not Path(script_path).is_file():
+        print(f"ERROR: file not found: {script_path}", file=sys.stderr)
+        sys.exit(1)
+
+    _emit(parse_script(script_path), fmt)
+
+
+if __name__ == "__main__":
+    main()

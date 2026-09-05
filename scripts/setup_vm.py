@@ -1,0 +1,198 @@
+#!/usr/bin/env python3.11
+# Part of lab-in-a-box, it will setup a VM
+# Author/s: Raul Mahiques
+# License: GPLv3
+#
+# Python equivalent of scripts/setup_vm.sh — calls the python libraries
+# (lab_creation, k8s, primary) directly, in-process. No bash is sourced or
+# executed by this script.
+
+"""
+setup_vm.py — provision a single VM from a lab definition.
+
+Usage:
+    setup_vm.py <lab.json> <vm_hostname>
+"""
+
+__version__ = "ca2d2d5"
+
+import sys
+from pathlib import Path
+
+# Installed location (mirrors bash's _lib_path=/usr/local/lib/lab_creation);
+# fall back to the repo copy for local development.
+for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
+    if Path(_candidate).is_dir() and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+
+import primary  # noqa: E402
+from lab_creation import (  # noqa: E402
+    die, log, warn,
+    validate_lab_definition, load_vm_vars,
+    prepare_ignition_combustion, prepare_cloud_init,
+    prepare_virt_customize_for_vm, prepare_install_iso,
+    add_to_dns, clean_ssh_keys, check_ssh_conn,
+)
+from targets import is_existing_node  # noqa: E402
+import backends  # noqa: E402
+
+
+def provision_vm(definition, config, defaults, vm_name):
+    """
+    Provision one VM. Mirrors setup_vm.sh end to end.
+
+    definition : the loaded lab definition — a primary.LabDefinition (see
+                 primary.py), so it already knows its own source path and
+                 format. Nothing here needs a separate path argument:
+                 validate_lab_definition() reads definition.source_path for
+                 its banner, and check_or_generate_mac() reads it too (via
+                 primary.save_definition()) if a MAC conflict needs to be
+                 persisted — neither re-reads the file itself.
+    config     : lab_creation.cfg dict (REMOTE_HOST, VIRT_SRV, KVM_HOSTS, ROOT_SSH_KEY, …).
+    defaults   : lab_creation.defaults dict (LAB_SETUP_PATH, VM_IMG_LOC, ISO_LOC, …).
+    vm_name    : the node key in definition["nodes"] to provision.
+    """
+    node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
+    if is_existing_node(node_cfg):
+        die("'{}' is marked \"existing\" — it is a pre-provisioned host and must not "
+            "be provisioned by setup_vm.py".format(vm_name))
+
+    iso_loc        = defaults.get("ISO_LOC", "/var/lib/libvirt/images/sources")
+    lab_setup_path = defaults.get("LAB_SETUP_PATH", "/srv/www/htdocs/lab_creation")
+    vm_img_loc     = defaults.get("VM_IMG_LOC", "/var/lib/libvirt/images/").rstrip("/")
+
+    # New VM placement — resolves whichever backend this VM uses (libvirt by
+    # default; see backends.get_backend()'s docstring for the selection
+    # precedence and each backend's own resolve() for how it finds its
+    # target: a KVM host for libvirt, a kubeconfig/cluster for harvester).
+    backend = backends.get_backend(definition, config, vm_name, for_existing=False,
+                                    vm_img_loc=vm_img_loc, iso_loc=iso_loc, lab_setup_path=lab_setup_path)
+
+    if not validate_lab_definition(definition, config, iso_loc, lab_setup_path,
+                                    target_node=vm_name, vm_img_loc=vm_img_loc):
+        sys.exit(1)
+
+    # bash: defaults, then cfg, then JSON (load_vm_vars) last — JSON wins on
+    # any name collision, since it's sourced/exported last in that pipeline.
+    env = {}
+    env.update(defaults)
+    env.update(config)
+    env.update(load_vm_vars(definition, vm_name))
+
+    ign_file = "{}.ign".format(vm_name)
+    com_file = vm_name
+
+    mymac, network = backend.check_or_generate_mac(
+        vm_name, env.get("mymac", ""), definition,
+        bridge=env.get("BRIDGE", "br0"),
+        vm_net_model=env.get("VM_NET_MODEL", "virtio"),
+    )
+    env["mymac"] = mymac
+
+    config_method = env.get("config_method", "") or ""
+
+    backend.copy_vm_image(env.get("ISO_IMAGE", ""), vm_name,
+                           env.get("VM_DSK", ""), config_method=config_method)
+
+    if config_method == "":
+        prepare_ignition_combustion(
+            vm_name, lab_setup_path,
+            env.get("ROOT_PWD_HASH", ""), env.get("ROOT_SSH_KEY", ""),
+            env.get("mysource", ""), env.get("sourcepath", ""),
+            env.get("mydns", ""), env.get("myip", ""), env.get("mymask", ""), env.get("mygw", ""),
+            env.get("SUSE_email", ""), env.get("SUSE_regcode", ""), env.get("SUSE_url", ""),
+        )
+    elif config_method == "cloud-init":
+        prepare_cloud_init(vm_name, lab_setup_path, env)
+    elif config_method == "virt_customize":
+        # virt_customize is a libvirt-only config_method — HarvesterBackend's
+        # copy_vm_image() (already called above) already died on any
+        # non-cloud-init config_method for that backend, so backend.remote_host
+        # is only ever reached here for a genuine LibvirtBackend.
+        prepare_virt_customize_for_vm(
+            backend.remote_host, vm_img_loc, vm_name,
+            env.get("myip", ""), env.get("mymask", ""), env.get("mygw", ""),
+            env.get("mydns", ""), env.get("mydomain", ""), mymac,
+            vm_root_pass=env.get("VM_ROOT_PASS"), root_pwd_hash=env.get("ROOT_PWD_HASH"),
+            root_ssh_key_path=env.get("ROOT_SSH_KEY"),
+        )
+    elif config_method == "install_iso":
+        prepare_install_iso(
+            vm_name, lab_setup_path, env.get("install_type", ""), env.get("ISO_IMAGE", ""),
+            mymac, env.get("myip", ""), env.get("mymask", ""), env.get("mygw", ""),
+            env.get("mydns", ""), env.get("mydomain", ""),
+            env.get("ROOT_PWD_HASH", ""), root_ssh_key=env.get("ROOT_SSH_KEY"),
+        )
+    # else: "iso-cloud-init" — nothing to prepare (mirrors bash: no prepare_* branch for it)
+
+    backend.push_provisioning_files(vm_name, config_method=config_method, vm_img_loc=vm_img_loc)
+
+    add_to_dns(vm_name, env.get("myip", ""), env.get("mydomain", ""), env.get("mynet_reverse", ""),
+               remote_dns_servers=env.get("REMOTE_DNS_SERVERS", "").split() or None)
+
+    backend.create_vm(
+        vm_name,
+        env.get("VM_CPU", ""), env.get("VM_MEM", ""), env.get("VM_DSK", ""),
+        network,
+        os_variant=env.get("VM_OSVARIANT", "slem5.4"),
+        boot=env.get("VM_BOOT", "uefi"),
+        config_method=config_method,
+        extra_disks=env.get("extra_dsk", "").split() or None,
+        extra_filesystems=env.get("extra_fs", "").split() or None,
+        vm_dsk_bus=env.get("VM_DSK_BUS", "virtio"),
+        ign_file=ign_file, com_file=com_file,
+        salt_states=env.get("salt_states", ""),
+        install_type=env.get("install_type", ""), iso_image=env.get("ISO_IMAGE", ""),
+        iso_loc=iso_loc, mydns=env.get("mydns", ""),
+        vcluster=env.get("vcluster", ""),
+        mymac=mymac,
+        vm_machine=env.get("VM_MACHINE", ""),
+    )
+
+    clean_ssh_keys(vm_name, env.get("myip", ""))
+
+    # Wait for it to come online, reboot, then wait again — matches bash
+    # exactly. check_ssh_conn() already dies internally on timeout (mirrors
+    # fail_with_error inside bash's check_ssh_conn), so — as in bash — the
+    # "VM failed to come online" messages there are effectively unreachable;
+    # any real timeout aborts from inside check_ssh_conn itself.
+    check_ssh_conn(vm_name)
+    backend.reboot_vm(vm_name)
+    check_ssh_conn(vm_name)
+    log("\t\tVM \"{}\" created".format(vm_name))
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--help":
+        print(
+            "Usage: setup_vm.py <lab.json> <vm_hostname>\n\n"
+            "Provisions a single VM: copies the disk image, generates provisioning files\n"
+            "(Ignition+Combustion or cloud-init), registers DNS, and calls virt-install.\n\n"
+            "Run 'setup_lab.py --input-definition [json|yaml]' for the full lab definition schema."
+        )
+        sys.exit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("--input-definition", "--schema"):
+        import subprocess
+        fmt = sys.argv[2] if len(sys.argv) > 2 else "json"
+        sys.exit(subprocess.run(["setup_lab.py", "--input-definition", fmt]).returncode)
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
+        print("{} {}".format(Path(sys.argv[0]).name, __version__))
+        sys.exit(0)
+
+    if len(sys.argv) < 3:
+        die("Usage:\n{} <configuration file> <vm_name>".format(sys.argv[0]))
+
+    json_file = sys.argv[1]
+    vm_name = sys.argv[2]
+
+    defaults = primary.load_defaults()
+    config = primary.load_config()
+    definition = primary.load_definition(json_file)
+
+    provision_vm(definition, config, defaults, vm_name)
+
+
+if __name__ == "__main__":
+    main()

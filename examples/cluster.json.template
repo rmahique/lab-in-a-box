@@ -24,6 +24,10 @@
     {"myip":"192.168.8.55",
      "mymac":"34:8a:b1:4b:16:b5",
      "INSTALL_RKE2_TYPE": "agent"
+    },
+  "node56.mydemo.lab":
+    {"myip":"192.168.8.56",
+     "existing": true
     }
 },
 "common":

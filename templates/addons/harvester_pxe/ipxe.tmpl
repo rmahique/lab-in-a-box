@@ -1,0 +1,18 @@
+#!ipxe
+# Rendered per-node by scripts/setup_harvester_cluster.py — see that
+# script's _render_node_files() for every variable used here. Shape
+# confirmed against harvester/ipxe-examples' own libvirt PXE-boot guide
+# (github.com/harvester/ipxe-examples/blob/main/general/harvester-uefi-pxe-boot.md):
+# `dhcp` first (iPXE's own network stack is independent of whatever got it
+# this far), then a plain HTTP kernel/initrd/squashfs fetch — no TFTP
+# involved beyond the very first ipxe.efi handout.
+
+dhcp
+
+kernel ${harvester_http_base}/harvester-${harvester_version}-vmlinuz-amd64 \
+  ip=dhcp rd.net.dhcp.retry=30 rd.cos.disable rd.noverifyssl net.ifnames=1 \
+  root=live:${harvester_http_base}/harvester-${harvester_version}-rootfs-amd64.squashfs \
+  console=tty1 harvester.install.automatic=true harvester.install.skipchecks=true \
+  harvester.install.config_url=${harvester_config_url}
+initrd ${harvester_http_base}/harvester-${harvester_version}-initrd-amd64
+boot

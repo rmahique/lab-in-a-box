@@ -1,0 +1,28 @@
+# Default configuration for openldap as environment variables. These get injected directly in the container.
+# Use the env variables from https://github.com/osixia/docker-openldap#beginner-guide
+env:
+  LDAP_ORGANISATION: "${openldap_organization:-My Demo Lab}"
+  LDAP_DOMAIN: "${openldap_domain:-mydemo.lab}"
+  LDAP_BACKEND: "${openldap_backend:-hdb}"
+  LDAP_TLS: "${openldap_tls:-true}"
+  LDAP_TLS_ENFORCE: "${openldap_tls_enforce:-false}"
+  LDAP_REMOVE_CONFIG_AFTER_SETUP: "${openldap_remove_config_after_setup:-true}"
+  LDAP_READONLY_USER: "${openldap_readonly_user:-true}"
+  LDAP_READONLY_USER_USERNAME: ${openldap_readonly_user_username:-readonly}
+  LDAP_READONLY_USER_PASSWORD: ${openldap_readonly_user_password:-password}
+
+# Default Passwords to use, stored as a secret. If unset, passwords are auto-generated.
+# You can override these at install time with
+# helm install openldap --set openldap.adminPassword=<passwd>,openldap.configPassword=<passwd>
+adminPassword: ${openldap_adminpwd:-admin}
+configPassword: ${openldap_configpwd:-9h8sdfg9sdgfjsdfg8sdgsdfjgklsdfg8sdgfhj}
+
+customLdifFiles:
+  initial-ous.ldif: |-
+    dn: ou=People,${openldap_ldap_domain:-dc=mydemo,dc=lab}
+    objectClass: organizationalUnit
+    ou: People
+
+    dn: ou=Group,${openldap_ldap_domain:-dc=mydemo,dc=lab}
+    objectClass: organizationalUnit
+    ou: Group
