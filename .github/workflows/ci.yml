@@ -28,7 +28,7 @@ jobs:
     name: Python 3.11 syntax + import check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -54,7 +54,7 @@ jobs:
     name: Every add-on prints its schema
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -84,7 +84,7 @@ jobs:
     name: Containerized test suite (tests/run_tests.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install podman
         run: |
           sudo apt-get update -qq
@@ -96,7 +96,7 @@ jobs:
     name: shellcheck (bash sources)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck .githooks, setup_demo_server, active scripts
         uses: ludeeus/action-shellcheck@2.0.0
         with:
