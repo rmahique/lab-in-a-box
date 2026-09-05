@@ -30,10 +30,24 @@
 #                               (see the note below on why this exists instead of guessed values keys)
 #
 # PREREQUISITES this addon does NOT install for you (document/configure separately): cert-manager
-# (unless suse_ai_tls_source="secret"), and an ingress controller already present on the cluster.
+# (unless suse_ai_tls_source="secret"), an ingress controller already present on the cluster, and
+# (confirmed live, see below) a StorageClass — a bare RKE2 cluster has none by default.
 #
-# NOT live-tested (no real Application Collection entitlement available in this session). Verified
-# against documentation.suse.com/suse-ai/1.0 and github.com/SUSE/suse-ai-deployer, 2026-09-05:
+# PARTIALLY LIVE-TESTED 2026-09-05 on a disposable single-node RKE2 cluster on nuc6.mydemo.lab: the
+# namespace + `application-collection` docker-registry Secret creation both confirmed working
+# end-to-end for real (`kubectl get secret application-collection -n suse-private-ai` — type
+# kubernetes.io/dockerconfigjson, present). The OCI `helm registry login` step itself could NOT be
+# exercised for real — no genuine SUSE Application Collection entitlement was available, only this
+# project's own SUSE_email/SUSE_regcode (SCC product-registration credentials) from
+# lab_creation.cfg, tried on the theory they might double as Application Collection access. They do
+# NOT: a real `401 Unauthorized` came back from dp.apps.rancher.io, confirming these are genuinely
+# separate credential families — exactly what this addon's own header already (correctly) warned
+# about before this test. A real bug WAS found and fixed by this: the login failure crashed with an
+# uncaught RuntimeError/Python traceback instead of a clear message — `setup_suse_ai_registry()` now
+# checks the login's exit code itself and dies with an actionable error instead. Still not verified:
+# an actual successful login/chart pull, which needs a real entitlement to test at all.
+#
+# Additionally verified against documentation.suse.com/suse-ai/1.0 and github.com/SUSE/suse-ai-deployer, 2026-09-05:
 # the suse-private-ai namespace default, the "application-collection" registry-secret convention, the
 # ollama/open-webui/milvus component split, and the oci://dp.apps.rancher.io/charts/milvus chart
 # reference (confirmed via a real community install example: `helm upgrade --install milvus
@@ -96,8 +110,17 @@ def setup_suse_ai_registry(hostname, registry, user, password, ns):
     ssh_run(hostname, "SUSE_AI_REGISTRY_PASSWORD={} bash -c {}".format(
         shlex.quote(password), shlex.quote(secret_cmd)))
 
-    ssh_run(hostname, "helm registry login {} --username {} --password-stdin".format(
-        shlex.quote(registry), shlex.quote(user)), input_text=password)
+    login = ssh_run(hostname, "helm registry login {} --username {} --password-stdin".format(
+        shlex.quote(registry), shlex.quote(user)), input_text=password, check=False)
+    if login.returncode != 0:
+        print("ERROR: helm registry login to '{}' failed (see helm's own error above) — "
+              "suse_ai_registry_user/suse_ai_registry_password must be a real SUSE Application "
+              "Collection entitlement, NOT your SCC registration code/email (confirmed live "
+              "2026-09-05: those two credential families are separate — the SCC login this "
+              "project's SUSE_email/SUSE_regcode lab_creation.cfg keys use for product "
+              "registration does not also authenticate to dp.apps.rancher.io). Get Application "
+              "Collection access at https://apps.rancher.io.".format(registry), file=sys.stderr)
+        sys.exit(1)
 
 
 def setup_suse_ai_component(hostname, registry, component, ns, version=None, extra_set=None, extra_args=""):

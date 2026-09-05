@@ -27,9 +27,17 @@
 #                                 accepts any bearer token, so "sk-anything" works unless the proxy was
 #                                 configured with LiteLLM's own key enforcement)
 #
-# NOT live-tested (no browser/cluster available in this session) — chart repo, values keys
-# (ollamaUrls/openaiBaseApiUrls/openaiApiKeys/ingress.host), and the in-cluster Ollama Service DNS
-# name were verified against open-webui/helm-charts' own README, 2026-09-05, not guessed.
+# LIVE-TESTED 2026-09-05 on a disposable single-node RKE2 cluster on nuc6.mydemo.lab: full
+# install -> all 4 pods (open-webui, its bundled ollama subchart, pipelines, redis) Running -> the
+# real Traefik ingress served a genuine HTTP 200 with a correct <title>Open WebUI</title>. One real
+# environment prerequisite this addon does NOT provide itself, confirmed by hitting it live: this
+# chart's PVCs (open-webui's own data volume, plus the pipelines sidecar's) need a StorageClass —
+# a bare RKE2 cluster (unlike K3s, which bundles local-path-provisioner) has NONE by default, so
+# the pods sit Pending indefinitely with no error surfaced anywhere in this addon's own output.
+# Install a storage addon (this project's own "longhorn", or any default StorageClass) BEFORE this
+# one on any cluster that doesn't already have one. (Values keys — ollamaUrls/openaiBaseApiUrls/
+# openaiApiKeys/ingress.host — and the in-cluster Ollama Service DNS name were pre-verified against
+# open-webui/helm-charts' own README before this live test, not guessed.)
 
 __version__ = "__LABVERSION__"
 
