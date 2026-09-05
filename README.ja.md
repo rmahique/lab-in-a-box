@@ -21,13 +21,13 @@
 
 > *これはコミュニティによる翻訳です。正典となる情報源は [README.md](README.md)（英語）であり、このページより新しい場合があります。*
 
-<p align="center"><em>JSON ファイルを1つ用意するだけ。VM、DNS、Kubernetes、アドオンがすべて配線された、動作するラボが手に入る。</em></p>
+<p align="center"><em>JSON または YAML ファイルを1つ用意するだけ。VM、DNS、Kubernetes、アドオンがすべて配線された、動作するラボが手に入る。</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="このプロジェクトの開発・テストに使われた NUC の一台。" /></kbd>
 </p>
 
-**lab-in-a-box** は、1台のベアメタルマシンを自己完結型の「ラボ工場」に変える。欲しい VM、Kubernetes クラスター、ソフトウェアを記述した JSON ファイルを指定するだけで、DNS、プロビジョニング、クラスターの立ち上げ、アドオンまで、すべてを構築する — `virt-install` や Ansible を手で操作する必要はない。
+**lab-in-a-box** は、1台のベアメタルマシンを自己完結型の「ラボ工場」に変える。欲しい VM、Kubernetes クラスター、ソフトウェアを記述した JSON または YAML ファイルを指定するだけで、DNS、プロビジョニング、クラスターの立ち上げ、アドオンまで、すべてを構築する — `virt-install` や Ansible を手で操作する必要はない。
 
 ## なぜ lab-in-a-box なのか
 
@@ -35,25 +35,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 JSON ファイル1つ、コマンド1つ。**
-VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。`setup_lab.py` が正しい順序ですべてを構築する。
+`setup_lab.py` · **JSON/YAML ファイル1つ、コマンド1つ。**
+VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。正しい順序ですべてを構築する。
 
-**🧩 41種類のアドオンをすぐに利用可能。**
+`install_<addon>` · **41種類のアドオンをすぐに利用可能。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Manager/Uyuni（アクティベーションキー、RBAC、Content Lifecycle Management、Ansible 連携など）、セキュリティトレーニング用の脆弱なデモアプリなど。
 
-**🖥️ 動的な Web UI。**
-[lab-builder](#web-ui-lab-builder) は各アドオン自身のスキーマからフォームを直接生成する — スクリプトにフィールドを追加すれば、フロントエンドを一切変更せずに UI がそれを取り込む。
+[`lab-builder`](#web-ui-lab-builder) · **動的な Web UI。**
+各アドオン自身のスキーマからフォームを直接生成する — スクリプトにフィールドを追加すれば、フロントエンドを一切変更せずに UI がそれを取り込む。
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 マルチハイパーバイザー対応。**
+`KVM_HOSTS` · **マルチハイパーバイザー対応。**
 1つのラボ定義で複数の KVM ホストに VM を分散配置できる。空き CPU/RAM/ディスクによる自動選択、またはノードごとの固定指定が可能。
 
-**🧪 完全にコンテナ化されたテストスイート。**
-すべてのチェックが使い捨ての `podman` コンテナで実行され、pre-commit フックに組み込まれている。
+`podman` · **完全にコンテナ化されたテストスイート。**
+すべてのチェックが使い捨てのコンテナで実行され、pre-commit フックに組み込まれている。
 
-**🔌 差し替え可能なプロビジョニング。**
+`config_method` · **差し替え可能なプロビジョニング。**
 Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-customize`（cloud-init/Ignition 未対応の古いディストリビューション向け）、またはスクリプト化された ISO インストール（AutoYaST/Kickstart/Preseed/AutoInstall）。
 
 </td>
@@ -91,6 +91,17 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 
 このシステムは **2階層アーキテクチャ** を中心に構築されている：
 
+```mermaid
+graph TB
+    Operator["オペレーターのクライアント"] -->|"SSH / DNS / HTTP"| AutoVM
+    subgraph HV["ハイパーバイザーノード — KVM/QEMU"]
+        AutoVM["自動化 VM<br/>DNS · HTTP · スクリプト · Web UI"]
+        AutoVM -->|"virt-install / virsh"| VM1["ラボ VM"]
+        AutoVM -->|"virt-install / virsh"| VM2["ラボ VM"]
+        AutoVM -->|"virt-install / virsh"| VM3["ラボ VM"]
+    end
+```
+
 ### ハイパーバイザーノード
 
 KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それぞれがラボの VM をホストし、`/var/lib/libvirt/images/sources/` に元となる QCOW2 イメージを保持する。NUC、ワークステーション、あるいは KVM を実行できる任意の x86_64 マシンであればよい。1台では容量が足りないラボは **複数の KVM ホスト** にまたがることができる — 詳細は下記の[マルチホストラボ](#multi-host-labs)を参照。
@@ -117,6 +128,21 @@ KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それ�
 <a id="how-it-works"></a>
 ## 動作の仕組み
 
+### デプロイパイプライン
+
+`setup_lab.py` は固定されたフェーズの順序で実行される。`kclusters` セクションを持たない VM のみのラボでは、Kubernetes 専用の2つのフェーズは完全にスキップされる：
+
+```mermaid
+flowchart LR
+    A["phase_services"] -->|"kclusters あり"| C["phase_dns"]
+    A -->|"kclusters なし"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"kclusters あり"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"kclusters なし"| H["phase_vm_addons"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+```
+
 ### VM のプロビジョニング
 
 各 VM は次の手順で作成される：
@@ -135,6 +161,19 @@ KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それ�
 | `cloud-init` | cloud-init ISO | openSUSE Leap、Ubuntu |
 | `virt_customize` | ハイパーバイザー上で QCOW2 を直接変更する（`virt-customize`）— ゲスト側で Ignition/cloud-init のサポートは不要 | CentOS 7、古い Debian/RHEL、または Ignition/cloud-init を持たない任意のイメージ |
 | `install_iso` | 実際のインストーラー ISO からのスクリプト化インストール（`install_type` に応じて AutoYaST、Kickstart、Preseed、AutoInstall） | 他にプロビジョニング手段のないディストリビューション |
+
+### VM バックエンド
+
+どのハイパーバイザー技術が実際にノードを作成するかは、ノードごとに一度だけ解決される差し替え可能な `VMBackend` インターフェースによって決まる（そのノードの設定で `backend: harvester` を指定すると `HarvesterBackend` が選ばれ、それ以外はデフォルトで `LibvirtBackend` が使われる）。どのアドオンやオーケストレーションスクリプトも、解決されたバックエンドがどちらであっても同じ方法でやり取りする：
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "デフォルト" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["KVM ハイパーバイザー上の<br/>virt-install / virsh"]
+    HB --> KV["Harvester クラスター上の<br/>KubeVirt VirtualMachine"]
+```
 
 ### Kubernetes のセットアップ
 
@@ -171,6 +210,15 @@ KVM_HOSTS="hv1.mydemo.lab hv2.mydemo.lab hv3.mydemo.lab"
 
 <a id="quick-start"></a>
 ## クイックスタート
+
+```mermaid
+flowchart TD
+    S1["1. ハイパーバイザーの OS を準備する"] --> S2["2. セットアップスクリプトをブートストラップする"]
+    S2 --> S3["3. KVM ノードのセットアップを設定して実行する"]
+    S3 --> S4["4. 自動化 VM を設定する"]
+    S4 --> S5["5. クライアントの DNS を自動化 VM に向ける"]
+    S5 --> S6["6. 最初のラボを構築する"]
+```
 
 ### 必要条件
 
@@ -319,7 +367,18 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
 <a id="lab-definition-format"></a>
 ## ラボ定義フォーマット
 
-ラボは JSON ファイルとして定義される。現在のフォーマットは、ラボごとに複数の Kubernetes クラスター（`kclusters`）をサポートしている。従来のシングルクラスター形式（`cluster`）については `examples/cluster.json.template` を参照。
+ラボは JSON または YAML ファイルとして定義される（自動検出 — 下記の注記を参照）。現在のフォーマットは、ラボごとに複数の Kubernetes クラスター（`kclusters`）をサポートしている。従来のシングルクラスター形式（`cluster`）については `examples/cluster.json.template` を参照。
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>VMごと: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>共有デフォルト値: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["アドオンごとのセクション<br/>例: rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {
@@ -367,6 +426,52 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
   }
 }
 ```
+
+<details>
+<summary>同じラボを YAML で書くと</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" または "agent"
+    kcluster: cluster1          # このノードがどの kclusters エントリに属するか
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi（デフォルト）、firmware=bios、bios、uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" または "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 ノードレベルの任意フィールド：
 
@@ -612,8 +717,10 @@ setup_lab.py --keep rancher-cluster.json
    _network_mode="nat"
    _nat_network_name="labnat"          # 表示されているデフォルト値 — 新しい libvirt 仮想ネットワークであり、ホストの実際の LAN ではない
    _nat_network_cidr="192.168.150.0/24" # 表示されているデフォルト値
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 表示されているデフォルト値 — <外部>:<内部>/<プロトコル>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 表示されているデフォルト値 — 「<ハイパーバイザーの実IP上のポート>:<automation VM 上のポート>/<プロトコル>」
    ```
+
+   これにより、**ハイパーバイザー自身の実際に外部到達可能な IP**（`<外部>`）上のポート 22/80/443 が、**automation VM のプライベート NAT アドレス**（`<内部>`）上の同じポートへ転送される — この時点でこのプライベートネットワーク上で待ち受けているのは automation VM だけなので、ここでの「内部」は常に「automation VM 上」を意味する。（後述のステップ5では、同じ `<外部>:<内部>/<プロトコル>` という構文を再利用して、代わりに *lab* VM（作成済みのもの）へ転送する — その場合の「内部」は automation VM ではなく、そのラボ VM 自身のプライベート NAT アドレスを指す。）
 
 2. **いつも通りセットアップを実行する：**
 
@@ -688,6 +795,9 @@ install_longhorn --schema yaml      # ...または YAML
 
 アドオンは kcluster またはノードの `addons` 配列に名前で参照される。対応する `install_<name>` スクリプトが `PATH` 上に存在する必要がある。
 
+<sub>ジャンプ: <a href="#addons-k8s">Kubernetes & GitOps</a> · <a href="#addons-security">セキュリティ & コンプライアンス</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">ストレージ & データベース</a> · <a href="#addons-cicd">CI/CD & ツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化 & デモ</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes プラットフォーム & GitOps</strong></summary>
 
@@ -708,6 +818,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>セキュリティ & コンプライアンス</strong></summary>
 
@@ -724,6 +835,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -737,6 +849,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>ストレージ & データベース</strong></summary>
 
@@ -749,6 +862,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD & 開発者向けツール</strong></summary>
 
@@ -761,6 +875,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
@@ -773,6 +888,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>仮想化 & デモ</strong></summary>
 

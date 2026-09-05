@@ -497,6 +497,144 @@ function serializeForm() {
   return frag;
 }
 
+// ---- architecture diagram ----------------------------------------------------
+// A live preview of state.lab's topology (nodes, their kcluster membership,
+// addons), rendered with mermaid.js — vendored (webui/htdocs/vendor/), not
+// CDN-loaded, so it keeps working on a network-restricted training/demo
+// host. Rebuilt from scratch on every refreshLab() call; this renderer knows
+// as little about specific field names as the rest of app.js does — it only
+// reads the few structural keys (nodes/kclusters/kcluster/addons/existing/
+// myip) that every lab.json already shares, the same "no per-script
+// knowledge" principle the form renderer above follows.
+let mermaidReady = false;
+function initMermaid() {
+  if (mermaidReady || typeof mermaid === "undefined") return;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+  mermaidReady = true;
+}
+
+const diagramLabel = (s) => String(s).replace(/["\r\n]/g, "'"); // quotes/newlines would break mermaid's own syntax
+
+/* A plain char-class replace collapses any non-alphanumeric character to
+ * "_", so two different raw strings that only differ in punctuation (e.g.
+ * "a.b" vs "a-b") sanitize to the exact same id — mermaid then treats them
+ * as ONE node/subgraph, silently merging or overwriting one in the
+ * diagram. Returns a per-render sanitizer: the same raw string always maps
+ * to the same id (stable across the node/cluster/addon calls below, which
+ * may re-derive an id for the same owner more than once), but a raw string
+ * that collides with a DIFFERENT one already seen gets a disambiguating
+ * numeric suffix instead of silently reusing that id. */
+function makeIdSanitizer() {
+  const idForRaw = new Map();
+  const claimed = new Set();
+  return function sanitizeId(raw) {
+    const key = String(raw);
+    if (idForRaw.has(key)) return idForRaw.get(key);
+    const base = "n_" + key.replace(/[^A-Za-z0-9_]/g, "_");
+    let id = base;
+    for (let n = 2; claimed.has(id); n++) id = base + "_" + n;
+    claimed.add(id);
+    idForRaw.set(key, id);
+    return id;
+  };
+}
+
+/* Build a mermaid `graph TB` definition from the lab assembled so far, or
+ * null if there's nothing to draw yet (no nodes). One subgraph per
+ * kcluster, its member nodes inside; nodes with no (or an unknown)
+ * kcluster stand alone. Addons — both cluster-level and per-node — render
+ * as small pill-shaped boxes linked in with a dotted line, since they're
+ * attached behavior, not infrastructure. An `existing` node (Phase 5's
+ * pre-provisioned-host support) gets a dashed border — it's not a VM this
+ * tool creates, worth telling apart from one that is at a glance. */
+function buildMermaidDiagram(lab) {
+  const nodes = lab.nodes || {};
+  const kclusters = lab.kclusters || {};
+  const nodeNames = Object.keys(nodes);
+  if (!nodeNames.length) return null;
+
+  const sanitizeId = makeIdSanitizer(); // fresh dedup state for this render only
+  const lines = ["graph TB"];
+  const existingIds = [];
+  const addonIds = [];
+  const placed = new Set();
+
+  function addonBox(ownerRawName, ownerId, addons) {
+    (addons || []).forEach((addon, i) => {
+      const aid = sanitizeId(ownerRawName + "_addon_" + i + "_" + addon);
+      lines.push(`  ${aid}(["${diagramLabel(addon)}"])`);
+      lines.push(`  ${ownerId} -.-> ${aid}`);
+      addonIds.push(aid);
+    });
+  }
+
+  Object.entries(kclusters).forEach(([cluName, cluCfg]) => {
+    const cluId = sanitizeId("clu_" + cluName);
+    const cluType = (cluCfg && cluCfg.clu_type) || "?";
+    lines.push(`  subgraph ${cluId}["${diagramLabel(cluName)} (${diagramLabel(cluType)})"]`);
+    nodeNames.forEach((nname) => {
+      const ncfg = nodes[nname] || {};
+      if (ncfg.kcluster !== cluName) return;
+      const nid = sanitizeId(nname);
+      placed.add(nname);
+      const ip = ncfg.myip ? `<br/>${diagramLabel(ncfg.myip)}` : "";
+      lines.push(`    ${nid}["${diagramLabel(nname)}${ip}"]`);
+      if (ncfg.existing) existingIds.push(nid);
+    });
+    lines.push("  end");
+    addonBox(cluName, cluId, cluCfg && cluCfg.addons);
+  });
+
+  nodeNames.forEach((nname) => {
+    if (placed.has(nname)) return;
+    const ncfg = nodes[nname] || {};
+    const nid = sanitizeId(nname);
+    const ip = ncfg.myip ? `<br/>${diagramLabel(ncfg.myip)}` : "";
+    lines.push(`  ${nid}["${diagramLabel(nname)}${ip}"]`);
+    if (ncfg.existing) existingIds.push(nid);
+    addonBox(nname, nid, ncfg.addons);
+  });
+
+  if (existingIds.length) {
+    lines.push("  classDef existingNode stroke-dasharray: 4 3,stroke-width:2px;");
+    lines.push(`  class ${existingIds.join(",")} existingNode;`);
+  }
+  return lines.join("\n");
+}
+
+async function renderDiagram() {
+  const canvas = $("#diagramCanvas");
+  const empty = $("#diagramEmpty");
+  const def = buildMermaidDiagram(state.lab);
+  if (!def) {
+    canvas.innerHTML = "";
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  initMermaid();
+  try {
+    const { svg } = await mermaid.render("archDiagramSvg", def);
+    canvas.innerHTML = svg;
+  } catch (e) {
+    canvas.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Couldn't render the diagram: " + e.message;
+  }
+}
+
+function switchLabView(view) {
+  const isDiagram = view === "diagram";
+  $("#viewTabJson").classList.toggle("active", !isDiagram);
+  $("#viewTabJson").setAttribute("aria-selected", String(!isDiagram));
+  $("#viewTabDiagram").classList.toggle("active", isDiagram);
+  $("#viewTabDiagram").setAttribute("aria-selected", String(isDiagram));
+  $("#labPreview").hidden = isDiagram;
+  $("#labDiagram").hidden = !isDiagram;
+  if (isDiagram) renderDiagram();
+}
+
 // ---- assemble lab ----------------------------------------------------------
 function addToLab() {
   const s = state.current;
@@ -516,6 +654,7 @@ function refreshLab() {
   const n = Object.keys(state.lab).length;
   $("#sectionCount").textContent = `${n} section${n === 1 ? "" : "s"}`;
   $("#validateResult").hidden = true;
+  if (!$("#labDiagram").hidden) renderDiagram();
 }
 
 // ---- refresh available images without losing the form ---------------------
@@ -588,6 +727,8 @@ window.addEventListener("DOMContentLoaded", () => {
   $("#downloadBtn").addEventListener("click", downloadLab);
   $("#saveBtn").addEventListener("click", saveLab);
   $("#refreshImagesBtn").addEventListener("click", refreshImages);
+  $("#viewTabJson").addEventListener("click", () => switchLabView("json"));
+  $("#viewTabDiagram").addEventListener("click", () => switchLabView("diagram"));
 
   // "Required only" — hides every non-required field via CSS on the form
   // element itself, so it stays in effect across re-renders (selectComponent/

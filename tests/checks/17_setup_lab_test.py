@@ -6,7 +6,9 @@
 # die()) for both cluster- and VM-level addons, and phase_create_vms's
 # --keep reusability logic. Run from 17_setup_lab.sh, in its own container
 # — see tests/run_tests.sh.
+import io
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -101,6 +103,55 @@ check("phase_vm_addons: runs each of vm1's addons once", len(run_calls) == 2)
 check("phase_vm_addons: runs on the owning node", all(env["_vm_name"] == "vm1" for _, env in run_calls))
 check("phase_vm_addons: a node with no addons is skipped entirely",
       not any("vm2" == env.get("_vm_name") for _, env in run_calls))
+
+
+# ── apps.collect_addon_names: every addon referenced anywhere in the lab ───
+addon_def = {
+    "kclusters": {"c1": {"addons": ["rancher", "longhorn"]}, "c2": {"addons": ["longhorn"]}},
+    "nodes": {"vm1": {"addons": ["mariadb"]}, "vm2": {}},
+}
+check("collect_addon_names: every kcluster- and node-level addon is included, deduped",
+      setup_lab.apps.collect_addon_names(addon_def) == ["longhorn", "mariadb", "rancher"])
+check("collect_addon_names: a lab with no addons anywhere returns an empty list",
+      setup_lab.apps.collect_addon_names({"kclusters": {"c1": {}}, "nodes": {"vm1": {}}}) == [])
+
+
+# ── validate_addon_configs: --validate every referenced addon before any VM/
+# cluster work starts ───────────────────────────────────────────────────────
+# Found in code review 2026-09-05: each addon's own Validator (vns/vport/
+# vver/vreq/...) checks were only ever reachable by an operator manually
+# running `install_<addon> --validate <file>` — setup_lab.py never called
+# it at all, so a bad addon-config value surfaced only once that addon
+# actually ran, potentially after VMs/clusters were already created.
+validate_def = {"kclusters": {"c1": {"addons": ["rancher", "longhorn"]}}, "nodes": {}}
+
+setup_lab.shutil.which = lambda name: "/fake/bin/{}".format(name)
+setup_lab.subprocess.run = lambda args, **kw: FakeCompleted(returncode=0, stdout="")
+check("validate_addon_configs: every addon validating clean returns True",
+      setup_lab.validate_addon_configs(validate_def, "lab.json") is True)
+
+setup_lab.subprocess.run = lambda args, **kw: (
+    FakeCompleted(returncode=1, stdout="[ERROR] longhorn.longhorn_ns='bad ns': invalid namespace\n")
+    if "install_longhorn" in args[0] else FakeCompleted(returncode=0, stdout=""))
+_out = io.StringIO()
+with redirect_stdout(_out):
+    result = setup_lab.validate_addon_configs(validate_def, "lab.json")
+check("validate_addon_configs: one failing addon's [ERROR] makes the whole check fail",
+      result is False)
+check("validate_addon_configs: the failing addon's own error text is included in the report",
+      "longhorn_ns" in _out.getvalue())
+
+setup_lab.shutil.which = lambda name: None
+_out = io.StringIO()
+with redirect_stdout(_out):
+    result = setup_lab.validate_addon_configs(validate_def, "lab.json")
+check("validate_addon_configs: a completely missing installer is reported as an error too",
+      result is False and "not found on PATH" in _out.getvalue())
+
+setup_lab.shutil.which = lambda name: "/fake/bin/{}".format(name)
+setup_lab.subprocess.run = lambda args, **kw: FakeCompleted(returncode=0, stdout="")
+check("validate_addon_configs: a lab with no addons anywhere returns True without running anything",
+      setup_lab.validate_addon_configs({"kclusters": {}, "nodes": {}}, "lab.json") is True)
 
 
 # ── phase_create_vms: --keep reusability + existing-node handling ──────────
@@ -204,9 +255,6 @@ check("phase_create_vms: a node whose provision_vm() raises RuntimeError doesn't
 
 
 # ── main(): --version / --help / --keep parsing ──────────────────────────────
-import io
-from contextlib import redirect_stdout
-
 old_argv = sys.argv
 sys.argv = ["setup_lab.py", "--version"]
 buf = io.StringIO()
@@ -231,6 +279,38 @@ except SystemExit as e:
 finally:
     sys.argv = old_argv
 check("main --help: exits 0 and prints usage mentioning --keep", code == 0 and "--keep" in buf.getvalue())
+
+# main(): a failing validate_addon_configs() must abort before setup_lab() —
+# a bad addon config must not leave a half-deployed lab behind it.
+setup_lab.primary.load_defaults = lambda: {}
+setup_lab.primary.load_config = lambda: {}
+setup_lab.primary.load_definition = lambda path: {"nodes": {}, "common": {}}
+setup_lab.lc.validate_lab_definition = lambda *a, **kw: True
+setup_lab.validate_addon_configs = lambda *a, **kw: False
+setup_lab_calls = []
+setup_lab.setup_lab = lambda *a, **kw: setup_lab_calls.append(a)
+sys.argv = ["setup_lab.py", "lab.json"]
+code = None
+try:
+    setup_lab.main()
+except SystemExit as e:
+    code = e.code
+finally:
+    sys.argv = old_argv
+check("main: exits 1 when validate_addon_configs() fails", code == 1)
+check("main: never reaches setup_lab() when addon-config validation fails", setup_lab_calls == [])
+
+setup_lab.validate_addon_configs = lambda *a, **kw: True
+sys.argv = ["setup_lab.py", "lab.json"]
+code = None
+try:
+    setup_lab.main()
+except SystemExit as e:
+    code = e.code
+finally:
+    sys.argv = old_argv
+check("main: reaches setup_lab() when addon-config validation passes",
+      len(setup_lab_calls) == 1)
 
 
 if failures:

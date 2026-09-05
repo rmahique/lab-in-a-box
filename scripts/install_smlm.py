@@ -289,6 +289,7 @@ PLUGIN = {
     "aux_services": [],
 }
 
+import shlex
 import subprocess
 import sys
 import time
@@ -332,7 +333,7 @@ def setup_smlm_traefik(hostname, clu_type):
 
 def setup_smlm_prereqs(hostname, cfg):
     """Mirrors setup_smlm_prereqs (bash)."""
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
 
     if (cfg.get("smlm_storage_class") or "") == "longhorn":
         k8s.set_longhorn_overprovisioning(hostname, cfg.get("smlm_lh_overprovision") or "500")
@@ -361,8 +362,8 @@ def setup_smlm_prereqs(hostname, cfg):
     print("  Generating self-signed TLS certificates")
     ssh_run(hostname, (
         "set -e\n"
-        "_fqdn='{fqdn}'\n"
-        "_ns='{ns}'\n"
+        "_fqdn={fqdn}\n"
+        "_ns={ns}\n"
         "_tmp=$(mktemp -d)\n"
         "\n"
         "openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \\\n"
@@ -391,14 +392,19 @@ def setup_smlm_prereqs(hostname, cfg):
         "    --dry-run=client -o yaml | kubectl apply -f -\n"
         "\n"
         "rm -rf ${{_tmp}}"
-    ).format(fqdn=cfg.get("smlm_fqdn", ""), ns=ns))
+    # smlm_fqdn is free-text with no format validation at all — the hand-
+    # rolled single quotes above (found in code review 2026-09-05) broke,
+    # or could be injected through, this remote command the moment the
+    # value contained an embedded single quote. shlex.quote() escapes
+    # correctly even nested inside the surrounding heredoc.
+    ).format(fqdn=shlex.quote(cfg.get("smlm_fqdn", "") or ""), ns=shlex.quote(ns)))
 
 
 # ─── EXPERIMENTAL: HA database (CloudNativePG) ───────────────────────────────
 
 def setup_smlm_db_ha(hostname, cfg):
     """Mirrors setup_smlm_db_ha (bash)."""
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     replicas = cfg.get("smlm_db_ha_replicas") or "3"
 
     k8s.setup_cnpg_operator(hostname, cfg.get("smlm_db_ha_cnpg_version") or None)
@@ -533,7 +539,7 @@ def _smlm_db_primary(hostname, ns):
 
 def smlm_db_failover_test(hostname, cfg):
     """Mirrors smlm_db_failover_test (bash)."""
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     fqdn = cfg.get("smlm_fqdn", "")
     fail_reasons = []
 
@@ -642,7 +648,7 @@ def smlm_db_failover_test(hostname, cfg):
 
 def setup_smlm(hostname, definition, clu_name, clu_type, mydomain, cfg):
     """Mirrors setup_smlm (bash)."""
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     rel = cfg.get("smlm_rel") or "smlm-server"
     chart = "oci://{}/{}".format(cfg.get("smlm_registry") or "registry.suse.com",
                                   cfg.get("smlm_chart") or "suse/multi-linux-manager/5.2/server-helm")
@@ -778,7 +784,7 @@ def run_ansible_playbooks(hostname, cfg):
     if not playbooks:
         print("No smlm_ansible_playbooks entries in the 'smlm' JSON section — nothing to run.")
         return
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     exec_prefix = "kubectl exec -n {} deploy/uyuni -c uyuni --".format(ns)
     admin_user = cfg.get("smlm_admin_user") or "admin"
     admin_pass = cfg.get("smlm_admin_pass") or "admin123"
@@ -811,7 +817,7 @@ def run_clm_actions(hostname, cfg):
     if not actions:
         print("No smlm_content_lifecycle_actions entries in the 'smlm' JSON section — nothing to run.")
         return
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     exec_prefix = "kubectl exec -n {} deploy/uyuni -c uyuni --".format(ns)
     admin_user = cfg.get("smlm_admin_user") or "admin"
     admin_pass = cfg.get("smlm_admin_pass") or "admin123"
@@ -830,7 +836,7 @@ def run_scap_scans(hostname, cfg):
     if not scans:
         print("No smlm_scap_scans entries in the 'smlm' JSON section — nothing to run.")
         return
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     exec_prefix = "kubectl exec -n {} deploy/uyuni -c uyuni --".format(ns)
     admin_user = cfg.get("smlm_admin_user") or "admin"
     admin_pass = cfg.get("smlm_admin_pass") or "admin123"
@@ -841,7 +847,7 @@ def run_scap_scans(hostname, cfg):
 def cve_audit(hostname, cfg, cve_id):
     """Prints audit.listSystemsByPatchStatus's raw result for `cve_id` — a
     pure read-only query, see libs/spacecmd_common.py."""
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     exec_prefix = "kubectl exec -n {} deploy/uyuni -c uyuni --".format(ns)
     admin_user = cfg.get("smlm_admin_user") or "admin"
     admin_pass = cfg.get("smlm_admin_pass") or "admin123"
@@ -860,7 +866,7 @@ def run_recurring_schedules(hostname, cfg):
     if not any(e.get("recurring_schedule") for e in environments):
         print("No smlm_environments entries with a recurring_schedule — nothing to run.")
         return
-    ns = cfg.get("smlm_ns") or "uyuni-server"
+    ns = ac.require_k8s_name(cfg, "smlm_ns", "uyuni-server")
     exec_prefix = "kubectl exec -n {} deploy/uyuni -c uyuni --".format(ns)
     admin_user = cfg.get("smlm_admin_user") or "admin"
     admin_pass = cfg.get("smlm_admin_pass") or "admin123"
@@ -906,10 +912,6 @@ def main():
     clu_type = clu_cfg.get("clu_type", "")
     mydomain = clu_cfg.get("mydomain", "")
     online = definition.get("common", {}).get("online") == "1"
-
-    _DEFINITION[0] = definition
-    _CLU_TYPE[0] = clu_type
-    _MYDOMAIN[0] = mydomain
 
     # Run the HA failover test instead of installing when requested — mirrors
     # bash checking sys.argv[2] == "--test-failover" (on_first_server, single

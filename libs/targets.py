@@ -80,9 +80,16 @@ def check_ssh_only_reachability(node_name, timeout=5):
 
     Returns True/False; never raises or dies.
     """
+    # stdout=PIPE/stderr=PIPE/universal_newlines=True, not capture_output=/
+    # text= (Python 3.7+ only) — this project's containerized test suite
+    # (and even the real automation VM's own bare `python3`) runs Python
+    # 3.6. Not currently reachable from any bare-python3 entry point today
+    # (found in code review 2026-09-05), but matching the rest of the
+    # codebase's own established convention here rather than leaving a
+    # landmine for a future caller.
     result = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
          "-o", "ConnectTimeout={}".format(timeout), "-q", "root@{}".format(node_name), "echo ok"],
-        capture_output=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     return (result.stdout or "").strip() == "ok"

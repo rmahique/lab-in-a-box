@@ -19,13 +19,13 @@
   <sub>🌐 <a href="README.md"><strong>English</strong></a> · <a href="README.es.md">Español</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.pt-BR.md">Português (Brasil)</a> · <a href="README.ja.md">日本語</a> · <a href="README.zh-CN.md">简体中文</a></sub>
 </p>
 
-<p align="center"><em>Point it at a JSON file. Get back a working lab — VMs, DNS, Kubernetes, and add-ons, all wired up.</em></p>
+<p align="center"><em>Point it at a JSON or YAML file. Get back a working lab — VMs, DNS, Kubernetes, and add-ons, all wired up.</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="One of the NUCs used to develop and test this project." /></kbd>
 </p>
 
-**lab-in-a-box** turns a single bare-metal machine into a self-contained lab factory: point it at a JSON file describing the VMs, Kubernetes clusters, and software you want, and it builds the whole thing — DNS, provisioning, cluster bring-up, and add-ons — without you touching `virt-install` or Ansible by hand.
+**lab-in-a-box** turns a single bare-metal machine into a self-contained lab factory: point it at a JSON or YAML file describing the VMs, Kubernetes clusters, and software you want, and it builds the whole thing — DNS, provisioning, cluster bring-up, and add-ons — without you touching `virt-install` or Ansible by hand.
 
 ## Why lab-in-a-box?
 
@@ -33,25 +33,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 One JSON file, one command.**
-Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; `setup_lab.py` builds it all in the right order.
+`setup_lab.py` · **One JSON/YAML file, one command.**
+Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; it builds everything in the right order.
 
-**🧩 41 ready-made add-ons.**
+`install_<addon>` · **41 ready-made add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Manager/Uyuni (activation keys, RBAC, Content Lifecycle Management, Ansible integration, and more), vulnerable demo apps for security training, and more.
 
-**🖥️ A dynamic web UI.**
-[lab-builder](#web-ui-lab-builder) renders forms straight from the add-ons' own schemas — add a field to a script, and the UI picks it up with zero front-end changes.
+[`lab-builder`](#web-ui-lab-builder) · **A dynamic web UI.**
+Renders forms straight from the add-ons' own schemas — add a field to a script, and the UI picks it up with zero front-end changes.
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 Multi-hypervisor aware.**
+`KVM_HOSTS` · **Multi-hypervisor aware.**
 One lab definition can spread VMs across several KVM hosts, auto-selected by free CPU/RAM/disk, or pinned per node.
 
-**🧪 Fully containerized test suite.**
-Every check runs in its own disposable `podman` container, wired into a pre-commit hook.
+`podman` · **Fully containerized test suite.**
+Every check runs in its own disposable container, wired into a pre-commit hook.
 
-**🔌 Pluggable provisioning.**
+`config_method` · **Pluggable provisioning.**
 Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` (legacy distros with no cloud-init/Ignition support), or a scripted ISO install (AutoYaST/Kickstart/Preseed/AutoInstall).
 
 </td>
@@ -88,6 +88,17 @@ Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` 
 
 The system is built around a **two-tier architecture**:
 
+```mermaid
+graph TB
+    Operator["Operator's client"] -->|"SSH / DNS / HTTP"| AutoVM
+    subgraph HV["Hypervisor node(s) — KVM/QEMU"]
+        AutoVM["Automation VM<br/>DNS · HTTP · scripts · web UI"]
+        AutoVM -->|"virt-install / virsh"| VM1["Lab VM"]
+        AutoVM -->|"virt-install / virsh"| VM2["Lab VM"]
+        AutoVM -->|"virt-install / virsh"| VM3["Lab VM"]
+    end
+```
+
 ### Hypervisor node(s)
 
 One or more physical/bare-metal machines running KVM/QEMU. Each hosts lab VMs and holds QCOW2 source images in `/var/lib/libvirt/images/sources/`. A NUC, a workstation, or any x86_64 machine capable of running KVM will do. Labs that need more capacity than one box can span **multiple KVM hosts** — see [multi-host labs](#multi-host-labs) below.
@@ -113,6 +124,21 @@ The command-line tools and every add-on are Python 3.11, living in `libs/` and `
 
 ## How it works
 
+### Deploy pipeline
+
+`setup_lab.py` runs a fixed sequence of phases; the two Kubernetes-only phases are skipped entirely for a VM-only lab (no `kclusters` section):
+
+```mermaid
+flowchart LR
+    A["phase_services"] -->|"has kclusters"| C["phase_dns"]
+    A -->|"no kclusters"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"has kclusters"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"no kclusters"| H["phase_vm_addons"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+```
+
 ### VM provisioning
 
 Each VM is created by:
@@ -131,6 +157,19 @@ Provisioning method is controlled by `config_method` in the lab JSON (per-node o
 | `cloud-init` | cloud-init ISO | openSUSE Leap, Ubuntu |
 | `virt_customize` | Modifies the QCOW2 directly on the hypervisor (`virt-customize`) — no Ignition/cloud-init support needed on the guest | CentOS 7, old Debian/RHEL, or any image lacking Ignition/cloud-init |
 | `install_iso` | Scripted install from a real installer ISO (AutoYaST, Kickstart, Preseed, or AutoInstall, selected by `install_type`) | Distros with no other provisioning path |
+
+### VM backends
+
+Which hypervisor technology actually creates a node is decided by a pluggable `VMBackend` interface, resolved once per node (`backend: harvester` in that node's config selects `HarvesterBackend`; anything else defaults to `LibvirtBackend`) — every add-on and orchestration script talks to the resolved backend the same way regardless of which one it is:
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "default" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["virt-install / virsh<br/>on a KVM hypervisor"]
+    HB --> KV["KubeVirt VirtualMachine<br/>on a Harvester cluster"]
+```
 
 ### Kubernetes setup
 
@@ -165,6 +204,15 @@ Every script sources configuration in this order:
 ---
 
 ## Quick Start
+
+```mermaid
+flowchart TD
+    S1["1. Prepare the hypervisor OS"] --> S2["2. Bootstrap the setup scripts"]
+    S2 --> S3["3. Configure and run the KVM node setup"]
+    S3 --> S4["4. Configure the automation VM"]
+    S4 --> S5["5. Point your client DNS at the automation VM"]
+    S5 --> S6["6. Build your first lab"]
+```
 
 ### Requirements
 
@@ -307,7 +355,18 @@ For production deployment (Apache, or a standalone systemd/init-independent serv
 
 ## Lab definition format
 
-Labs are defined as JSON files. The current format supports multiple Kubernetes clusters per lab (`kclusters`); see `examples/cluster.json.template` for the legacy single-cluster format (`cluster`).
+Labs are defined as JSON or YAML files (auto-detected — see the note below). The current format supports multiple Kubernetes clusters per lab (`kclusters`); see `examples/cluster.json.template` for the legacy single-cluster format (`cluster`).
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>per-VM: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>shared defaults: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["one section per add-on<br/>e.g. rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 > [!NOTE]
 > A `.yaml`/`.yml` file works too — the format is auto-detected from the extension (or by falling back to YAML if a file isn't valid JSON), the same way through `setup_lab.py`'s preflight check, `install_<addon> --validate`, and every addon's own load path. YAML input requires `pyyaml` (`pip install pyyaml`) on the automation VM; without it you get a clear error telling you to install it, not a silent JSON-only failure.
@@ -358,6 +417,52 @@ Labs are defined as JSON files. The current format supports multiple Kubernetes 
   }
 }
 ```
+
+<details>
+<summary>Same lab, as YAML</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" or "agent"
+    kcluster: cluster1          # which kclusters entry this node belongs to
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi (default), firmware=bios, bios, uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" or "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 Optional node-level fields:
 
@@ -496,6 +601,10 @@ setup_lab.py legacy.json
 `VM_ROOT_PASS` (in `common`, or per-node) sets the root password `virt_customize` bakes into the
 image directly — omit it to reuse `ROOT_PWD_HASH` from `lab_creation.cfg` instead, the same
 fallback cloud-init and Ignition use.
+
+More distros (AlmaLinux, Debian, Rocky Linux, Alibaba Cloud Linux, and a documented
+not-yet-working attempt at Raspberry Pi OS) are in **[EXAMPLES.md](EXAMPLES.md)**, kept separate
+so this section doesn't grow without bound.
 
 <p align="right"><a href="#top">↑ back to top</a></p>
 
@@ -640,8 +749,10 @@ This changes nothing about the [default Quick Start](#quick-start) flow if you d
    _network_mode="nat"
    _nat_network_name="labnat"          # default shown — a new libvirt virtual network, not your host's real LAN
    _nat_network_cidr="192.168.150.0/24" # default shown
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # default shown — <external>:<internal>/<protocol>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # default shown — "<port on the HYPERVISOR's real IP>:<port on the AUTOMATION VM>/<protocol>"
    ```
+
+   This forwards ports 22/80/443 on the **hypervisor's own real, externally-reachable IP** (`<external>`) through to the same ports on the **automation VM's private NAT address** (`<internal>`) — the automation VM is the only thing listening on this private network at this point, so "internal" always means "on the automation VM" here. (Step 5 below reuses this exact same `<external>:<internal>/<protocol>` syntax to forward into a *lab* VM instead, once one exists — there, "internal" shifts to mean that VM's own private NAT address, not the automation VM's.)
 
 2. **Run the setup exactly as usual:**
 
@@ -714,6 +825,9 @@ install_longhorn --schema yaml      # ...or YAML
 
 Addons are referenced by name in the `addons` array of a kcluster or node. The corresponding `install_<name>` script must be on `PATH`.
 
+<sub>Jump to: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Security &amp; compliance</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Storage &amp; databases</a> · <a href="#addons-cicd">CI/CD &amp; tooling</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">Virtualization &amp; demos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes platform &amp; GitOps</strong></summary>
 
@@ -734,6 +848,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Security &amp; compliance</strong></summary>
 
@@ -750,6 +865,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -763,6 +879,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Storage &amp; databases</strong></summary>
 
@@ -775,6 +892,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD &amp; developer tooling</strong></summary>
 
@@ -787,6 +905,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
@@ -794,11 +913,22 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 |---|---|
 | `ollama` | Local LLM runtime |
 | `deepseek` | DeepSeek model, served via Ollama |
-| `gemini` | Google Gemini API integration |
+| `apertus` | Apertus (Swiss AI Initiative) model, served via Ollama |
+| `gemini` | Google Gemini API proxy (LiteLLM) |
+| `anthropic` | Anthropic Claude API proxy (LiteLLM) |
+| `openai` | OpenAI API proxy (LiteLLM) |
+| `kimi` | Moonshot AI Kimi API proxy (LiteLLM) |
+| `open_webui` | Chat frontend for Ollama / OpenAI-compatible endpoints |
+| `suse_ai` | SUSE's own Ollama + Open WebUI + Milvus AI stack |
+| `milvus` | Milvus vector database (RAG/embedding search) |
+| `qdrant` | Qdrant vector database (RAG/embedding search) |
+| `weaviate` | Weaviate vector database (RAG/embedding search) |
+| `gpu_operator` | NVIDIA GPU Operator (GPU scheduling for AI workloads) |
 | `phoebe` | (see `install_phoebe --schema`) |
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualization &amp; demos</strong></summary>
 
@@ -868,6 +998,9 @@ tests/run_tests.sh
 Covers bash and Python syntax across the whole tree, schema/webui consistency, mocked-SSH unit tests for every core library and orchestration script, and regression tests for bugs found during live testing. Add a new check by dropping an executable script into `tests/checks/` — it's picked up automatically, no wiring needed.
 
 Wired into a pre-commit hook (enable once per clone, see [Contributing](#contributing--developer-setup)) — it runs automatically on every commit and skips with a warning if `podman` isn't installed, rather than blocking the commit.
+
+> [!NOTE]
+> The [Examples](#examples) above each have a matching real-hardware deploy+check test under `tests/examples/` — they need a working KVM hypervisor and automation VM, so they're **not** part of `tests/run_tests.sh`'s automatic sweep, but they're present and runnable by hand (`tests/examples/run_example.sh <name>`) before pushing a change that could affect one of these documented flows. See [tests/examples/README.md](tests/examples/README.md).
 
 <p align="right"><a href="#top">↑ back to top</a></p>
 

@@ -29,6 +29,7 @@ keep this move zero-risk; a later task can switch them over.
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -218,6 +219,12 @@ class LibvirtBackend(VMBackend):
         """Same fallback as _virsh(), for virt-install."""
         return run_libvirt_tool("virt-install", self.remote_host, self.virt_srv, args, **kwargs)
 
+    def _virt_xml(self, *args, **kwargs):
+        """Same fallback as _virsh(), for virt-xml (used to edit an already-
+        defined domain's XML in place — see create_vm()'s autoinstall branch
+        for why this is needed)."""
+        return run_libvirt_tool("virt-xml", self.remote_host, self.virt_srv, args, **kwargs)
+
     @classmethod
     def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
                 iso_loc=None, lab_setup_path=None):
@@ -290,8 +297,11 @@ class LibvirtBackend(VMBackend):
         default credentials. Any failed check returns False (safe default =
         recreate).
         """
+        # stdout=PIPE/stderr=PIPE/universal_newlines=True, not
+        # capture_output=/text= (Python 3.7+ only) — see targets.py's
+        # check_ssh_only_reachability() for the identical fix and why.
         state = self._virsh(
-            "domstate", vm_name, capture_output=True, text=True,
+            "domstate", vm_name, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
         ).stdout.strip()
         if state != "running":
             log("  {}KEEP CHECK{} \"{}{}{}\": not running on hypervisor (state: {}) — will recreate".format(
@@ -391,9 +401,12 @@ class LibvirtBackend(VMBackend):
             "event", vm_name, "--event", "lifecycle", "--timeout", "120",
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
+        # stdout=PIPE/stderr=PIPE/universal_newlines=True, not
+        # capture_output=/text= (Python 3.7+ only) — same fix as
+        # vm_is_reusable() above.
         state = self._virsh(
             "domstate", vm_name,
-            capture_output=True, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
         )
         if stopped.returncode == 0 or "shut off" in (state.stdout or ""):
             self._virsh("start", vm_name, check=False)
@@ -636,21 +649,108 @@ class LibvirtBackend(VMBackend):
                 if scp.returncode != 0:
                     die("scp seed failed for '{}'".format(vm_name))
 
+                # Boot order, take 1: confirmed live 2026-09-03 that a bare
+                # `--cdrom PATH` (no explicit order) alongside the disk's old
+                # boot.order=2 left the install ISO with no boot priority at
+                # all — SeaBIOS booted straight into the (empty) disk and sat
+                # at "Boot failed: not a bootable disk / No bootable device"
+                # for the VM's entire lifetime (zero installer output, zero
+                # network activity, ~11 minutes of real CPU time spread
+                # across 18 hours of wall-clock, confirmed via `virsh
+                # screenshot`). A domain-level `--boot cdrom,hd` device list
+                # fixed that (and does still matter here — see below).
+                #
+                # Take 2: fixing the boot order only got as far as a SECOND
+                # dead end, also confirmed live via `virsh screenshot`:
+                # subiquity found and parsed the autoinstall config fine, but
+                # then stopped at an interactive prompt — "Confirmation is
+                # required to continue. Add 'autoinstall' to your kernel
+                # command line to avoid this. Continue with autoinstall?
+                # (yes|no)" — and sat there forever with --noautoconsole and
+                # nobody at the console. Subiquity's unattended mode is
+                # gated on literally seeing "autoinstall" on /proc/cmdline,
+                # regardless of the seed config's own content. The normal
+                # way to inject that (`--location URL` + `--extra-args
+                # autoinstall`) doesn't work here: `--extra-args` is
+                # documented as only applying to a `--location` boot, and
+                # `--location` itself only works for install trees the
+                # *client* (this automation VM) can read directly — a local
+                # path on the remote hypervisor fails with "Cannot access
+                # install tree on remote connection". Fixed by extracting
+                # the ISO's own casper/vmlinuz+initrd on the hypervisor
+                # (xorriso, no mount needed) and booting them directly via
+                # `--boot kernel=,initrd=,cmdline=autoinstall` — a boot
+                # mechanism separate from cdrom/hd boot order entirely, so
+                # `--boot cdrom,hd` from take 1 is no longer meaningful (the
+                # kernel/initrd are what actually boots now) but --cdrom
+                # itself still has to stay attached as a device: the
+                # extracted initrd's own init script mounts it as the
+                # install source once booted.
+                vmlinuz_remote = "{}/{}_vmlinuz".format(vm_img_loc, vm_name)
+                initrd_remote = "{}/{}_initrd".format(vm_img_loc, vm_name)
+                extract = ssh_run(
+                    remote_host,
+                    "rm -f '{v}' '{i}' && xorriso -osirrox on -indev '{iso_loc}/{iso_image}' "
+                    "-extract /casper/vmlinuz '{v}' -extract /casper/initrd '{i}'".format(
+                        v=vmlinuz_remote, i=initrd_remote, iso_loc=iso_loc, iso_image=iso_image),
+                    check=False)
+                if extract.returncode != 0:
+                    die("failed to extract installer kernel/initrd from '{}' for '{}'".format(
+                        iso_image, vm_name))
+
                 log("- Installing Ubuntu via autoinstall + seed CDROM (blocks until installer finishes)…")
                 r = self._virt_install(
                     "--name", vm_name, "--vcpus", str(vm_cpu), "--memory", str(vm_mem),
                     "--os-variant", os_variant or "ubuntu24.04",
+                    "--boot", "kernel={},initrd={},cmdline=autoinstall".format(vmlinuz_remote, initrd_remote),
                     "--cdrom", "{}/{}".format(iso_loc, iso_image),
-                    "--disk", "size={},path={}/{}.qcow2,sparse=no,bus={},boot.order=2".format(
+                    "--disk", "size={},path={}/{}.qcow2,sparse=no,bus={}".format(
                         vm_dsk_gb, vm_img_loc, vm_name, vm_dsk_bus or "virtio"),
                     "--disk", "path={},device=cdrom,readonly=on".format(seed_remote),
                     *(extra_disk_args + [
                         "--graphics", "spice,listen=0.0.0.0",
                         "--network", network, "--noautoconsole", "--wait", "-1",
                     ]))
-                ssh_run(remote_host, "rm -f '{}'".format(seed_remote), check=False)
+                ssh_run(remote_host, "rm -f '{}' '{}' '{}'".format(
+                    seed_remote, vmlinuz_remote, initrd_remote), check=False)
                 if r.returncode != 0:
                     die("virt-install (autoinstall) failed for '{}'".format(vm_name))
+
+                # The direct kernel/initrd boot above is only valid for the
+                # INSTALLER's own first boot — confirmed live 2026-09-03 that
+                # virt-install's automatic post-install restart (it reboots
+                # the domain itself once curtin/subiquity finish and power
+                # it off) reused the exact same <kernel>/<initrd>/<cmdline>
+                # unchanged, since nothing in this lower-level --boot
+                # mechanism knows the install is now done. That sent the
+                # freshly-installed VM straight back into the live
+                # installer's own initrd looking for a live filesystem on
+                # /dev/sr0, which by then may not even still be attached —
+                # "Unable to find a medium containing a live file system /
+                # Attempt interactive netboot from a URL?", hung forever the
+                # same way as the two boot problems above. (A --location-
+                # based install wouldn't need this: virt-install's own
+                # installer-aware machinery resets the boot config itself
+                # afterward — this only applies because --location can't
+                # reach a remote-hypervisor-local path, per the note above.)
+                # Fixed by explicitly resetting the domain to a plain disk
+                # boot before starting it for real: clear kernel/initrd/
+                # cmdline (empty value = remove) and set dev=hd, then detach
+                # the now-empty/stale seed cdrom (its backing file was just
+                # deleted above) — leaving it attached-but-sourceless is
+                # harmless for boot but pointless to keep. This has to
+                # happen on a STOPPED domain — virt-install's own "Restarting
+                # guest" already brought it back up (still on the old boot
+                # config) by the time this line runs, and --edit on a running
+                # domain only updates the persistent/offline definition, not
+                # the live one, so the very next `--virsh start` below would
+                # just hit "Domain is already active" and boot the OLD config
+                # again (confirmed live) — hence the explicit destroy first.
+                self._virsh("destroy", vm_name, check=False)
+                edit = self._virt_xml(vm_name, "--edit", "--boot", "kernel=,initrd=,cmdline=,hd", check=False)
+                if edit.returncode != 0:
+                    die("failed to reset '{}' to disk boot after autoinstall".format(vm_name))
+                self._virt_xml(vm_name, "--remove-device", "--disk", "path={}".format(seed_remote), check=False)
                 self._virsh("autostart", vm_name)
                 self._virsh("start", vm_name)
                 return
@@ -779,14 +879,28 @@ class LibvirtBackend(VMBackend):
             if r.returncode != 0:
                 die("failed to rsync '{}' files for '{}'".format(config_method, vm_name))
 
+            # vm_name (a lab.json node hostname, never validated against shell
+            # metacharacters) is interpolated unquoted into "for i in {vm}*"
+            # and the "${{i/{vm}_/}}" pattern below — that's deliberate (see
+            # the sources= comment above: this mirrors bash's own unquoted-
+            # glob behavior, and a bash pattern-expansion context can't be
+            # single-quoted the normal way regardless). Every OTHER use of
+            # vm_name here (the cp target, the iso paths) doesn't need to be
+            # a glob, so those are shlex.quote()'d — found in code review
+            # 2026-09-05, same class of bug already fixed elsewhere this
+            # session (a vm_name with a space or shell metacharacter must
+            # not be able to break, or inject into, this remote command).
+            ci_iso = shlex.quote("{}/{}_ci.iso".format(vm_img_loc, vm_name))
+            tmp_iso = shlex.quote("/tmp/ci_{}.iso".format(vm_name))
             remote_cmd = (
-                "cd {lsp}/{cm}/; "
-                "for i in {vm}*; do cp ${{i}} /tmp/${{i/{vm}_/}}; done ; "
-                "rm -f {img}/{vm}_ci.iso; "
-                "mkisofs -J -l -R -V cidata -iso-level 3 -o /tmp/ci_{vm}.iso "
+                "cd {lsp_q}; "
+                "for i in {vm}*; do cp \"${{i}}\" \"/tmp/${{i/{vm}_/}}\"; done ; "
+                "rm -f {ci_iso}; "
+                "mkisofs -J -l -R -V cidata -iso-level 3 -o {tmp_iso} "
                 "/tmp/user-data /tmp/meta-data /tmp/network-config "
-                "&& mv /tmp/ci_{vm}.iso {img}/{vm}_ci.iso"
-            ).format(lsp=lab_setup_path, cm=config_method, vm=vm_name, img=vm_img_loc)
+                "&& mv {tmp_iso} {ci_iso}"
+            ).format(lsp_q=shlex.quote("{}/{}/".format(lab_setup_path, config_method)),
+                      vm=vm_name, ci_iso=ci_iso, tmp_iso=tmp_iso)
             r = ssh_run(remote_host, remote_cmd, check=False)
             if r.returncode != 0:
                 die("failed to build cidata ISO for '{}'".format(vm_name))

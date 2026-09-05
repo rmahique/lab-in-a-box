@@ -101,6 +101,25 @@ def load_plugin(name):
     return plugin
 
 
+def collect_addon_names(definition):
+    """
+    Every addon name referenced anywhere in a lab definition — both
+    kclusters[x].addons (cluster-level) and nodes[x].addons (VM-level) —
+    as a sorted list of uniques. setup_lab.py's own two addon-install
+    loops (_install_cluster_addons/phase_vm_addons) walk these same two
+    places independently, once addon-config validation needed to walk
+    them too (--validate every addon up front, before any VM/cluster
+    work starts) it made sense to have one shared place doing the
+    walking rather than a third copy of the same two loops.
+    """
+    names = set()
+    for clu_cfg in (definition.get("kclusters", {}) or {}).values():
+        names.update((clu_cfg or {}).get("addons") or [])
+    for node_cfg in (definition.get("nodes", {}) or {}).values():
+        names.update((node_cfg or {}).get("addons") or [])
+    return sorted(names)
+
+
 def attach_capabilities(schema_dict, plugin_dict):
     """
     Merge an addon's PLUGIN capabilities into its --schema output (or any

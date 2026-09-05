@@ -4,10 +4,20 @@
 # fixed in the same session. No live host needed here — SSH/subprocess are
 # mocked. Run from 18_live_bugfixes.sh, in its own container — see
 # tests/run_tests.sh.
+import shlex
 import socket
 import sys
 import tempfile
 from pathlib import Path
+
+# Tolerant of pyyaml not being installed in this container — same pattern
+# already used in 11_primary_test.py/13_addon_common_test.py/
+# 30_setup_harvester_cluster_test.py.
+try:
+    import yaml as _yaml
+    _has_yaml = True
+except ImportError:
+    _has_yaml = False
 
 _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
@@ -18,6 +28,11 @@ import lab_creation as lc  # noqa: E402
 
 sys.path.insert(0, str(_REPO / "scripts"))
 import install_uyuni  # noqa: E402
+import install_smlm  # noqa: E402
+import install_postgresql  # noqa: E402
+import install_struts_demo  # noqa: E402
+import install_wordpress  # noqa: E402
+import install_smlm_proxy  # noqa: E402
 
 # This test container has no local virsh/virt-install — force
 # run_libvirt_tool()'s local branch so the mocked subprocess.run below is
@@ -192,6 +207,200 @@ backend.create_vm(
 argv = subproc_calls[-1]
 check("create_vm: vm_machine='pc' adds --machine pc to the virt-install invocation",
       "--machine" in argv and argv[argv.index("--machine") + 1] == "pc")
+
+
+# ── config_method="install_iso" (Ubuntu autoinstall): two real bugs found
+# live 2026-09-03, back to back, on the same VM:
+#
+# 1. Boot order: a bare `--cdrom PATH` (no explicit order) alongside the
+#    disk's old boot.order=2 left SeaBIOS with only the (empty) disk in its
+#    boot list — it booted straight into "Boot failed: not a bootable disk /
+#    No bootable device" and sat there for the VM's entire lifetime (zero
+#    installer output, zero network activity, ~11 minutes of real CPU time
+#    spread across 18 hours of wall-clock, confirmed via `virsh screenshot`).
+#
+# 2. Once the boot order was fixed and the installer actually started,
+#    subiquity found and parsed the autoinstall config fine but then stopped
+#    at an interactive prompt — "Confirmation is required to continue. Add
+#    'autoinstall' to your kernel command line to avoid this. Continue with
+#    autoinstall? (yes|no)" — and sat there forever with --noautoconsole and
+#    nobody at the console (also confirmed via `virsh screenshot`). Subiquity
+#    gates unattended mode on literally seeing "autoinstall" on
+#    /proc/cmdline, regardless of the seed config's own content. The normal
+#    fix (`--location URL` + `--extra-args autoinstall`) doesn't work here:
+#    `--extra-args` only applies to a `--location` boot, and `--location`
+#    itself only works for install trees the *client* can read directly — a
+#    local path on the remote hypervisor fails with "Cannot access install
+#    tree on remote connection".
+#
+# Both fixed together: extract the ISO's own casper/vmlinuz+initrd on the
+# hypervisor (xorriso, no mount needed) and boot them directly via
+# `--boot kernel=,initrd=,cmdline=autoinstall` — a boot mechanism entirely
+# separate from cdrom/hd boot order, so it settles bug 1 too. --cdrom stays
+# attached as a device (the extracted initrd's own init script mounts it as
+# the install source once booted).
+_real_os_unlink = backends.os.unlink
+backends.os.unlink = lambda path: None  # mkisofs/scp are mocked, so the seed
+                                          # .iso this branch tries to unlink
+                                          # after "uploading" was never really
+                                          # created — avoid a real ENOENT.
+subproc_calls.clear()
+backend.create_vm(
+    "vm1", "2", "4096", "40", "network=default,model=virtio",
+    config_method="install_iso", install_type="autoinstall",
+    iso_image="ubuntu-24.04-live-server-amd64.iso", iso_loc="/iso",
+)
+backends.os.unlink = _real_os_unlink
+extract_call = next(c for c in subproc_calls if "xorriso" in c[-1])
+check("create_vm (autoinstall): extracts vmlinuz+initrd from the ISO via xorriso (no mount needed)",
+      "-extract /casper/vmlinuz" in extract_call[-1] and "-extract /casper/initrd" in extract_call[-1]
+      and "/iso/ubuntu-24.04-live-server-amd64.iso" in extract_call[-1])
+install_call = next(c for c in subproc_calls if "virt-install" in c[0])
+boot_arg = install_call[install_call.index("--boot") + 1]
+check("create_vm (autoinstall): --boot carries kernel=, initrd=, and cmdline=autoinstall",
+      "kernel=" in boot_arg and "initrd=" in boot_arg and "cmdline=autoinstall" in boot_arg)
+check("create_vm (autoinstall): --cdrom is still attached (the initrd mounts it as the install source)",
+      "--cdrom" in install_call
+      and "ubuntu-24.04-live-server-amd64.iso" in install_call[install_call.index("--cdrom") + 1])
+check("create_vm (autoinstall): no disk carries a per-device boot.order= "
+      "(direct kernel boot bypasses cdrom/hd boot order entirely)",
+      not any("boot.order" in a for a in install_call))
+
+# ── config_method="install_iso" (autoinstall): post-install boot reset.
+# Found live 2026-09-03, immediately after fixing the confirmation-prompt
+# bug above: virt-install's own "Restarting guest" step (part of --wait -1
+# finishing) brought the domain back up on the exact same kernel/initrd/
+# cmdline as the installer boot, since nothing about that lower-level --boot
+# mechanism knows the install is now done. The freshly-installed VM booted
+# straight back into the live installer's initrd hunting for a live
+# filesystem on /dev/sr0 and hung at "Attempt interactive netboot from a
+# URL?" forever — confirmed via `virsh screenshot`. A --location-based
+# install wouldn't need any of this (virt-install's own installer-aware
+# machinery resets the boot config itself), but --location doesn't work over
+# a remote hypervisor connection here (see the comment above). Fixed by
+# destroying the auto-restarted domain, resetting it to plain disk boot via
+# virt-xml, detaching the now-stale seed cdrom, then starting it for real —
+# --edit on a *running* domain only touches the offline definition, so the
+# destroy has to come first or the very next start just reboots the old
+# (bad) config again (also confirmed live).
+calls_after_install = subproc_calls[subproc_calls.index(install_call) + 1:]
+destroy_call = next((c for c in calls_after_install if "destroy" in c), None)
+edit_call = next((c for c in calls_after_install if "--edit" in c), None)
+remove_call = next((c for c in calls_after_install if "--remove-device" in c), None)
+start_call = next((c for c in calls_after_install if "start" in c), None)
+check("create_vm (autoinstall): destroys the auto-restarted domain before touching its boot config",
+      destroy_call is not None)
+check("create_vm (autoinstall): virt-xml --edit resets boot to kernel=,initrd=,cmdline=,hd",
+      edit_call is not None
+      and edit_call[edit_call.index("--boot") + 1] == "kernel=,initrd=,cmdline=,hd")
+check("create_vm (autoinstall): virt-xml --remove-device detaches the stale seed cdrom",
+      remove_call is not None and "seed_vm1.iso" in remove_call[remove_call.index("--disk") + 1])
+check("create_vm (autoinstall): destroy happens before the boot-config edit",
+      destroy_call is not None and edit_call is not None
+      and calls_after_install.index(destroy_call) < calls_after_install.index(edit_call))
+check("create_vm (autoinstall): the domain is started again after the boot-config reset",
+      start_call is not None and edit_call is not None
+      and calls_after_install.index(edit_call) < calls_after_install.index(start_call))
+
+# ── xorriso extraction command must quote its vm_name-derived paths ─────────
+# Found in code review 2026-09-05: the very next line after this extraction
+# (the cleanup `rm -f '{seed}' '{vmlinuz}' '{initrd}'`) already single-quotes
+# these same paths, but the extraction command that builds vmlinuz_remote/
+# initrd_remote in the first place did not — and both embed vm_name, a lab.
+# json node hostname never validated against shell metacharacters anywhere
+# in this codebase. Run over ssh_run(), which hands the whole string to the
+# remote shell, an unquoted vm_name containing a space (or worse) could
+# break — or inject into — this command.
+backends.os.unlink = lambda path: None
+subproc_calls.clear()
+backend.create_vm(
+    "two words", "2", "4096", "40", "network=default,model=virtio",
+    config_method="install_iso", install_type="autoinstall",
+    iso_image="ubuntu-24.04-live-server-amd64.iso", iso_loc="/iso",
+)
+backends.os.unlink = _real_os_unlink
+extract_call = next(c for c in subproc_calls if "xorriso" in c[-1])
+check("create_vm (autoinstall): xorriso extraction quotes the vm_name-derived vmlinuz/initrd paths",
+      "'/var/lib/libvirt/images/two words_vmlinuz'" in extract_call[-1]
+      and "'/var/lib/libvirt/images/two words_initrd'" in extract_call[-1])
+check("create_vm (autoinstall): xorriso extraction quotes the ISO source path too",
+      "'/iso/ubuntu-24.04-live-server-amd64.iso'" in extract_call[-1])
+
+
+# ── prepare_install_iso() autoinstall hostname: found live 2026-09-03, on the
+# same VM as the two bugs above, once it actually finished installing and
+# booted the real (fixed) disk — `hostname` inside the freshly-installed,
+# fully SSH-reachable VM read back "localhost", not "venus.mydemo.lab". The
+# autoinstall user-data deliberately has no `identity:` section (it would
+# force a separate default user this project doesn't want — root-only
+# access is the point), but `identity` is autoinstall's only mechanism for
+# setting /etc/hostname at install time, so without it curtin just leaves
+# whatever the live installer environment defaulted to. meta-data's
+# local-hostname doesn't help either — that's a cloud-init concept, and the
+# seed cdrom (cloud-init's own NoCloud datasource) is detached again right
+# after this install finishes, so nothing ever re-reads it on a later real
+# boot. Fixed with an explicit late-command, the same mechanism already used
+# two lines above it for the sshd config.
+pubkey_path = Path("/root/.ssh/id_rsa.pub")
+pubkey_path.parent.mkdir(parents=True, exist_ok=True)
+if not pubkey_path.exists():
+    pubkey_path.write_text("ssh-rsa AAAAtest test@test\n")
+with tempfile.TemporaryDirectory() as tmp:
+    lc.prepare_install_iso(
+        "venus.mydemo.lab", tmp, "autoinstall", "ubuntu-24.04-live-server-amd64.iso",
+        "52:54:00:aa:bb:cc", "192.168.88.116", "24", "192.168.88.1", "192.168.88.73",
+        "mydemo.lab", "x",
+    )
+    autoinstall_user_data = (Path(tmp) / "install_iso" / "venus.mydemo.lab" / "user-data").read_text()
+check("prepare_install_iso (autoinstall): a late-command sets /etc/hostname to the real node name",
+      'echo "venus.mydemo.lab" > /target/etc/hostname' in autoinstall_user_data)
+
+# vm_name is quoted in that late-command — found in code review 2026-09-05:
+# this string runs as a real shell command inside the install target, and
+# vm_name (a lab.json node hostname) is never validated against shell
+# metacharacters anywhere in this codebase. A name with an embedded space
+# must stay one shell word, not become "echo two words > ..." unquoted.
+with tempfile.TemporaryDirectory() as tmp:
+    lc.prepare_install_iso(
+        "two words", tmp, "autoinstall", "ubuntu-24.04-live-server-amd64.iso",
+        "52:54:00:aa:bb:cc", "192.168.88.116", "24", "192.168.88.1", "192.168.88.73",
+        "mydemo.lab", "x",
+    )
+    autoinstall_user_data = (Path(tmp) / "install_iso" / "two words" / "user-data").read_text()
+check("prepare_install_iso (autoinstall): the hostname late-command quotes vm_name",
+      'echo "two words" > /target/etc/hostname' in autoinstall_user_data)
+
+# ── prepare_install_iso (autoinstall): the #cloud-config YAML must escape
+# its own network/credential values, not just quote (or not even quote) them
+# raw ─────────────────────────────────────────────────────────────────────
+# Found in code review 2026-09-05, confirmed by direct execution: myip/
+# mymask/mygw/mydns/mydomain were bare (not even hand-quoted) YAML scalars,
+# and root_pwd_hash/root_ssh_pubkey were hand-quoted but not escaped — the
+# exact same bug already found and fixed in setup_harvester_cluster.py's
+# own hand-built YAML, just worse here (some fields had no quoting at all).
+# A mydomain value with an embedded colon+newline injected two new,
+# unrelated top-level keys straight into the rendered document.
+malicious_domain = "mydemo.lab]\nssh_pwauth: false\nfake_key: injected"
+with tempfile.TemporaryDirectory() as tmp:
+    lc.prepare_install_iso(
+        "venus.mydemo.lab", tmp, "autoinstall", "ubuntu-24.04-live-server-amd64.iso",
+        "52:54:00:aa:bb:cc", "192.168.88.116", "24", "192.168.88.1", "192.168.88.73",
+        malicious_domain, "x",
+    )
+    autoinstall_user_data = (Path(tmp) / "install_iso" / "venus.mydemo.lab" / "user-data").read_text()
+if _has_yaml:
+    parsed = _yaml.safe_load(autoinstall_user_data)
+    check("prepare_install_iso (autoinstall): a mydomain value with an embedded colon+newline "
+          "is preserved as DATA, not parsed as new YAML structure — only 'autoinstall' is a "
+          "top-level key, nothing got injected",
+          list(parsed.keys()) == ["autoinstall"])
+    check("prepare_install_iso (autoinstall): the malicious value itself is still there, intact",
+          malicious_domain in parsed["autoinstall"]["network"]["network"]["ethernets"]["id0"]
+          ["nameservers"]["search"])
+else:
+    check("prepare_install_iso (autoinstall): the malicious value's own colon+newline never "
+          "appears un-escaped in the rendered YAML (substring check, no pyyaml)",
+          "\nssh_pwauth: false" not in autoinstall_user_data)
 
 
 # ── copy_vm_image / disk_format: found live on nuc6 (2026-08-31) — create_vm's
@@ -372,6 +581,103 @@ check("reboot_vm: tries shutdown before giving up and resetting",
       < virsh_calls.index(next(a for a in virsh_calls if "reset" in a)))
 
 backends.socket.create_connection = socket.create_connection
+
+
+# ── vm_is_reusable / reboot_vm: their domstate check must use 3.6-compatible
+# subprocess.run() kwargs ────────────────────────────────────────────────────
+# Found in code review 2026-09-05: both called self._virsh("domstate", ...,
+# capture_output=True, text=True) -- Python 3.7+-only kwargs. This project's
+# containerized test suite (and even the real automation VM's own bare
+# python3) runs Python 3.6, where subprocess.run() rejects those two kwargs
+# outright with a TypeError. Not currently reachable from any bare-python3
+# entry point (every real caller goes through a python3.11-shebanged
+# script), but a landmine for a future one -- fixed to the same
+# stdout=PIPE/stderr=PIPE/universal_newlines=True form used everywhere else
+# in this codebase.
+def _py36_strict_run(args, **kwargs):
+    # Mimics real Python 3.6's subprocess.run(): TypeError on either
+    # Python-3.7+-only kwarg, exactly what the fixed code must never pass.
+    if "capture_output" in kwargs or "text" in kwargs:
+        raise TypeError("run() got an unexpected keyword argument (mimics Python 3.6)")
+    if "event" in args:
+        return FakeResult(returncode=1)  # no lifecycle event -> forces reboot_vm's escalation
+    if "domstate" in args:
+        return FakeResult(returncode=0, stdout="shut off\n")
+    return FakeResult(returncode=0)
+
+
+backends.subprocess.run = _py36_strict_run
+domstate_error = None
+try:
+    # mymac="" skips the MAC-mismatch branch entirely (_empty(mymac) is
+    # True), and state != "running" (from the fake above) returns False
+    # immediately after the one call this test cares about -- isolating
+    # exactly the domstate check, without needing to also fake DNS/SSH.
+    backend.vm_is_reusable("vm1", "", "10.0.0.1")
+except TypeError as e:
+    domstate_error = e
+check("vm_is_reusable: its domstate check never raises TypeError under Python-3.6-strict "
+      "subprocess.run kwargs", domstate_error is None)
+
+backends.socket.create_connection = lambda addr, timeout=None: (_ for _ in ()).throw(OSError("unreachable"))
+domstate_error = None
+try:
+    # Guest unreachable over SSH -> falls to the virsh escalation path;
+    # reboot/shutdown both "fail" (no event) under this fake -> reaches the
+    # domstate check (the second fix) -> "shut off" -> starts the domain.
+    backend.reboot_vm("vm1")
+except TypeError as e:
+    domstate_error = e
+check("reboot_vm: its domstate check never raises TypeError under Python-3.6-strict "
+      "subprocess.run kwargs", domstate_error is None)
+backends.socket.create_connection = socket.create_connection
+
+
+# ── push_provisioning_files (cloud-init): quote vm_name-derived paths ───────
+# Found in code review 2026-09-05: the remote shell command that assembles
+# the NoCloud cidata ISO on the hypervisor built its rm-f/-o/mv paths from
+# vm_name (a lab.json node hostname, never validated against shell
+# metacharacters) unquoted — a name with an embedded space broke those
+# paths outright, and a shell metacharacter could inject into the command.
+# The "for i in {vm}*" glob and the "${{i/{vm}_/}}" pattern-expansion stay
+# unquoted on purpose (mirrors bash's own unquoted-glob behavior — see the
+# comment above sources= in push_provisioning_files itself), but every
+# other use of vm_name here doesn't need to be a glob and is now
+# shlex.quote()'d. This whole cloud-init branch of push_provisioning_files
+# had no test coverage at all before this.
+rsync_calls = []
+
+
+def _fake_rsync_run(args, **kwargs):
+    rsync_calls.append(args)
+    return FakeResult(returncode=0)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    ci_dir = Path(tmp) / "cloud-init"
+    ci_dir.mkdir()
+    for suffix in ("user-data", "meta-data", "network-config"):
+        (ci_dir / "two words_{}".format(suffix)).write_text("x")
+
+    backend2 = backends.LibvirtBackend(
+        "qemu+ssh://root@hv1/system?keyfile=.ssh/id_rsa",
+        remote_host="hv1", iso_loc="/iso", vm_img_loc="/var/lib/libvirt/images",
+        lab_setup_path=tmp,
+    )
+    rsync_calls.clear()
+    sync_ssh_calls.clear()
+    backends.subprocess.run = _fake_rsync_run
+    backend2.push_provisioning_files("two words", config_method="cloud-init")
+
+ci_call = next(c for h, c, kw in sync_ssh_calls if "mkisofs" in c)
+check("push_provisioning_files (cloud-init): rm -f target is quoted",
+      "rm -f '/var/lib/libvirt/images/two words_ci.iso'" in ci_call)
+check("push_provisioning_files (cloud-init): mkisofs -o target is quoted",
+      "-o '/tmp/ci_two words.iso'" in ci_call)
+check("push_provisioning_files (cloud-init): the final mv's source and destination are both quoted",
+      "mv '/tmp/ci_two words.iso' '/var/lib/libvirt/images/two words_ci.iso'" in ci_call)
+check("push_provisioning_files (cloud-init): the cp step's variable expansions are quoted",
+      'cp "${i}" "/tmp/${i/two words_/}"' in ci_call)
 
 
 # ── Bug 5: mgradm install's pg_hba/IPv6 race must be pre-empted, not ────────
@@ -565,6 +871,141 @@ install_uyuni.run_clm_actions(
     ]})
 check("run_clm_actions: runs build then promote in order",
       calls["trigger"] == [("build", "proj"), ("promote", "proj", "dev")])
+
+
+# ── install_smlm.main() must not crash with NameError on its normal path ───
+# Found in code review 2026-09-05, confirmed by direct execution: main()
+# unconditionally assigned to _DEFINITION[0]/_CLU_TYPE[0]/_MYDOMAIN[0] —
+# three names never declared anywhere else in the file (verified by
+# repo-wide grep) and never read anywhere either, a pure porting leftover.
+# Every single normal invocation of `install_smlm.py <lab.json>` raised
+# "NameError: name '_DEFINITION' is not defined" right after resolving the
+# target node, before ever reaching the real install logic. Removed the
+# three dead (write-only, unread) lines entirely.
+with tempfile.TemporaryDirectory() as tmp:
+    smlm_json = Path(tmp) / "lab.json"
+    smlm_json.write_text(
+        '{"common": {}, "nodes": {"srv1.mydemo.lab": {"myip": "10.0.0.1", "kcluster": "c1", '
+        '"INSTALL_RKE2_TYPE": "server"}}, "kclusters": {"c1": {"clu_type": "rke2", '
+        '"mydomain": "mydemo.lab"}}, "smlm": {"smlm_fqdn": "smlm.mydemo.lab", '
+        '"smlm_scc_user": "u", "smlm_scc_password": "p"}}'
+    )
+    install_smlm.setup_helm = lambda *a, **kw: None
+    install_smlm.setup_smlm_traefik = lambda *a, **kw: None
+    install_smlm.ssh_run = lambda *a, **kw: FakeResult()  # setup_smlm_prereqs's own direct calls
+    install_smlm.k8s.ssh_run = lambda *a, **kw: FakeResult()  # ...and its k8s.create_basic_auth_secret() calls
+    smlm_setup_calls = []
+    install_smlm.setup_smlm = lambda *a, **kw: smlm_setup_calls.append(a)
+    old_argv = sys.argv
+    sys.argv = ["install_smlm.py", str(smlm_json)]
+    smlm_error = None
+    try:
+        install_smlm.main()
+    except Exception as e:  # noqa: BLE001 — we need to see exactly what (if anything) escapes
+        smlm_error = e
+    finally:
+        sys.argv = old_argv
+check("install_smlm.main(): no longer raises NameError on its normal (non-flag) path",
+      not isinstance(smlm_error, NameError))
+check("install_smlm.main(): actually reaches setup_smlm() (proves it got all the way "
+      "through the previously-crashing segment, not just past an earlier early-return)",
+      len(smlm_setup_calls) == 1)
+
+
+# ── install_postgresql._digits_only(): guards postgresql_port/pg_version ───
+# Found in code review 2026-09-05: both were interpolated unquoted into
+# remote shell commands (package/service/unit names, "port = {port}") all
+# over this file, and _validate()'s own checks are never actually invoked
+# by the real deploy pipeline.
+check("_digits_only: a plain digit string passes through unchanged",
+      install_postgresql._digits_only({"p": "5432"}, "p", "1", "label") == "5432")
+check("_digits_only: a missing value falls back to the given default",
+      install_postgresql._digits_only({}, "p", "16", "label") == "16")
+
+_digits_only_died = False
+try:
+    install_postgresql._digits_only({"p": "16; rm -rf /"}, "p", "1", "label")
+except SystemExit:
+    _digits_only_died = True
+check("_digits_only: a value with a shell metacharacter dies rather than being "
+      "returned for interpolation into a remote command",
+      _digits_only_died)
+
+
+# ── install_struts_demo/install_wordpress: struts_demo_ns/wordpress_ns must
+# be validated before ever reaching a remote kubectl command ───────────────
+# Found in code review 2026-09-05: neither script had a _validate() at all
+# (confirmed by grep), so struts_demo_ns/name and wordpress_ns/name reached
+# "kubectl delete -n {ns} ..." completely unvalidated and unquoted.
+struts_ssh_calls = []
+install_struts_demo.ssh_run = lambda *a, **kw: struts_ssh_calls.append(a)
+_struts_died = False
+try:
+    install_struts_demo.setup_struts_demo("host1", "/tmpl", {"struts_demo_ns": "bad;ns"})
+except SystemExit:
+    _struts_died = True
+check("setup_struts_demo: a malicious struts_demo_ns exits before ever calling ssh_run",
+      _struts_died and not struts_ssh_calls)
+
+wordpress_ssh_calls = []
+install_wordpress.ssh_run = lambda *a, **kw: wordpress_ssh_calls.append(a)
+_wordpress_died = False
+try:
+    install_wordpress.setup_wordpress("host1", "/tmpl", {"wordpress_name": "bad;name"})
+except SystemExit:
+    _wordpress_died = True
+check("setup_wordpress: a malicious wordpress_name exits before ever calling ssh_run",
+      _wordpress_died and not wordpress_ssh_calls)
+
+
+# ── install_smlm_proxy.generate_smlm_proxy_config(): nested spacecmd command
+# must be built with shlex.quote(), not hand-rolled single quotes ──────────
+# Found in code review 2026-09-05: admin_user/admin_pass/fqdn/server/email
+# are free-text addon-config values with no format validation at all, and
+# were embedded via hand-rolled single quotes that an embedded single quote
+# in any of them would have broken out of.
+proxy_subproc_calls = []
+install_smlm_proxy.subprocess.run = lambda args, **kw: proxy_subproc_calls.append(args) or FakeResult(returncode=1)
+proxy_cfg = {
+    "smlm_proxy_server_node": "smlm.mydemo.lab", "smlm_proxy_server_ns": "uyuni-server",
+    "smlm_proxy_admin_user": "it's-admin", "smlm_proxy_admin_pass": "pass",
+    "smlm_proxy_fqdn": "proxy.mydemo.lab", "smlm_proxy_server": "smlm.mydemo.lab",
+}
+try:
+    install_smlm_proxy.generate_smlm_proxy_config("proxy1.mydemo.lab", proxy_cfg)
+except SystemExit:
+    pass
+remote_cmd = proxy_subproc_calls[0][-1]
+check("generate_smlm_proxy_config: an embedded single quote in admin_user doesn't break "
+      "out of the remote command's own shell quoting (round-trips through shlex correctly)",
+      shlex.split(remote_cmd)[shlex.split(remote_cmd).index("-u") + 1] == "it's-admin")
+
+
+# ── setup_smlm_prereqs/setup_smlm_proxy_prereqs: the self-signed-TLS-cert
+# heredoc's _fqdn='{fqdn}' must not break on an embedded single quote ──────
+# Found in code review 2026-09-05: smlm_fqdn/smlm_proxy_fqdn are free-text
+# with no format validation at all, and were embedded via hand-rolled
+# single quotes in a multi-line heredoc — an embedded single quote would
+# have broken out of that quoting.
+fqdn_calls = []
+install_smlm.ssh_run = lambda *a, **kw: fqdn_calls.append(a[1] if len(a) > 1 else kw.get("cmd", ""))
+install_smlm.k8s.ssh_run = lambda *a, **kw: FakeResult()
+install_smlm.k8s.set_longhorn_overprovisioning = lambda *a, **kw: None
+install_smlm.k8s.create_basic_auth_secret = lambda *a, **kw: None
+install_smlm.setup_smlm_prereqs("host1", {"smlm_fqdn": "a.b'; rm -rf /; echo '"})
+tls_cmd = next(c for c in fqdn_calls if "openssl" in c)
+check("setup_smlm_prereqs: an embedded single quote in smlm_fqdn round-trips through "
+      "shlex correctly (the TLS heredoc's _fqdn= line stays one shell assignment)",
+      shlex.split(tls_cmd.split("\n")[1])[0] == "_fqdn=a.b'; rm -rf /; echo '")
+
+fqdn_calls.clear()
+install_smlm_proxy.ssh_run = lambda *a, **kw: fqdn_calls.append(a[1] if len(a) > 1 else kw.get("cmd", ""))
+install_smlm_proxy.k8s.set_longhorn_overprovisioning = lambda *a, **kw: None
+install_smlm_proxy.setup_smlm_proxy_prereqs("host1", {"smlm_proxy_fqdn": "a.b'; rm -rf /; echo '"})
+tls_cmd = next(c for c in fqdn_calls if "openssl" in c)
+check("setup_smlm_proxy_prereqs: an embedded single quote in smlm_proxy_fqdn round-trips "
+      "through shlex correctly (the TLS heredoc's _fqdn= line stays one shell assignment)",
+      shlex.split(tls_cmd.split("\n")[1])[0] == "_fqdn=a.b'; rm -rf /; echo '")
 
 
 if failures:

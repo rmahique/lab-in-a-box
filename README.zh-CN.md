@@ -21,13 +21,13 @@
 
 > *这是社区翻译版本。权威来源是英文的 [README.md](README.md)，其内容可能比本页面更新。*
 
-<p align="center"><em>指向一个 JSON 文件，得到一个可用的实验环境——虚拟机、DNS、Kubernetes 和插件，一应俱全。</em></p>
+<p align="center"><em>指向一个 JSON 或 YAML 文件，得到一个可用的实验环境——虚拟机、DNS、Kubernetes 和插件，一应俱全。</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="用于开发和测试本项目的其中一台 NUC。" /></kbd>
 </p>
 
-**lab-in-a-box** 能把一台裸机变成一座自给自足的"实验环境工厂"：只需指向一个描述所需虚拟机、Kubernetes 集群和软件的 JSON 文件，它就会构建出全部内容——DNS、系统配置、集群搭建以及各类插件——完全不需要你手动操作 `virt-install` 或 Ansible。
+**lab-in-a-box** 能把一台裸机变成一座自给自足的"实验环境工厂"：只需指向一个描述所需虚拟机、Kubernetes 集群和软件的 JSON 或 YAML 文件，它就会构建出全部内容——DNS、系统配置、集群搭建以及各类插件——完全不需要你手动操作 `virt-install` 或 Ansible。
 
 ## 为什么选择 lab-in-a-box？
 
@@ -35,25 +35,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 一个 JSON 文件，一条命令。**
-以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；`setup_lab.py` 会按正确的顺序把一切都构建出来。
+`setup_lab.py` · **一个 JSON/YAML 文件，一条命令。**
+以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；它会按正确的顺序把一切都构建出来。
 
-**🧩 41 个开箱即用的插件。**
+`install_<addon>` · **41 个开箱即用的插件。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Manager/Uyuni（激活密钥、RBAC、Content Lifecycle Management、Ansible 集成等）、用于安全培训的漏洞演示应用，以及更多。
 
-**🖥️ 动态 Web 界面。**
-[lab-builder](#web-ui-lab-builder) 直接根据各插件自身的 schema 生成表单——只要给脚本加一个字段，界面无需任何前端改动即可识别它。
+[`lab-builder`](#web-ui-lab-builder) · **动态 Web 界面。**
+直接根据各插件自身的 schema 生成表单——只要给脚本加一个字段，界面无需任何前端改动即可识别它。
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 支持多台虚拟化主机。**
+`KVM_HOSTS` · **支持多台虚拟化主机。**
 一份实验环境定义可以把虚拟机分布到多台 KVM 主机上，既可以根据空闲 CPU/内存/磁盘自动选择，也可以按节点固定指定。
 
-**🧪 完全容器化的测试套件。**
-每项检查都在各自独立的一次性 `podman` 容器中运行，并接入了 pre-commit 钩子。
+`podman` · **完全容器化的测试套件。**
+每项检查都在各自独立的一次性容器中运行，并接入了 pre-commit 钩子。
 
-**🔌 可插拔的系统配置方式。**
+`config_method` · **可插拔的系统配置方式。**
 Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-customize`（用于不支持 cloud-init/Ignition 的老旧发行版），或基于脚本的 ISO 安装（AutoYaST/Kickstart/Preseed/AutoInstall）。
 
 </td>
@@ -91,6 +91,17 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 
 整个系统围绕**双层架构**构建：
 
+```mermaid
+graph TB
+    Operator["操作者的客户端"] -->|"SSH / DNS / HTTP"| AutoVM
+    subgraph HV["虚拟化主机节点 — KVM/QEMU"]
+        AutoVM["自动化虚拟机<br/>DNS · HTTP · 脚本 · Web UI"]
+        AutoVM -->|"virt-install / virsh"| VM1["实验环境虚拟机"]
+        AutoVM -->|"virt-install / virsh"| VM2["实验环境虚拟机"]
+        AutoVM -->|"virt-install / virsh"| VM3["实验环境虚拟机"]
+    end
+```
+
 ### 虚拟化主机节点
 
 一台或多台运行 KVM/QEMU 的物理裸机。每台主机都承载实验环境的虚拟机，并在 `/var/lib/libvirt/images/sources/` 中保存源 QCOW2 镜像。一台 NUC、一台工作站，或任何能够运行 KVM 的 x86_64 机器都可以胜任。需要超出单台机器容量的实验环境，可以跨越**多台 KVM 主机**——详见下文的[多主机实验环境](#multi-host-labs)。
@@ -117,6 +128,21 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 <a id="how-it-works"></a>
 ## 工作原理
 
+### 部署流水线
+
+`setup_lab.py` 按固定的阶段顺序执行；对于纯虚拟机实验环境（没有 `kclusters` 部分），两个仅与 Kubernetes 相关的阶段会被完全跳过：
+
+```mermaid
+flowchart LR
+    A["phase_services"] -->|"有 kclusters"| C["phase_dns"]
+    A -->|"无 kclusters"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"有 kclusters"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"无 kclusters"| H["phase_vm_addons"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+```
+
 ### 虚拟机配置
 
 每台虚拟机按以下步骤创建：
@@ -135,6 +161,19 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 | `cloud-init` | cloud-init ISO | openSUSE Leap、Ubuntu |
 | `virt_customize` | 直接在虚拟化主机上修改 QCOW2（`virt-customize`）——客户机无需支持 Ignition/cloud-init | CentOS 7、旧版 Debian/RHEL，或任何不支持 Ignition/cloud-init 的镜像 |
 | `install_iso` | 从真正的安装 ISO 进行脚本化安装（根据 `install_type` 选择 AutoYaST、Kickstart、Preseed 或 AutoInstall） | 没有其他配置方式的发行版 |
+
+### 虚拟机后端
+
+究竟由哪种虚拟化技术来创建一个节点，取决于一个可插拔的 `VMBackend` 接口，每个节点解析一次（该节点配置中的 `backend: harvester` 会选择 `HarvesterBackend`；其他情况默认使用 `LibvirtBackend`）——无论解析出的是哪个后端，每个插件和编排脚本都以同样的方式与它交互：
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "默认" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["KVM 虚拟化主机上的<br/>virt-install / virsh"]
+    HB --> KV["Harvester 集群上的<br/>KubeVirt VirtualMachine"]
+```
 
 ### Kubernetes 配置
 
@@ -171,6 +210,15 @@ KVM_HOSTS="hv1.mydemo.lab hv2.mydemo.lab hv3.mydemo.lab"
 
 <a id="quick-start"></a>
 ## 快速开始
+
+```mermaid
+flowchart TD
+    S1["1. 准备虚拟化主机的操作系统"] --> S2["2. 引导安装配置脚本"]
+    S2 --> S3["3. 配置并运行 KVM 节点安装程序"]
+    S3 --> S4["4. 配置自动化虚拟机"]
+    S4 --> S5["5. 让客户端 DNS 指向自动化虚拟机"]
+    S5 --> S6["6. 构建你的第一个实验环境"]
+```
 
 ### 前提条件
 
@@ -319,7 +367,18 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
 <a id="lab-definition-format"></a>
 ## 实验环境定义格式
 
-实验环境以 JSON 文件的形式定义。当前格式支持每个实验环境包含多个 Kubernetes 集群（`kclusters`）；旧版单集群格式（`cluster`）请参见 `examples/cluster.json.template`。
+实验环境以 JSON 或 YAML 文件的形式定义（自动检测格式 —— 见下方说明）。当前格式支持每个实验环境包含多个 Kubernetes 集群（`kclusters`）；旧版单集群格式（`cluster`）请参见 `examples/cluster.json.template`。
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>每台虚拟机：myip、mymac、kcluster、addons..."]
+    Lab --> Common["common<br/>共享默认值：ISO_IMAGE、VM_MEM、VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type、clu_rel、mydomain、addons"]
+    Lab --> AddonSections["每个插件一个部分<br/>例如 rancher、longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {
@@ -367,6 +426,52 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
   }
 }
 ```
+
+<details>
+<summary>同一个实验环境，用 YAML 表示</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" 或 "agent"
+    kcluster: cluster1          # 该节点属于哪个 kclusters 条目
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi（默认）、firmware=bios、bios、uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" 或 "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 节点级别的可选字段：
 
@@ -612,8 +717,10 @@ setup_lab.py --keep rancher-cluster.json
    _network_mode="nat"
    _nat_network_name="labnat"          # 图中所示为默认值——一个新的 libvirt 虚拟网络，不是你主机真正的局域网
    _nat_network_cidr="192.168.150.0/24" # 图中所示为默认值
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 图中所示为默认值——<外部端口>:<内部端口>/<协议>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # 图中所示为默认值——“<宿主机真实 IP 上的端口>:<automation VM 上的端口>/<协议>”
    ```
+
+   这会把**宿主机自身真实、可从外部访问的 IP**（`<外部端口>`）上的 22/80/443 端口，转发到 **automation VM 的私有 NAT 地址**（`<内部端口>`）上的相同端口——此时这个私有网络里唯一在监听的就是 automation VM，所以这里的“内部”始终指“在 automation VM 上”。（下面的第 5 步会复用同样的 `<外部端口>:<内部端口>/<协议>` 语法，把端口转发到某个*实验室*虚拟机上——前提是这台虚拟机已经存在；届时“内部”指的是那台虚拟机自己的私有 NAT 地址，而不是 automation VM 的。）
 
 2. **像往常一样运行安装程序：**
 
@@ -688,6 +795,9 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 插件通过名称在 kcluster 或节点的 `addons` 数组中被引用。对应的 `install_<name>` 脚本必须位于 `PATH` 中。
 
+<sub>快速跳转: <a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化与演示</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes 平台与 GitOps</strong></summary>
 
@@ -708,6 +818,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>安全与合规</strong></summary>
 
@@ -724,6 +835,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -737,6 +849,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>存储与数据库</strong></summary>
 
@@ -749,6 +862,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD 与开发者工具</strong></summary>
 
@@ -761,6 +875,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
@@ -773,6 +888,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>虚拟化与演示</strong></summary>
 

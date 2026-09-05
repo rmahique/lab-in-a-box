@@ -236,6 +236,33 @@ code, out = _dispatch(["some-unrelated-arg"])
 check("handle_common_args: returns None (no exit) for an addon-specific argument", code is None)
 
 
+# ── require_k8s_name(): runtime guard for values interpolated unquoted into
+# remote kubectl/shell commands (found in code review 2026-09-05 across
+# several install_<addon>.py scripts — Validator.vns()'s own format check
+# is never actually invoked by the real deploy pipeline, so this runs at
+# the point of use instead) ──────────────────────────────────────────────
+check("require_k8s_name: a valid lowercase-alphanumeric-plus-hyphens value passes through unchanged",
+      ac.require_k8s_name({"ns": "my-ns1"}, "ns", "default") == "my-ns1")
+check("require_k8s_name: a missing/empty value falls back to the given default",
+      ac.require_k8s_name({}, "ns", "default-ns") == "default-ns")
+
+_require_k8s_name_died = False
+try:
+    ac.require_k8s_name({"ns": "bad;rm -rf /"}, "ns", "default")
+except SystemExit:
+    _require_k8s_name_died = True
+check("require_k8s_name: a value with a shell metacharacter exits rather than being "
+      "returned for interpolation into a remote command",
+      _require_k8s_name_died)
+
+_require_k8s_name_died = False
+try:
+    ac.require_k8s_name({"ns": "Has-Upper-Case"}, "ns", "default")
+except SystemExit:
+    _require_k8s_name_died = True
+check("require_k8s_name: uppercase (not a valid k8s name) is rejected too", _require_k8s_name_died)
+
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)

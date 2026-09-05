@@ -15,7 +15,6 @@ Usage:
 
 __version__ = "__LABVERSION__"
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -34,10 +33,7 @@ def destroy_lab(definition, config, defaults, json_file):
     lab_creation._level += 1
     for vm_name in definition.get("nodes", {}):
         lab_creation.log("Node: {}{}{}".format(lab_creation._RED, vm_name, lab_creation._RESET))
-        subprocess.run(
-            ["ssh-keygen", "-f", str(Path.home() / ".ssh" / "known_hosts"), "-R", vm_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-        )
+        lab_creation.purge_known_host(vm_name)
         # bash's `destroy_vm.sh` calls have no `||` error check anywhere —
         # one VM's destroy failing must never block tearing down the rest of
         # the lab. Matches the same wrapper in setup_lab.py's

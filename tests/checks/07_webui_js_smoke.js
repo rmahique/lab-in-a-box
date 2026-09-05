@@ -107,6 +107,83 @@ check("pattern match accepted",
     flatInput.value === "server");
 }
 
+// -- buildMermaidDiagram: architecture preview diagram --------------------
+check("no nodes -> nothing to draw", sandbox.buildMermaidDiagram({}) === null);
+
+{
+  // A clustered node, a standalone node, cluster-level and node-level
+  // addons, and an `existing` (Phase 5 pre-provisioned host) node — one
+  // definition exercising every branch at once.
+  const lab = {
+    nodes: {
+      "node1.mydemo.lab": { myip: "192.168.88.101", kcluster: "clu1" },
+      "node2.mydemo.lab": { myip: "192.168.88.102", existing: true, addons: ["mariadb"] },
+    },
+    kclusters: {
+      clu1: { clu_type: "rke2", addons: ["rancher", "longhorn"] },
+    },
+  };
+  const def = sandbox.buildMermaidDiagram(lab);
+  check("diagram starts with a valid mermaid graph declaration", def.startsWith("graph TB"));
+  check("clustered node renders inside its kcluster's subgraph",
+    /subgraph n_clu_clu1\["clu1 \(rke2\)"\][\s\S]*n_node1_mydemo_lab\["node1\.mydemo\.lab<br\/>192\.168\.88\.101"\][\s\S]*end/.test(def));
+  check("standalone node (no kcluster) renders outside any subgraph",
+    def.includes('n_node2_mydemo_lab["node2.mydemo.lab<br/>192.168.88.102"]')
+    && !new RegExp("subgraph[\\s\\S]*n_node2_mydemo_lab[\\s\\S]*end").test(def.split("subgraph")[1] || ""));
+  check("cluster-level addons render as linked boxes off the cluster",
+    def.includes('(["rancher"])') && def.includes('(["longhorn"])'));
+  check("node-level addons render as linked boxes off that node",
+    def.includes('(["mariadb"])') && / -\.-> n_node2_mydemo_lab_addon_0_mariadb/.test(def));
+  check("an `existing` node gets the dashed-border class applied",
+    def.includes("classDef existingNode") && / class n_node2_mydemo_lab existingNode;/.test(def));
+  check("a node that is NOT `existing` is never included in the existingNode class list",
+    !new RegExp("class [^;]*n_node1_mydemo_lab[^;]* existingNode;").test(def));
+}
+
+{
+  // Quotes/newlines in a hostname would break mermaid's own quoted-label
+  // syntax outright — confirm they're neutralized rather than passed through.
+  const def = sandbox.buildMermaidDiagram({ nodes: { 'weird"host\nname': { myip: "10.0.0.1" } } });
+  check("quotes and newlines in a node name are neutralized, not passed through raw",
+    !def.includes('"weird"host') && !/\n.*name/.test(def.split("\n").find((l) => l.includes("weird"))));
+}
+
+{
+  // sanitizeId's char-class replace collapses any non-alphanumeric char to
+  // "_", so two DIFFERENT node names that differ only in punctuation
+  // ("a.b" vs "a-b") used to sanitize to the exact same id — mermaid then
+  // silently merged them into one box in the diagram, quietly dropping one
+  // node from the rendered picture entirely.
+  const lab = {
+    nodes: {
+      "a.b": { myip: "10.0.0.1" },
+      "a-b": { myip: "10.0.0.2" },
+    },
+  };
+  const def = sandbox.buildMermaidDiagram(lab);
+  const nodeLines = def.split("\n").filter((l) => l.includes("10.0.0.1") || l.includes("10.0.0.2"));
+  check("two node names differing only in punctuation still get two separate node lines",
+    nodeLines.length === 2);
+  const ids = nodeLines.map((l) => l.trim().split("[")[0]);
+  check("...and those two lines use two DIFFERENT mermaid ids, not the same one merged",
+    ids[0] !== ids[1]);
+  check("both node labels still show up intact (neither one silently dropped)",
+    def.includes('"a.b<br/>10.0.0.1"') && def.includes('"a-b<br/>10.0.0.2"'));
+}
+
+{
+  // The same raw name used twice within one render (a node acting as both a
+  // node-line and an addon-box owner) must still resolve to the SAME id
+  // both times — the dedup fix must not turn a stable, repeated lookup into
+  // a fresh disambiguated id on its second call.
+  const lab = { nodes: { "solo.mydemo.lab": { myip: "10.0.0.9", addons: ["longhorn"] } } };
+  const def = sandbox.buildMermaidDiagram(lab);
+  const nodeLine = def.split("\n").find((l) => l.includes("10.0.0.9"));
+  const nodeId = nodeLine.trim().split("[")[0];
+  check("a node's own id is reused as-is (not re-disambiguated) when it's also an addon-box owner",
+    def.includes(nodeId + " -.-> "));
+}
+
 if (failures) {
   console.error(failures + " check(s) failed");
   process.exit(1);

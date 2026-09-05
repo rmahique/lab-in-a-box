@@ -72,6 +72,19 @@ check("K3sDistro first node: no K3S_URL/K3S_TOKEN on the server install",
       "K3S_URL" not in install_cmd and "K3S_TOKEN" not in install_cmd)
 check("K3sDistro first node: --tls-san includes the cluster FQDN",
       "--tls-san cluster1.mydemo.lab" in install_cmd)
+# Live-tested 2026-09-04: k3s's own install.sh does not reliably leave the
+# service running (confirmed on this project's own default SL-Micro image —
+# a stale "please reboot" flag left the unit enabled but never started, with
+# no error at all) — K3sDistro must explicitly start it itself, exactly like
+# RKE2Distro already always has.
+check("K3sDistro first node: explicitly starts the k3s service itself, "
+      "rather than trusting get.k3s.io's install script to have done it",
+      any(c == "systemctl enable --now k3s" for h, c, kw in fake.calls))
+enable_call_idx = next(i for i, (h, c, kw) in enumerate(fake.calls) if c == "systemctl enable --now k3s")
+token_call_idx = next(i for i, (h, c, kw) in enumerate(fake.calls) if "node-token" in c)
+check("K3sDistro first node: starts the service BEFORE reading the node-token "
+      "(the actual bug — reading it first raced against a service that was never started)",
+      enable_call_idx < token_call_idx)
 
 fake = FakeSSH()
 k8s.ssh_run = fake
@@ -82,6 +95,21 @@ check("K3sDistro join: token passed through unchanged", token == "TOKEN123")
 join_cmd = next(c for h, c, kw in fake.calls if "get.k3s.io" in c)
 check("K3sDistro join: K3S_URL points at the first server", "K3S_URL=https://vm1:6443" in join_cmd)
 check("K3sDistro join: K3S_TOKEN carries the join token", "K3S_TOKEN=TOKEN123" in join_cmd)
+check("K3sDistro join: explicitly starts k3s-agent itself, same reasoning as the server case",
+      any(c == "systemctl enable --now k3s-agent" for h, c, kw in fake.calls))
+
+# ── K3sDistro: clu_rel/clu_name/mydomain must be shell-quoted ────────────────
+# Found in code review 2026-09-05: clu_rel (a free-text lab.json value with
+# no format validation) was piped straight into the remote install command
+# unquoted, and clu_name/mydomain the same way in --tls-san. A value with a
+# shell metacharacter must not be able to break, or inject into, this
+# remote command.
+fake = FakeSSH(responses=[("node-token", FakeResult(stdout="TOKEN123\n"))])
+k8s.ssh_run = fake
+distro.install_server("vm1", "cluster1", {"clu_rel": "stable; rm -rf /", "mydomain": "mydemo.lab"})
+install_cmd = next(c for h, c, kw in fake.calls if "get.k3s.io" in c)
+check("K3sDistro first node: a shell metacharacter in clu_rel is quoted, not passed through raw",
+      "INSTALL_K3S_CHANNEL='stable; rm -rf /'" in install_cmd)
 
 
 # ── RKE2Distro.write_node_config: run from a scratch tempdir (repo is
@@ -136,6 +164,20 @@ try:
           any("systemctl enable --now rke2-server.service" in c for h, c, kw in fake_ssh.calls))
     check("RKE2Distro: rsyncs the rendered config to the remote host",
           any(a[0] == "rsync" for a, kw in fake_subproc.calls))
+
+    # ── clu_rel/install_method must be shell-quoted ──────────────────────
+    # Found in code review 2026-09-05: both are free-text lab.json values
+    # with no format validation, piped straight into this remote install
+    # command unquoted.
+    fake_ssh = FakeSSH(responses=[("node-token", FakeResult(stdout="RKE2TOKEN\n"))])
+    k8s.ssh_run = fake_ssh
+    distro.install_server("vm1", "cluster1", {
+        "clu_rel": "stable; rm -rf /", "mydomain": "mydemo.lab", "install_method": "tar; touch /tmp/pwned"})
+    install_cmd = next(c for h, c, kw in fake_ssh.calls if "get.rke2.io" in c)
+    check("RKE2Distro first node: a shell metacharacter in clu_rel is quoted, not passed through raw",
+          "INSTALL_RKE2_CHANNEL='stable; rm -rf /'" in install_cmd)
+    check("RKE2Distro first node: a shell metacharacter in install_method is quoted, not passed through raw",
+          "INSTALL_RKE2_METHOD='tar; touch /tmp/pwned'" in install_cmd)
 
     fake_ssh = FakeSSH()
     k8s.ssh_run = fake_ssh

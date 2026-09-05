@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # Mocked unit tests for scripts/destroy_lab.py — no live
-# KVM host available; destroy_vm() and subprocess.run (ssh-keygen known-
-# hosts cleanup — not necessarily installed in the test container) are
-# monkeypatched. Verifies per-node dispatch across the whole lab and that
-# one node's destroy failure never blocks the rest. Run from
+# KVM host available; destroy_vm() and lab_creation.purge_known_host()
+# (ssh-keygen known-hosts cleanup — not necessarily installed in the test
+# container) are monkeypatched. Verifies per-node dispatch across the whole
+# lab and that one node's destroy failure never blocks the rest. Run from
 # 16_destroy_lab.sh, in its own container — see tests/run_tests.sh.
 import sys
 from pathlib import Path
@@ -23,19 +23,14 @@ def check(desc, cond):
         print("FAIL:", desc)
 
 
-class FakeCompleted:
-    returncode = 0
-
-
 keygen_calls = []
 
 
-def _fake_subprocess_run(args, **kwargs):
-    keygen_calls.append(args)
-    return FakeCompleted()
+def _fake_purge_known_host(*names):
+    keygen_calls.append(names)
 
 
-destroy_lab.subprocess.run = _fake_subprocess_run
+destroy_lab.lab_creation.purge_known_host = _fake_purge_known_host
 
 definition = {
     "common": {"lab_name": "test-lab"},

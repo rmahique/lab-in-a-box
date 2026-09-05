@@ -70,6 +70,31 @@ def _empty(value):
     return value is None or value is False or value == ""
 
 
+def yaml_scalar(value):
+    """Render a Python value as a YAML scalar for hand-built YAML config
+    blocks — bool/int/float unquoted, everything else double-quoted.
+    Deliberately simple (flat scalars only, no nested structures) — same
+    "operator pre-configures it, we don't own the semantics" stance as
+    HARVESTER_NETWORK/Multus in libs/backends.py.
+
+    A string value's own backslash/quote/newline characters are escaped
+    per YAML's double-quoted-scalar rules — confirmed live 2026-09-05
+    (first in scripts/setup_harvester_cluster.py, moved here 2026-09-05
+    after finding the identical bug in prepare_install_iso()'s Ubuntu
+    autoinstall cloud-config below) that without this, a value containing
+    so much as an embedded quote silently corrupts the rendered YAML, and
+    one with an embedded colon+newline can inject entirely new, unrelated
+    top-level keys into the document.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = (str(value).replace("\\", "\\\\").replace('"', '\\"')
+               .replace("\n", "\\n").replace("\r", "\\r"))
+    return '"{}"'.format(escaped)
+
+
 def resolve_install_type(install_type, iso_image):
     """
     Auto-detect the installer flavour from the ISO filename when install_type is
@@ -129,10 +154,19 @@ def resolve_install_type(install_type, iso_image):
 #     the "generic" variant ships cloud-init; the "nocloud" variant
 #     deliberately does NOT run cloud-init at all (boots straight to a root
 #     prompt), so it's matched separately, before the general Debian rule.
+#     That pattern requires "debian" alongside "nocloud" (not just "nocloud"
+#     alone) — confirmed live 2026-09-03 that a bare "nocloud" substring
+#     match false-positived on an unrelated image, Alibaba's own
+#     "aliyun_2_1903_x64_20G_nocloud_alibase_*.qcow2" naming (its "nocloud"
+#     means something else in Alibaba's own build pipeline — the image
+#     genuinely has cloud-init, confirmed via virt-cat on the real file).
 #   - Fedora Cloud Base images (28+) ship cloud-init —
 #     https://fedoramagazine.org/setting-up-a-vm-on-fedora-server-using-cloud-images-and-virt-install-version-3/
 #   - Ubuntu server/cloud images have shipped cloud-init since 18.04 LTS (and
 #     informally earlier) — https://help.ubuntu.com/community/CloudInit
+#   - Alibaba Cloud Linux (Aliyun Linux) 2/3 "alibase" images ship cloud-init
+#     — confirmed live 2026-09-03 via virt-cat against a real
+#     aliyun_2_1903_x64_20G_nocloud_alibase_20230103.qcow2.
 #
 # "virt_customize" edits the qcow2 filesystem directly (no in-guest agent
 # required), so it works against essentially any image — included in every
@@ -142,13 +176,14 @@ _IMAGE_CONFIG_METHOD_SUPPORT = (
     (r"el7|rhel-?7|centos-?7", "RHEL/CentOS 7", {"virt_customize"}),
     (r"sle?-?micro", "SLE Micro 5.x/6.x", {"", "virt_customize"}),
     (r"minimal-vm.*kvm-and-xen", "SLES 15/16 or openSUSE Leap 15.x Minimal VM (KVM/Xen)", {"virt_customize"}),
-    (r"nocloud", "Debian 10+ (nocloud variant)", {"virt_customize"}),
+    (r"debian.*nocloud|nocloud.*debian", "Debian 10+ (nocloud variant)", {"virt_customize"}),
     (r"debian", "Debian 10+ (generic cloud image)", {"cloud-init", "virt_customize"}),
     (r"fedora", "Fedora 28+ (Cloud Base image)", {"cloud-init", "virt_customize"}),
     (r"rocky", "Rocky Linux 8/9/10 (GenericCloud image)", {"cloud-init", "virt_customize"}),
     (r"alma", "AlmaLinux 8/9/10 (GenericCloud image)", {"cloud-init", "virt_customize"}),
     (r"rhel|centos", "RHEL/CentOS(-Stream) 8/9/10", {"cloud-init", "virt_customize"}),
     (r"ubuntu", "Ubuntu 18.04+ (cloud/server image)", {"cloud-init", "install_iso", "virt_customize"}),
+    (r"aliyun|alinux|alibaba", "Alibaba Cloud Linux 2/3 (alibase image)", {"cloud-init", "virt_customize"}),
 )
 
 
@@ -677,9 +712,9 @@ def vm_is_reusable(virt_srv, vm_name, mymac, myip, remote_host=None):
 _SSH_BASE = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-q"]
 
 
-def ssh_run(hostname, cmd, check=True, input_text=None, capture=False):
+def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="root"):
     """
-    Run a shell command on a remote host as root via SSH.
+    Run a shell command on a remote host via SSH (root by default).
 
     Args:
         hostname   : Target host (IP or FQDN).
@@ -687,11 +722,15 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False):
         check      : Raise RuntimeError on non-zero exit code.
         input_text : Text to send to the remote command's stdin.
         capture    : If True, capture stdout+stderr instead of streaming.
+        user       : Remote SSH user — override when the target doesn't
+                     allow root login (e.g. Harvester's default "rancher"
+                     user; root SSH is disabled by Harvester's own default
+                     hardening, confirmed live 2026-08-30).
 
     Returns:
         subprocess.CompletedProcess
     """
-    args = _SSH_BASE + ["root@{}".format(hostname), cmd]
+    args = _SSH_BASE + ["{}@{}".format(user, hostname), cmd]
     result = subprocess.run(
         args,
         universal_newlines=True,
@@ -711,6 +750,35 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False):
 def ssh_output(hostname, cmd):
     """Run a command on a remote host and return stripped stdout."""
     return ssh_run(hostname, cmd, capture=True).stdout.strip()
+
+
+def purge_known_host(*names):
+    """
+    Remove any stale SSH host-key entries for the given hostname(s)/IP(s)
+    from this user's known_hosts, before the first real connection to a
+    freshly (re)created VM. This project's lab IPs get reused across many
+    disposable test VMs over time — without this, ssh_run()'s
+    StrictHostKeyChecking=accept-new still refuses a brand-new VM outright
+    ("REMOTE HOST IDENTIFICATION HAS CHANGED") whenever its address was
+    previously held by any other VM, even though the new one is genuinely
+    up and answering correctly.
+
+    Extracted 2026-09-05 after fixing the same class of bug in 3 separate
+    places (setup_lab.py/destroy_lab.py already had this inline;
+    setup_harvester_cluster.py's _create_netboot_vm() and
+    build_lab_usb.py's lab-host VM bootstrap both needed it added) — past
+    the point where duplicating it a 4th time made sense.
+
+    Best-effort: a name with no existing entry is a silent no-op (matches
+    ssh-keygen's own exit-code-1-on-nothing-to-remove behavior), never
+    raises.
+    """
+    known_hosts = str(Path.home() / ".ssh" / "known_hosts")
+    for name in names:
+        if not name:
+            continue
+        subprocess.run(["ssh-keygen", "-f", known_hosts, "-R", name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
 def _has_local_binary(binary):
@@ -1834,7 +1902,7 @@ def prepare_install_iso(
             "          set-name: eth0\n"
             "          dhcp4: no\n"
             "          addresses:\n"
-            "            - {myip}/{mymask}\n"
+            "            - {mycidr}\n"
             "          gateway4: {mygw}\n"
             "          nameservers:\n"
             "            addresses: [{mydns}]\n"
@@ -1848,18 +1916,49 @@ def prepare_install_iso(
             "    users:\n"
             "      - name: root\n"
             "        lock_passwd: false\n"
-            "        hashed_passwd: \"{root_pwd_hash}\"\n"
+            "        hashed_passwd: {root_pwd_hash}\n"
             "        ssh_authorized_keys:\n"
-            "          - \"{root_ssh_pubkey}\"\n"
+            "          - {root_ssh_pubkey}\n"
             "  ssh:\n"
             "    install-server: true\n"
             "    allow-pw: true\n"
             "  late-commands:\n"
             "    - mkdir -p /target/etc/ssh/sshd_config.d\n"
             "    - printf 'PermitRootLogin yes\\nPasswordAuthentication yes\\n' > /target/etc/ssh/sshd_config.d/99-lab.conf\n"
+            # No `identity:` section above (it would force a separate default
+            # user this project doesn't want — root-only access is the
+            # point) — but `identity` is also autoinstall's only mechanism
+            # for setting /etc/hostname at install time, so without it
+            # curtin leaves the installed system's hostname at whatever the
+            # live installer environment defaulted to ("localhost", not even
+            # "ubuntu") — confirmed live 2026-09-03 (`hostname` inside the
+            # freshly-installed, fully-reachable VM read back "localhost").
+            # meta-data's local-hostname doesn't help either: it's a
+            # cloud-init concept, and cloud-init's own NoCloud datasource
+            # (the seed cdrom) is detached again right after this install
+            # finishes, so nothing ever re-reads it on a later real boot.
+            # Set directly instead, the same way the sshd config above is.
+            # vm_name is quoted here (found in code review 2026-09-05) —
+            # this late-command runs as a real shell command inside the
+            # target, and vm_name (a lab.json node hostname) is never
+            # validated against shell metacharacters anywhere in this
+            # codebase.
+            "    - echo \"{vm_name}\" > /target/etc/hostname\n"
         ).format(
-            mymac=mymac, myip=myip, mymask=mymask, mygw=mygw, mydns=mydns, mydomain=mydomain,
-            root_pwd_hash=root_pwd_hash, root_ssh_pubkey=root_ssh_pubkey,
+            # mymac/myip/mymask/mygw/mydns/mydomain/root_pwd_hash/
+            # root_ssh_pubkey are all bare (myip/mymask/mygw/mydns/mydomain
+            # not even hand-quoted) YAML scalars in this hand-built
+            # #cloud-config document — found in code review 2026-09-05,
+            # confirmed live by direct execution: a mydomain value with an
+            # embedded colon+newline injected two new, unrelated top-level
+            # keys straight into the rendered YAML, the exact same bug
+            # already found and fixed in setup_harvester_cluster.py's own
+            # hand-built YAML. yaml_scalar() escapes each value correctly
+            # regardless of which one a lab.json author gets creative with.
+            mymac=yaml_scalar(mymac), mycidr=yaml_scalar("{}/{}".format(myip, mymask)),
+            mygw=yaml_scalar(mygw), mydns=yaml_scalar(mydns), mydomain=yaml_scalar(mydomain),
+            root_pwd_hash=yaml_scalar(root_pwd_hash), root_ssh_pubkey=yaml_scalar(root_ssh_pubkey),
+            vm_name=vm_name,
         )
         (out_dir / "user-data").write_text(user_data)
         (out_dir / "meta-data").write_text(

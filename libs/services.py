@@ -645,6 +645,15 @@ class PortForwardService(AuxService):
         # args) needs it too, since this service's actual state lives on the
         # hypervisor, not the automation VM these calls run from.
         self._remote_host = None
+        # _remote_host alone can't tell is_active() whether configure() has
+        # even run yet: a local hypervisor (no REMOTE_HOST configured) is a
+        # perfectly normal POST-configure state that also leaves
+        # _remote_host at None — found in code review 2026-09-05, not
+        # currently reachable (nothing calls is_active() before configure()
+        # today), but a real ordering landmine for a future caller: without
+        # this flag, is_active() would silently check the wrong (local)
+        # host and could misreport an unconfigured service as active.
+        self._configured = False
 
     def install(self):
         pass  # iptables is always present on the hypervisor; nothing to install
@@ -672,6 +681,7 @@ class PortForwardService(AuxService):
             port_map[myip] = specs
 
         self._remote_host = config.get("REMOTE_HOST") or None
+        self._configured = True
         portforward.apply_forwarded_ports(port_map, remote_host=self._remote_host)
 
     def enable(self):
@@ -681,7 +691,15 @@ class PortForwardService(AuxService):
         """Checks the CHAIN_DNAT chain exists — on the hypervisor (over SSH)
         if configure() has run and recorded one, locally otherwise (mirrors
         setup_lab_automation.sh's own bootstrap-time call, which always
-        applies rules locally since it runs ON the hypervisor already)."""
+        applies rules locally since it runs ON the hypervisor already).
+
+        False before configure() has ever run: a service that was never
+        applied can't be active, and _remote_host alone can't tell that
+        apart from "configured for a local hypervisor" — both leave it at
+        None.
+        """
+        if not self._configured:
+            return False
         import portforward
         run = portforward._iptables_runner(self._remote_host)
         return run(["-t", "nat", "-L", portforward.CHAIN_DNAT]).returncode == 0

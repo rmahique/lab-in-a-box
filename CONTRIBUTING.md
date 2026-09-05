@@ -33,6 +33,17 @@ beyond the standard library.
 
 ## Making a change
 
+```mermaid
+flowchart LR
+    A["Branch off dev"] --> B["Make the change"]
+    B --> C["Add/update tests<br/>under tests/checks/"]
+    C --> D{"Schema or web UI<br/>affected?"}
+    D -- yes --> E["Update scripts/lab_schema<br/>+ the web UI, same change"]
+    D -- no --> F["tests/run_tests.sh"]
+    E --> F
+    F --> G["Open a PR"]
+```
+
 1. Create a branch off `dev` (not `main` — `main` tracks released state).
 2. Make your change. Match the style of the surrounding code:
    - Python targets **3.11**, stdlib-only. No new third-party dependency
@@ -54,8 +65,11 @@ beyond the standard library.
 4. If your change affects a script's own configuration schema (new field,
    new JSON section) or anything the web UI reads, update
    `scripts/lab_schema` and the web UI in the **same** change — see
-   [Web UI (lab-builder)](README.md#web-ui-lab-builder). A schema change
-   that isn't reflected in the UI is treated as incomplete.
+   [Web UI (lab-builder)](README.md#web-ui-lab-builder).
+
+   > [!WARNING]
+   > A schema change that isn't reflected in the UI is treated as incomplete.
+
 5. Run the full test suite before opening a PR:
    ```shell
    tests/run_tests.sh
@@ -74,6 +88,15 @@ CI (`.github/workflows/ci.yml`) runs the same suite on every push and pull
 request, plus a couple of fast standalone checks (byte-compiling everything
 on Python 3.11, and confirming every add-on prints its schema) for quicker
 feedback than waiting on the full container run.
+
+> [!TIP]
+> If your change touches one of the documented [Examples](README.md#examples),
+> also run its real-hardware deploy+check test under `tests/examples/`
+> (`tests/examples/run_example.sh <name>`) before opening the PR — these need
+> a real KVM hypervisor, so they're not part of `tests/run_tests.sh`'s
+> automatic sweep, but they're the only thing that actually confirms the
+> example still deploys into a *working* cluster/VM, not just that
+> `setup_lab.py` exits 0. See [tests/examples/README.md](tests/examples/README.md).
 
 ## Commit messages
 

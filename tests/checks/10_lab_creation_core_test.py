@@ -23,6 +23,12 @@ import targets  # noqa: E402
 # this file) needs the REAL subprocess.run to actually shell out to bash.
 _real_subprocess_run = lc.subprocess.run
 
+# Same reasoning: targets.check_ssh_only_reachability itself gets
+# permanently reassigned to a lambda further down this file (mocking it
+# out for validate_lab_definition()'s own tests) — the Python-3.6-kwarg
+# regression test near the end of this file needs the REAL implementation.
+_real_check_ssh_only_reachability = targets.check_ssh_only_reachability
+
 # This test container has no local virsh/virt-install (see the file
 # header) — force run_libvirt_tool()'s local branch regardless, so the
 # mocked lc.subprocess.run below is what actually gets called (matching
@@ -92,6 +98,46 @@ check("ssh_run: check=False returns the result instead of raising", result.retur
 fake = FakeRun(responses=[("cat /etc/hostname", FakeCompleted(stdout="  myhost\n"))])
 lc.subprocess.run = fake
 check("ssh_output: strips stdout", lc.ssh_output("host1", "cat /etc/hostname") == "myhost")
+
+# ssh_run's optional `user` override (default stays "root") — added for
+# Harvester's default "rancher" admin user, whose root SSH is disabled by
+# Harvester's own default hardening.
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.ssh_run("host1", "echo hi")
+check("ssh_run: defaults to root@<hostname> when user is omitted", "root@host1" in fake.calls[0][0])
+
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.ssh_run("host1", "echo hi", user="rancher")
+check("ssh_run: user= overrides the SSH login name", "rancher@host1" in fake.calls[0][0])
+
+# ── purge_known_host: shared fix for a real, repeatedly-found bug ───────────
+# Extracted 2026-09-05 after fixing the same "REMOTE HOST IDENTIFICATION HAS
+# CHANGED" bug in 3 separate places (a reused lab IP's stale host key made
+# ssh_run() refuse a genuinely-answering, freshly-created VM outright).
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.purge_known_host("host1", "192.168.88.150")
+check("purge_known_host: calls ssh-keygen -R once per name given",
+      len(fake.calls) == 2
+      and "ssh-keygen -f" in fake.calls[0][0] and fake.calls[0][0].endswith("-R host1")
+      and fake.calls[1][0].endswith("-R 192.168.88.150"))
+
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.purge_known_host("", None, "real-host")
+check("purge_known_host: silently skips falsy names instead of shelling out for them",
+      len(fake.calls) == 1 and fake.calls[0][0].endswith("-R real-host"))
+
+fake = FakeRun(responses=[("ssh-keygen", FakeCompleted(returncode=1))])
+lc.subprocess.run = fake
+try:
+    lc.purge_known_host("nonexistent-host")
+    ok = True
+except Exception:
+    ok = False
+check("purge_known_host: never raises, even when ssh-keygen finds nothing to remove (exit 1)", ok)
 
 
 # ── ensure_lab_ssh_key / distribute_lab_ssh_key ──────────────────────────────
@@ -530,6 +576,42 @@ with _redirect_stdout(buf):
 check("validate_lab_definition: an unrecognized ISO_IMAGE is never warned about",
       "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
 
+# Regression test for a real bug reported live 2026-09-03: the Debian
+# "nocloud variant" pattern was a bare "nocloud" substring match, which
+# false-positived on Alibaba's own "aliyun_2_1903_x64_20G_nocloud_alibase_
+# *.qcow2" naming ("nocloud" means something else in Alibaba's own build
+# pipeline there) — the image genuinely has cloud-init (confirmed live via
+# virt-cat), but the old pattern would have wrongly warned it's
+# virt_customize-only. Fixed by requiring "debian" alongside "nocloud".
+lab_cloudinit_aliyun = _lab_def({
+    "common": dict(base_common, **{
+        "ISO_IMAGE": "aliyun_2_1903_x64_20G_nocloud_alibase_20230103.qcow2",
+        "config_method": "cloud-init",
+    }),
+    "nodes": {"vm1": {"myip": "192.168.1.84"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_cloudinit_aliyun, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: Alibaba Cloud Linux's own \"nocloud\" filename quirk doesn't "
+      "false-positive as Debian's nocloud (no-cloud-init) variant",
+      "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
+
+# ... but the real Debian nocloud variant still correctly warns (guards
+# against the fix above being too permissive in the other direction).
+lab_cloudinit_debian_nocloud = _lab_def({
+    "common": dict(base_common, **{
+        "ISO_IMAGE": "debian-12-nocloud-amd64.qcow2",
+        "config_method": "cloud-init",
+    }),
+    "nodes": {"vm1": {"myip": "192.168.1.85"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(lab_cloudinit_debian_nocloud, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: Debian's own nocloud variant (no cloud-init) still warns",
+      "is likely unsupported on ISO_IMAGE" in buf.getvalue())
+
 
 # ── config_method enum validation ────────────────────────────────────────────
 # Regression test for a real bug reported live 2026-09-02: a lab.json with
@@ -693,6 +775,31 @@ with tempfile.TemporaryDirectory() as tmp:
 check("prepare_cloud_init: instance-id/local-hostname are populated even when the caller "
       "doesn't pass _vm_name explicitly",
       "instance-id: vm1.mydemo.lab" in meta_data and "local-hostname: vm1.mydemo.lab" in meta_data)
+
+
+# ── check_ssh_only_reachability: must use 3.6-compatible subprocess.run() ───
+# Found in code review 2026-09-05: used capture_output=True, text=True --
+# Python 3.7+-only kwargs. This project's containerized test suite (and
+# even the real automation VM's own bare python3) runs Python 3.6, where
+# subprocess.run() rejects those two kwargs outright with a TypeError. Not
+# currently reachable from any bare-python3 entry point today, but a
+# landmine for a future one.
+def _py36_strict_run(args, **kwargs):
+    if "capture_output" in kwargs or "text" in kwargs:
+        raise TypeError("run() got an unexpected keyword argument (mimics Python 3.6)")
+    return FakeCompleted(stdout="ok\n")
+
+
+targets.subprocess.run = _py36_strict_run
+ssh_reach_error = None
+try:
+    result = _real_check_ssh_only_reachability("vm1.mydemo.lab")
+except TypeError as e:
+    ssh_reach_error = e
+check("check_ssh_only_reachability: never raises TypeError under Python-3.6-strict "
+      "subprocess.run kwargs", ssh_reach_error is None)
+check("check_ssh_only_reachability: still returns the correct True/False result "
+      "once past that", result is True)
 
 
 if failures:

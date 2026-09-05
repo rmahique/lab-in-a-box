@@ -38,6 +38,7 @@
 # templates/harvester-cluster.json.example for every key.
 __version__ = "fcbef10"
 
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -48,7 +49,10 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 
 import primary  # noqa: E402
 import services  # noqa: E402
-from lab_creation import log, die, run_libvirt_tool, check_ssh_conn, process_template  # noqa: E402
+from lab_creation import (  # noqa: E402
+    log, die, run_libvirt_tool, check_ssh_conn, process_template, ssh_run, purge_known_host,
+    yaml_scalar as _yaml_scalar,
+)
 
 # Real Harvester release-asset naming, confirmed via github.com/harvester/
 # harvester's own releases page — one ISO plus 3 separate boot files per
@@ -74,6 +78,88 @@ def _fetch_release_assets(version, dest_dir):
             die("failed to download {}: {}".format(url, e))
 
 
+# _yaml_scalar (used below) is lab_creation.yaml_scalar, imported above —
+# moved there 2026-09-05 after finding the identical unescaped-YAML-value
+# bug in lab_creation.prepare_install_iso()'s Ubuntu autoinstall
+# cloud-config, so both places share one implementation instead of two
+# copies of the same fix.
+
+
+def _build_system_settings_block(cluster_cfg):
+    """
+    Optional top-level `system_settings:` — a generic passthrough for any
+    Harvester Setting overridable at install time (docs.harvesterhci.io's
+    config reference lists this as a top-level key, alongside scheme_
+    version/token). Returns "" (nothing) when cluster.json's
+    "system_settings" is omitted, so this is a no-op unless the operator
+    opts in. See _apply_post_install_settings() below for the
+    post-install-only counterpart — which of Harvester's Settings actually
+    work at install time vs. only post-install isn't fully mapped out (see
+    TODO's "improvement of the Harvester installer" entry), so both
+    mechanisms are offered rather than guessing.
+    """
+    settings = cluster_cfg.get("system_settings")
+    if not settings:
+        return ""
+    lines = ["system_settings:"]
+    for key, value in settings.items():
+        lines.append("  {}: {}".format(key, _yaml_scalar(value)))
+    return "\n".join(lines) + "\n"
+
+
+def _build_os_extra_lines(cluster_cfg):
+    """
+    Optional os.* keys beyond what every cluster always sets (hostname/
+    ssh_authorized_keys/password/ntp_servers/dns_nameservers — handled
+    directly in _render_node_files, always present). Returns a fully-
+    indented block ending in its own trailing newline, or "" if nothing to
+    add — process_template() has no conditionals of its own, so this is
+    the same "build the block in Python, substitute one marker" pattern
+    the existing ssh_keys_block/dns_nameservers_block already use.
+    """
+    lines = []
+    environment = cluster_cfg.get("os_environment")
+    if environment:
+        lines.append("  environment:")
+        for key, value in environment.items():
+            lines.append("    {}: {}".format(key, _yaml_scalar(value)))
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def _build_install_extra_lines(cluster_cfg, node):
+    """
+    Optional install.* keys beyond what every cluster always sets. Same
+    block-substitution pattern as _build_os_extra_lines(). `node` supplies
+    the one genuinely per-node option (harvester_role) — deliberately a
+    different cluster.json key from the existing per-node "role"
+    (create/join, an install MODE) to avoid confusing the two: Harvester's
+    own "install.role" is a different axis entirely (default/management/
+    worker/witness — node classification within an already-decided
+    create/join cluster topology).
+    """
+    lines = []
+    if cluster_cfg.get("data_disk"):
+        lines.append("  data_disk: {}".format(cluster_cfg["data_disk"]))
+    if "wipe_all_disks" in cluster_cfg:
+        lines.append("  wipe_all_disks: {}".format(_yaml_scalar(bool(cluster_cfg["wipe_all_disks"]))))
+    for key in ("cluster_pod_cidr", "cluster_service_cidr", "cluster_dns"):
+        if cluster_cfg.get(key):
+            lines.append("  {}: {}".format(key, cluster_cfg[key]))
+    if node.get("harvester_role"):
+        lines.append("  role: {}".format(node["harvester_role"]))
+    # Real, high-value knob for THIS project specifically: Harvester
+    # defaults to a 3-replica StorageClass, which silently degrades (or
+    # never reaches Healthy) on a cluster with fewer than 3 nodes — exactly
+    # the shape of templates/harvester-cluster.json.example's own 2-node
+    # (create+join) sample.
+    replica_count = cluster_cfg.get("storage_class_replica_count")
+    if replica_count is not None:
+        lines.append("  harvester:")
+        lines.append("    storage_class:")
+        lines.append("      replica_count: {}".format(int(replica_count)))
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 def _render_node_files(cluster_cfg, node, http_base, web_root):
     """
     Render this node's own config-<name>.yaml (Harvester's install-config
@@ -90,6 +176,8 @@ def _render_node_files(cluster_cfg, node, http_base, web_root):
     version = cluster_cfg["harvester_version"]
     keys_block = "\n".join("  - {}".format(k) for k in cluster_cfg["ssh_authorized_keys"])
 
+    ntp_servers = cluster_cfg.get("ntp_servers") or ["0.suse.pool.ntp.org", "1.suse.pool.ntp.org"]
+
     common_vars = {
         "node_hostname": node["name"],
         "node_ip": node["ip"],
@@ -99,6 +187,10 @@ def _render_node_files(cluster_cfg, node, http_base, web_root):
         "harvester_iface": cluster_cfg["management_interface"],
         "harvester_netmask": cluster_cfg["netmask"],
         "harvester_gateway": cluster_cfg["gateway"],
+        "harvester_ntp_servers_block": "\n".join("  - {}".format(s) for s in ntp_servers),
+        "harvester_system_settings_block": _build_system_settings_block(cluster_cfg),
+        "harvester_os_extra_lines": _build_os_extra_lines(cluster_cfg),
+        "harvester_install_extra_lines": _build_install_extra_lines(cluster_cfg, node),
         # Required by Harvester itself for static IP, not merely
         # recommended: confirmed live 2026-08-30, the installer's own
         # config-validation step refuses to proceed at all ("Invalid
@@ -174,6 +266,18 @@ def _create_netboot_vm(node, cluster_cfg, config):
     virt_srv = cluster_cfg.get("hypervisor_virt_srv") or config.get("VIRT_SRV", "qemu:///system")
     vm_img_loc = cluster_cfg.get("vm_img_loc") or config.get("VM_IMG_LOC", "/var/lib/libvirt/images")
 
+    # Same known_hosts purge setup_lab.py/destroy_lab.py already do for every
+    # normal lab VM, applied here too: this project's lab IPs get reused
+    # across many disposable test VMs over time, so a stale host key from
+    # whatever PREVIOUSLY held this IP would otherwise make ssh_run() refuse
+    # to connect ("REMOTE HOST IDENTIFICATION HAS CHANGED") — confirmed live
+    # 2026-09-04, the first time anything in this script actually SSHed into
+    # a freshly-created node (_fetch_harvester_kubeconfig() below): the node
+    # itself was up and sshd was genuinely answering with a real host key,
+    # StrictHostKeyChecking=accept-new still refused it outright because an
+    # unrelated older VM's key for the same IP was already on file.
+    purge_known_host(node["ip"], node["name"])
+
     args = [
         "--name", node["name"], "--autostart",
         "--boot", "uefi,loader={0},loader.readonly=yes,loader.type=pflash,"
@@ -192,6 +296,78 @@ def _create_netboot_vm(node, cluster_cfg, config):
     r = run_libvirt_tool("virt-install", remote_host, virt_srv, args)
     if r.returncode != 0:
         die("virt-install failed for '{}'".format(node["name"]))
+
+
+def _fetch_harvester_kubeconfig(cluster_cfg, create_node):
+    """
+    Fetch a real kubeconfig from the 'create' node once the cluster is
+    Active, so _apply_post_install_settings() below can reach it via
+    kubectl — mirrors libs/backends.py's HarvesterBackend, which also
+    expects a local kubeconfig file (HARVESTER_KUBECONFIG) rather than
+    reaching the cluster any other way.
+
+    Harvester's default admin user is "rancher", not root — root SSH is
+    disabled by Harvester's own default hardening (confirmed live
+    2026-08-30 during HarvesterBackend's own live test: "PermitRootLogin
+    no, AllowGroups admin — root isn't in that group"). The kubeconfig
+    itself is the standard RKE2 path Harvester's underlying Kubernetes
+    distribution always writes — but "rancher" (though it has NOPASSWD:ALL
+    sudo — confirmed live 2026-09-04) can't read that root-owned 0600 file
+    directly; a first live-test attempt without `sudo` here got a plain
+    "Permission denied", not an SSH failure.
+
+    LIVE-TESTED 2026-09-04 against a real single-node cluster
+    (harvtest1.mydemo.lab, nuc6): the fetched kubeconfig's server: line was
+    genuinely https://127.0.0.1:6443 as assumed, the rewritten VIP:6443
+    address was genuinely reachable, and `kubectl get nodes` against it
+    came back Ready. Also surfaced a real, previously-latent gap this was
+    the first code path to ever trigger: _create_netboot_vm() never purged
+    stale known_hosts entries the way setup_lab.py/destroy_lab.py already
+    do for every normal lab VM — fixed there (see its own comment) once a
+    reused lab IP's old host key made ssh_run() refuse this connection
+    outright even though sshd was genuinely up and answering correctly.
+    """
+    kubeconfig_text = ssh_run(
+        create_node["ip"], "sudo cat /etc/rancher/rke2/rke2.yaml", user="rancher", capture=True).stdout
+    # rke2.yaml points at 127.0.0.1 by default — rewrite to the cluster's
+    # own VIP so the fetched kubeconfig is usable from the automation VM,
+    # not just from the node itself.
+    kubeconfig_text = kubeconfig_text.replace(
+        "https://127.0.0.1:6443", "https://{}:6443".format(cluster_cfg["vip"]))
+    dest = Path(cluster_cfg.get("kubeconfig_path") or
+                "/etc/lab_creation/harvester-{}.kubeconfig".format(cluster_cfg["harvester_version"]))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(kubeconfig_text)
+    dest.chmod(0o600)
+    return dest
+
+
+def _apply_post_install_settings(cluster_cfg, kubeconfig_path):
+    """
+    Apply cluster.json's optional "post_install_settings" dict as
+    harvesterhci.io/v1beta1 Setting objects — the post-install counterpart
+    to _build_system_settings_block()'s install-time passthrough, for
+    whichever Settings turn out not to be settable at install time. Same
+    "operator pre-configures it, we don't validate Setting semantics"
+    stance throughout this file.
+    """
+    settings = cluster_cfg.get("post_install_settings")
+    if not settings:
+        return
+    for name, value in settings.items():
+        manifest = (
+            "apiVersion: harvesterhci.io/v1beta1\n"
+            "kind: Setting\n"
+            "metadata:\n"
+            "  name: {}\n"
+            "value: {}\n"
+        ).format(name, _yaml_scalar(value))
+        log("- applying Harvester Setting '{}'".format(name))
+        r = subprocess.run(
+            ["kubectl", "--kubeconfig", str(kubeconfig_path), "apply", "-f", "-"],
+            input=manifest, universal_newlines=True)
+        if r.returncode != 0:
+            die("failed to apply Harvester Setting '{}'".format(name))
 
 
 def main():
@@ -297,6 +473,12 @@ def main():
         "(install + first-boot cluster bootstrap)".format(cluster_cfg["vip"]))
     check_ssh_conn(cluster_cfg["vip"], tcp_port=443, retry_interval=15, retry_limit=240)
     log("Harvester VIP is responding — check https://{}/ to confirm cluster health".format(cluster_cfg["vip"]))
+
+    if cluster_cfg.get("post_install_settings"):
+        create_node = next(n for n in cluster_cfg["nodes"] if n.get("role") == "create")
+        log("Fetching kubeconfig from '{}' to apply post-install settings".format(create_node["name"]))
+        kubeconfig_path = _fetch_harvester_kubeconfig(cluster_cfg, create_node)
+        _apply_post_install_settings(cluster_cfg, kubeconfig_path)
 
 
 if __name__ == "__main__":

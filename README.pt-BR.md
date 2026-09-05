@@ -21,13 +21,13 @@
 
 > *Esta é uma tradução da comunidade. A fonte de referência é o [README.md](README.md) (inglês) e pode estar mais atualizada do que esta página.*
 
-<p align="center"><em>Aponte para um arquivo JSON. Receba de volta um laboratório funcionando — VMs, DNS, Kubernetes e add-ons, tudo conectado.</em></p>
+<p align="center"><em>Aponte para um arquivo JSON ou YAML. Receba de volta um laboratório funcionando — VMs, DNS, Kubernetes e add-ons, tudo conectado.</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="Um dos NUCs usados para desenvolver e testar este projeto." /></kbd>
 </p>
 
-**lab-in-a-box** transforma uma única máquina física em uma fábrica de laboratórios autocontida: aponte-o para um arquivo JSON descrevendo as VMs, os clusters Kubernetes e o software desejados, e ele constrói tudo — DNS, provisionamento, subida do cluster e add-ons — sem que você precise mexer no `virt-install` ou no Ansible manualmente.
+**lab-in-a-box** transforma uma única máquina física em uma fábrica de laboratórios autocontida: aponte-o para um arquivo JSON ou YAML descrevendo as VMs, os clusters Kubernetes e o software desejados, e ele constrói tudo — DNS, provisionamento, subida do cluster e add-ons — sem que você precise mexer no `virt-install` ou no Ansible manualmente.
 
 ## Por que lab-in-a-box?
 
@@ -35,25 +35,25 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 Um arquivo JSON, um comando.**
-Descreva VMs, clusters Kubernetes (RKE2/K3s) e add-ons de forma declarativa; o `setup_lab.py` constrói tudo na ordem correta.
+`setup_lab.py` · **Um arquivo JSON/YAML, um comando.**
+Descreva VMs, clusters Kubernetes (RKE2/K3s) e add-ons de forma declarativa; ele constrói tudo na ordem correta.
 
-**🧩 41 add-ons prontos para uso.**
+`install_<addon>` · **41 add-ons prontos para uso.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Manager/Uyuni (chaves de ativação, RBAC, Content Lifecycle Management, integração com Ansible, e mais), aplicações de demonstração vulneráveis para treinamento de segurança, e mais.
 
-**🖥️ Uma interface web dinâmica.**
-O [lab-builder](#web-ui-lab-builder) gera formulários diretamente a partir do próprio esquema de cada add-on — adicione um campo a um script, e a interface o reconhece sem nenhuma mudança no frontend.
+[`lab-builder`](#web-ui-lab-builder) · **Uma interface web dinâmica.**
+Gera formulários diretamente a partir do próprio esquema de cada add-on — adicione um campo a um script, e a interface o reconhece sem nenhuma mudança no frontend.
 
 </td>
 <td width="50%" valign="top">
 
-**🌐 Consciente de múltiplos hipervisores.**
+`KVM_HOSTS` · **Consciente de múltiplos hipervisores.**
 Uma única definição de laboratório pode distribuir VMs entre vários hosts KVM, selecionados automaticamente por CPU/RAM/disco livres, ou fixados por nó.
 
-**🧪 Suíte de testes totalmente containerizada.**
-Cada verificação roda em seu próprio container `podman` descartável, integrada a um hook de pre-commit.
+`podman` · **Suíte de testes totalmente containerizada.**
+Cada verificação roda em seu próprio container descartável, integrada a um hook de pre-commit.
 
-**🔌 Provisionamento plugável.**
+`config_method` · **Provisionamento plugável.**
 Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` (distribuições antigas sem suporte a cloud-init/Ignition), ou uma instalação via ISO com script (AutoYaST/Kickstart/Preseed/AutoInstall).
 
 </td>
@@ -91,6 +91,17 @@ Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` 
 
 O sistema é construído em torno de uma **arquitetura de dois níveis**:
 
+```mermaid
+graph TB
+    Operator["Cliente do operador"] -->|"SSH / DNS / HTTP"| AutoVM
+    subgraph HV["Nó(s) hipervisor — KVM/QEMU"]
+        AutoVM["VM de automação<br/>DNS · HTTP · scripts · interface web"]
+        AutoVM -->|"virt-install / virsh"| VM1["VM do laboratório"]
+        AutoVM -->|"virt-install / virsh"| VM2["VM do laboratório"]
+        AutoVM -->|"virt-install / virsh"| VM3["VM do laboratório"]
+    end
+```
+
 ### Nó(s) hipervisor
 
 Uma ou mais máquinas físicas (bare-metal) executando KVM/QEMU. Cada uma hospeda as VMs do laboratório e guarda as imagens QCOW2 de origem em `/var/lib/libvirt/images/sources/`. Um NUC, uma workstation, ou qualquer máquina x86_64 capaz de rodar KVM serve. Laboratórios que precisam de mais capacidade do que uma única máquina podem se espalhar por **múltiplos hosts KVM** — veja [laboratórios multi-host](#multi-host-labs) abaixo.
@@ -117,6 +128,21 @@ As ferramentas de linha de comando e cada add-on são em Python 3.11, vivem em `
 <a id="how-it-works"></a>
 ## Como funciona
 
+### Pipeline de implantação
+
+O `setup_lab.py` executa uma sequência fixa de fases; as duas fases exclusivas do Kubernetes são completamente ignoradas em um laboratório somente de VMs (sem a seção `kclusters`):
+
+```mermaid
+flowchart LR
+    A["phase_services"] -->|"com kclusters"| C["phase_dns"]
+    A -->|"sem kclusters"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"com kclusters"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"sem kclusters"| H["phase_vm_addons"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+```
+
 ### Provisionamento de VMs
 
 Cada VM é criada assim:
@@ -135,6 +161,19 @@ O método de provisionamento é controlado por `config_method` no JSON do labora
 | `cloud-init` | ISO de cloud-init | openSUSE Leap, Ubuntu |
 | `virt_customize` | Modifica a QCOW2 diretamente no hipervisor (`virt-customize`) — não requer suporte a Ignition/cloud-init no convidado | CentOS 7, Debian/RHEL antigos, ou qualquer imagem sem Ignition/cloud-init |
 | `install_iso` | Instalação com script a partir de uma ISO de instalador real (AutoYaST, Kickstart, Preseed ou AutoInstall, conforme `install_type`) | Distribuições sem nenhuma outra via de provisionamento |
+
+### Backends de VM
+
+Qual tecnologia de hipervisor realmente cria um nó é decidido por uma interface `VMBackend` intercambiável, resolvida uma vez por nó (`backend: harvester` na configuração daquele nó seleciona o `HarvesterBackend`; qualquer outro valor usa o `LibvirtBackend` por padrão) — todo add-on e script de orquestração conversa com o backend resolvido da mesma forma, seja ele qual for:
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "padrão" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["virt-install / virsh<br/>em um hipervisor KVM"]
+    HB --> KV["KubeVirt VirtualMachine<br/>em um cluster Harvester"]
+```
 
 ### Configuração do Kubernetes
 
@@ -171,6 +210,15 @@ Cada script carrega sua configuração nesta ordem:
 
 <a id="quick-start"></a>
 ## Início rápido
+
+```mermaid
+flowchart TD
+    S1["1. Preparar o sistema operacional do hipervisor"] --> S2["2. Preparar os scripts de instalação"]
+    S2 --> S3["3. Configurar e executar a configuração do nó KVM"]
+    S3 --> S4["4. Configurar a VM de automação"]
+    S4 --> S5["5. Apontar o DNS do cliente para a VM de automação"]
+    S5 --> S6["6. Construir seu primeiro laboratório"]
+```
 
 ### Requisitos
 
@@ -319,7 +367,18 @@ Para um deployment de produção (Apache, ou um serviço standalone systemd/inde
 <a id="lab-definition-format"></a>
 ## Formato de definição do laboratório
 
-Laboratórios são definidos como arquivos JSON. O formato atual suporta múltiplos clusters Kubernetes por laboratório (`kclusters`); veja `examples/cluster.json.template` para o formato legado de cluster único (`cluster`).
+Laboratórios são definidos como arquivos JSON ou YAML (detectado automaticamente — veja a nota abaixo). O formato atual suporta múltiplos clusters Kubernetes por laboratório (`kclusters`); veja `examples/cluster.json.template` para o formato legado de cluster único (`cluster`).
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>por VM: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>padrões compartilhados: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["uma seção por add-on<br/>ex.: rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {
@@ -367,6 +426,52 @@ Laboratórios são definidos como arquivos JSON. O formato atual suporta múltip
   }
 }
 ```
+
+<details>
+<summary>O mesmo laboratório, em YAML</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" ou "agent"
+    kcluster: cluster1          # a qual entrada de kclusters este nó pertence
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi (padrão), firmware=bios, bios, uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" ou "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 Campos opcionais no nível do nó:
 
@@ -612,8 +717,10 @@ Isso não muda nada no fluxo padrão do [Início rápido](#quick-start) se você
    _network_mode="nat"
    _nat_network_name="labnat"          # valor padrão mostrado — uma nova rede virtual do libvirt, não a LAN real do seu host
    _nat_network_cidr="192.168.150.0/24" # valor padrão mostrado
-   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # valor padrão mostrado — <externa>:<interna>/<protocolo>
+   _nat_forwarded_ports="22:22/TCP 80:80/TCP 443:443/TCP"  # valor padrão mostrado — "<porta no IP REAL do HIPERVISOR>:<porta na VM de automação>/<protocolo>"
    ```
+
+   Isso encaminha as portas 22/80/443 no **IP real e acessível externamente do hipervisor** (`<externa>`) para as mesmas portas no **endereço NAT privado da VM de automação** (`<interna>`) — neste ponto, a VM de automação é a única coisa ouvindo nessa rede privada, então "interna" sempre significa "na VM de automação" aqui. (O passo 5, mais abaixo, reutiliza exatamente essa mesma sintaxe `<externa>:<interna>/<protocolo>` para encaminhar para uma VM do *lab* em vez disso, assim que uma existir — ali, "interna" passa a significar o endereço NAT privado dessa VM, não o da VM de automação.)
 
 2. **Execute a configuração exatamente como sempre:**
 
@@ -688,6 +795,9 @@ install_longhorn --schema yaml      # ...ou YAML
 
 Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O script `install_<name>` correspondente precisa estar no `PATH`.
 
+<sub>Ir para: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Segurança &amp; conformidade</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento &amp; bancos de dados</a> · <a href="#addons-cicd">CI/CD &amp; ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização &amp; demos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Plataforma Kubernetes &amp; GitOps</strong></summary>
 
@@ -708,6 +818,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Segurança &amp; conformidade</strong></summary>
 
@@ -724,6 +835,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -737,6 +849,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Armazenamento &amp; bancos de dados</strong></summary>
 
@@ -749,6 +862,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD &amp; ferramentas de desenvolvimento</strong></summary>
 
@@ -761,6 +875,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>IA / ML</strong></summary>
 
@@ -773,6 +888,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualização &amp; demos</strong></summary>
 

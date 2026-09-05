@@ -1,0 +1,44 @@
+{
+  "nodes": {
+    "node101.mydemo.lab": {
+      "myip":  "192.168.88.101",
+      "mymac": "34:8a:b1:4b:1a:c1",
+      "INSTALL_RKE2_TYPE": "server",
+      "kcluster": "cluster1"
+    },
+    "node102.mydemo.lab": {
+      "myip":  "192.168.88.102",
+      "mymac": "34:8a:b1:4b:1a:c2",
+      "INSTALL_RKE2_TYPE": "agent",
+      "kcluster": "cluster1"
+    }
+  },
+  "common": {
+    "ISO_IMAGE":  "SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2",
+    "VM_MEM":     "24576",
+    "VM_DSK":     "80",
+    "VM_CPU":     "6",
+    "VM_BOOT":    "uefi",
+    "mymask":     "24",
+    "mygw":       "192.168.88.1",
+    "mydns":      "192.168.88.73",
+    "mynet_reverse": "88.168.192"
+  },
+  "kclusters": {
+    "cluster1": {
+      "clu_type":  "rke2",
+      "clu_rel":   "stable",
+      "mydomain":  "mydemo.lab",
+      "addons": ["rancher", "longhorn"]
+    }
+  },
+  "rancher": {
+    "rancher_shorthn":   "rancher",
+    "rancher_rel":       "rancher-prime",
+    "rancher_repo_url":  "https://charts.rancher.com/server-charts/prime",
+    "rancher_helm_rel":  "rancher",
+    "rancher_helm_chart": "rancher-prime/rancher",
+    "rancher_Version":   "--version 2.13.3",
+    "cert_manager_ver":  "--version v1.14.4"
+  }
+}
