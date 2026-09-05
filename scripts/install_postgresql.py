@@ -51,6 +51,7 @@ PLUGIN = {
 }
 
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -63,6 +64,26 @@ import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
 from lab_creation import setup_helm, helm_repo_add, ssh_run, ssh_output, reboot_vm, check_ssh_conn, die  # noqa: E402
+
+
+def _digits_only(cfg, key, default, label):
+    """
+    Read an addon-config value that must be a bare integer
+    (postgresql_pg_version / postgresql_port) and defensively validate it —
+    found in code review 2026-09-05: both are interpolated unquoted,
+    directly into remote shell commands and package/service/unit names all
+    over this file (e.g. "postgresql{pg_ver}-setup", "port = {port}"), and
+    _validate()'s own vport()/isdigit() checks are never actually invoked
+    by the real deploy pipeline (setup_lab.py only calls the VM-level
+    validate_lab_definition(), never each addon's own --validate) — so a
+    value containing a shell metacharacter would otherwise reach a real
+    remote shell unescaped. Dies with a clear error instead of silently
+    interpolating something dangerous.
+    """
+    v = str(cfg.get(key) or default)
+    if not re.match(r'^[0-9]+$', v):
+        die("postgresql.{} = '{}' is invalid — must be a bare number".format(label, v))
+    return v
 
 
 def _validate(v):
@@ -122,7 +143,7 @@ def pg_configure_os(hostname, cfg, pg_ver):
     """Common post-install: set password, configure pg_hba and listen_addresses. Mirrors _pg_configure_os (bash)."""
     pw = cfg.get("postgresql_password") or "postgres123"
     listen = cfg.get("postgresql_listen") or "*"
-    port = cfg.get("postgresql_port") or "5432"
+    port = _digits_only(cfg, "postgresql_port", "5432", "postgresql_port")
     db = cfg.get("postgresql_db") or "postgres"
     user = cfg.get("postgresql_user") or "postgres"
 
@@ -168,7 +189,7 @@ def pg_configure_os(hostname, cfg, pg_ver):
 
 def pg_install_suse(hostname, cfg):
     """Mirrors _pg_install_suse (bash)."""
-    pg_ver = cfg.get("postgresql_pg_version") or "16"
+    pg_ver = _digits_only(cfg, "postgresql_pg_version", "16", "postgresql_pg_version")
     print("- Installing PostgreSQL {} on {} (SUSE/openSUSE)".format(pg_ver, hostname))
 
     r = ssh_run(hostname, "zypper install -y --no-confirm postgresql{}-server postgresql{} 2>&1".format(
@@ -200,7 +221,7 @@ def pg_install_suse(hostname, cfg):
 
 def pg_install_slemicro(hostname, cfg, virt_srv):
     """Mirrors _pg_install_slemicro (bash)."""
-    pg_ver = cfg.get("postgresql_pg_version") or "16"
+    pg_ver = _digits_only(cfg, "postgresql_pg_version", "16", "postgresql_pg_version")
     print("- Installing PostgreSQL {} on {} (SLE Micro — transactional)".format(pg_ver, hostname))
 
     r = ssh_run(hostname, "transactional-update --quiet pkg install -y postgresql{}-server postgresql{} 2>&1".format(
@@ -234,7 +255,7 @@ def pg_install_slemicro(hostname, cfg, virt_srv):
 
 def pg_install_rhel(hostname, cfg, os_info):
     """Mirrors _pg_install_rhel (bash)."""
-    pg_ver = cfg.get("postgresql_pg_version") or "16"
+    pg_ver = _digits_only(cfg, "postgresql_pg_version", "16", "postgresql_pg_version")
     print("- Installing PostgreSQL {} on {} (RHEL/CentOS family)".format(pg_ver, hostname))
 
     el_ver = os_info["ver_major"]
@@ -263,7 +284,7 @@ def pg_install_rhel(hostname, cfg, os_info):
             "postgresql{pg_ver}-setup initdb 2>/dev/null || true".format(pg_ver=pg_ver), check=False)
     ssh_run(hostname, "systemctl enable --now postgresql-{}.service".format(pg_ver))
 
-    port = cfg.get("postgresql_port") or "5432"
+    port = _digits_only(cfg, "postgresql_port", "5432", "postgresql_port")
     ssh_run(hostname, (
         "if systemctl is-active firewalld &>/dev/null; then\n"
         "    firewall-cmd --permanent --add-port={}/tcp\n"
@@ -278,7 +299,7 @@ def pg_install_rhel(hostname, cfg, os_info):
 
 def pg_install_debian(hostname, cfg):
     """Mirrors _pg_install_debian (bash)."""
-    pg_ver = cfg.get("postgresql_pg_version") or "16"
+    pg_ver = _digits_only(cfg, "postgresql_pg_version", "16", "postgresql_pg_version")
     print("- Installing PostgreSQL {} on {} (Ubuntu/Debian family)".format(pg_ver, hostname))
 
     ssh_run(hostname, (
@@ -300,7 +321,7 @@ def pg_install_debian(hostname, cfg):
               file=sys.stderr)
         sys.exit(1)
 
-    port = cfg.get("postgresql_port") or "5432"
+    port = _digits_only(cfg, "postgresql_port", "5432", "postgresql_port")
     ssh_run(hostname, (
         "if command -v ufw &>/dev/null && ufw status | grep -q 'Status: active'; then\n"
         "    ufw allow {}/tcp\n"

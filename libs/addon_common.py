@@ -84,6 +84,32 @@ class Validator:
             self.errors.append("[ERROR] {}.{}='{}': must be a port number".format(section, field, v))
 
 
+def require_k8s_name(cfg, field, default):
+    """
+    Read an addon-config value used as (or interpolated into) a Kubernetes
+    namespace/resource name, and validate it at RUNTIME against the same
+    lowercase-alphanumeric-plus-hyphens shape Validator.vns() checks.
+
+    Found in code review 2026-09-05: many install_<addon>.py scripts read a
+    "*_ns" (or similarly-shaped resource-name) config value and interpolate
+    it, unquoted, directly into remote kubectl/shell commands run over
+    ssh_run() — and Validator.vns()'s own format check is never actually
+    invoked by the real deploy pipeline (setup_lab.py only calls the
+    VM-level validate_lab_definition(), never each addon's own --validate).
+    A value containing a shell metacharacter would otherwise reach a real
+    remote shell unescaped. Exits with a clear error instead of silently
+    interpolating something dangerous — mirrors lab_creation.die()'s
+    message style, but kept dependency-free here (addon_common has never
+    imported lab_creation) rather than adding a new inter-lib coupling.
+    """
+    v = str(cfg.get(field) or default)
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', v):
+        print("[ERROR] {} = '{}' is invalid — must be a valid Kubernetes name "
+              "(lowercase alphanumeric and hyphens only)".format(field, v), file=sys.stderr)
+        sys.exit(1)
+    return v
+
+
 def run_validate(json_path, check_fn):
     """
     Load json_path (JSON or YAML, auto-detected — see primary.try_load_definition),

@@ -38,8 +38,14 @@ _TEMPLATES = ("kustomization.yaml", "mysql_install.yml", "wordpress_deployment.y
 
 def setup_wordpress(hostname, templ_addons_loc, wordpress_cfg):
     """Delete any pre-existing resources, then render+apply the wordpress manifests. Mirrors setup_wordpress (bash)."""
-    ns = wordpress_cfg.get("wordpress_ns") or "wordpress"
-    name = wordpress_cfg.get("wordpress_name") or "wordpress"
+    # wordpress_ns/wordpress_name are interpolated unquoted into the remote
+    # kubectl command below (and this script's own --validate block, per
+    # the comment in main(), never actually calls any of its validators —
+    # found in code review 2026-09-05), so validate them here at runtime
+    # instead: a value with a shell metacharacter would otherwise reach a
+    # real remote shell unescaped.
+    ns = ac.require_k8s_name(wordpress_cfg, "wordpress_ns", "wordpress")
+    name = ac.require_k8s_name(wordpress_cfg, "wordpress_name", "wordpress")
 
     ssh_run(hostname,
             "kubectl delete -n {ns} Service/{n} PersistentVolumeClaim/mysql-pv-claim "

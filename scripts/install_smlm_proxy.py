@@ -67,6 +67,7 @@ PLUGIN = {
     "aux_services": [],
 }
 
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -118,7 +119,7 @@ def setup_smlm_proxy_traefik(hostname, clu_type, cfg):
 
 def setup_smlm_proxy_prereqs(hostname, cfg):
     """Mirrors setup_smlm_proxy_prereqs (bash)."""
-    ns = cfg.get("smlm_proxy_ns") or "uyuni-proxy"
+    ns = ac.require_k8s_name(cfg, "smlm_proxy_ns", "uyuni-proxy")
 
     if (cfg.get("smlm_proxy_storage_class") or "") == "longhorn":
         k8s.set_longhorn_overprovisioning(hostname, cfg.get("smlm_proxy_lh_overprovision") or "500")
@@ -169,7 +170,7 @@ def generate_smlm_proxy_config(hostname, cfg):
     `kubectl exec` on the uyuni deployment.
     """
     srv_node = cfg.get("smlm_proxy_server_node") or cfg.get("smlm_proxy_server", "")
-    srv_ns = cfg.get("smlm_proxy_server_ns") or "uyuni-server"
+    srv_ns = ac.require_k8s_name(cfg, "smlm_proxy_server_ns", "uyuni-server")
     srv_ssh_base = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-q", "root@{}".format(srv_node)]
 
     print("# Generating the proxy configuration on the SMLM server ('{}' via '{}')".format(
@@ -179,15 +180,21 @@ def generate_smlm_proxy_config(hostname, cfg):
     max_cache = cfg.get("smlm_proxy_max_cache") or "2048"
     email = cfg.get("smlm_proxy_email") or "root@{}".format(cfg.get("smlm_proxy_fqdn", ""))
 
-    remote_cmd = (
-        "kubectl exec -n {ns} deploy/uyuni -c uyuni -- "
-        "spacecmd -q -u '{admin_user}' -p '{admin_pass}' -- "
-        "'proxy_container_config_nossl -p {port} -o /tmp/smlm-proxy-config.tar.gz "
-        "{fqdn} {server} {max_cache} {email}'"
-    ).format(
-        ns=srv_ns, admin_user=cfg.get("smlm_proxy_admin_user", ""), admin_pass=cfg.get("smlm_proxy_admin_pass", ""),
+    # admin_user/admin_pass/fqdn/server/email are free-text addon-config
+    # values with no format validation at all — hand-rolled single quotes
+    # here (found in code review 2026-09-05) broke, or could be injected
+    # through, this remote command the moment any of them contained an
+    # embedded single quote. shlex.quote() escapes correctly even nested
+    # inside other quoted shell words (unlike a bare "'{}'".format(...)).
+    inner_cmd = "proxy_container_config_nossl -p {port} -o /tmp/smlm-proxy-config.tar.gz {fqdn} {server} {max_cache} {email}".format(
         port=ssh_port, fqdn=cfg.get("smlm_proxy_fqdn", ""), server=cfg.get("smlm_proxy_server", ""),
         max_cache=max_cache, email=email,
+    )
+    remote_cmd = "kubectl exec -n {ns} deploy/uyuni -c uyuni -- spacecmd -q -u {admin_user} -p {admin_pass} -- {inner}".format(
+        ns=srv_ns,
+        admin_user=shlex.quote(cfg.get("smlm_proxy_admin_user", "")),
+        admin_pass=shlex.quote(cfg.get("smlm_proxy_admin_pass", "")),
+        inner=shlex.quote(inner_cmd),
     )
     r = subprocess.run(srv_ssh_base + [remote_cmd], check=False)
     if r.returncode != 0:
@@ -236,7 +243,7 @@ def generate_smlm_proxy_config(hostname, cfg):
 
 def setup_smlm_proxy(hostname, definition, clu_name, clu_type, mydomain, cfg):
     """Mirrors setup_smlm_proxy (bash)."""
-    ns = cfg.get("smlm_proxy_ns") or "uyuni-proxy"
+    ns = ac.require_k8s_name(cfg, "smlm_proxy_ns", "uyuni-proxy")
     rel = cfg.get("smlm_proxy_rel") or "uyuni-proxy"
     chart = "oci://{}/{}".format(cfg.get("smlm_proxy_registry") or "registry.suse.com",
                                   cfg.get("smlm_proxy_chart") or "suse/multi-linux-manager/5.2/proxy-helm")

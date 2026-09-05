@@ -4,6 +4,7 @@
 # fixed in the same session. No live host needed here — SSH/subprocess are
 # mocked. Run from 18_live_bugfixes.sh, in its own container — see
 # tests/run_tests.sh.
+import shlex
 import socket
 import sys
 import tempfile
@@ -18,6 +19,11 @@ import lab_creation as lc  # noqa: E402
 
 sys.path.insert(0, str(_REPO / "scripts"))
 import install_uyuni  # noqa: E402
+import install_smlm  # noqa: E402
+import install_postgresql  # noqa: E402
+import install_struts_demo  # noqa: E402
+import install_wordpress  # noqa: E402
+import install_smlm_proxy  # noqa: E402
 
 # This test container has no local virsh/virt-install — force
 # run_libvirt_tool()'s local branch so the mocked subprocess.run below is
@@ -774,6 +780,114 @@ install_uyuni.run_clm_actions(
     ]})
 check("run_clm_actions: runs build then promote in order",
       calls["trigger"] == [("build", "proj"), ("promote", "proj", "dev")])
+
+
+# ── install_smlm.main() must not crash with NameError on its normal path ───
+# Found in code review 2026-09-05, confirmed by direct execution: main()
+# unconditionally assigned to _DEFINITION[0]/_CLU_TYPE[0]/_MYDOMAIN[0] —
+# three names never declared anywhere else in the file (verified by
+# repo-wide grep) and never read anywhere either, a pure porting leftover.
+# Every single normal invocation of `install_smlm.py <lab.json>` raised
+# "NameError: name '_DEFINITION' is not defined" right after resolving the
+# target node, before ever reaching the real install logic. Removed the
+# three dead (write-only, unread) lines entirely.
+with tempfile.TemporaryDirectory() as tmp:
+    smlm_json = Path(tmp) / "lab.json"
+    smlm_json.write_text(
+        '{"common": {}, "nodes": {"srv1.mydemo.lab": {"myip": "10.0.0.1", "kcluster": "c1", '
+        '"INSTALL_RKE2_TYPE": "server"}}, "kclusters": {"c1": {"clu_type": "rke2", '
+        '"mydomain": "mydemo.lab"}}, "smlm": {"smlm_fqdn": "smlm.mydemo.lab", '
+        '"smlm_scc_user": "u", "smlm_scc_password": "p"}}'
+    )
+    install_smlm.setup_helm = lambda *a, **kw: None
+    install_smlm.setup_smlm_traefik = lambda *a, **kw: None
+    install_smlm.ssh_run = lambda *a, **kw: FakeResult()  # setup_smlm_prereqs's own direct calls
+    install_smlm.k8s.ssh_run = lambda *a, **kw: FakeResult()  # ...and its k8s.create_basic_auth_secret() calls
+    smlm_setup_calls = []
+    install_smlm.setup_smlm = lambda *a, **kw: smlm_setup_calls.append(a)
+    old_argv = sys.argv
+    sys.argv = ["install_smlm.py", str(smlm_json)]
+    smlm_error = None
+    try:
+        install_smlm.main()
+    except Exception as e:  # noqa: BLE001 — we need to see exactly what (if anything) escapes
+        smlm_error = e
+    finally:
+        sys.argv = old_argv
+check("install_smlm.main(): no longer raises NameError on its normal (non-flag) path",
+      not isinstance(smlm_error, NameError))
+check("install_smlm.main(): actually reaches setup_smlm() (proves it got all the way "
+      "through the previously-crashing segment, not just past an earlier early-return)",
+      len(smlm_setup_calls) == 1)
+
+
+# ── install_postgresql._digits_only(): guards postgresql_port/pg_version ───
+# Found in code review 2026-09-05: both were interpolated unquoted into
+# remote shell commands (package/service/unit names, "port = {port}") all
+# over this file, and _validate()'s own checks are never actually invoked
+# by the real deploy pipeline.
+check("_digits_only: a plain digit string passes through unchanged",
+      install_postgresql._digits_only({"p": "5432"}, "p", "1", "label") == "5432")
+check("_digits_only: a missing value falls back to the given default",
+      install_postgresql._digits_only({}, "p", "16", "label") == "16")
+
+_digits_only_died = False
+try:
+    install_postgresql._digits_only({"p": "16; rm -rf /"}, "p", "1", "label")
+except SystemExit:
+    _digits_only_died = True
+check("_digits_only: a value with a shell metacharacter dies rather than being "
+      "returned for interpolation into a remote command",
+      _digits_only_died)
+
+
+# ── install_struts_demo/install_wordpress: struts_demo_ns/wordpress_ns must
+# be validated before ever reaching a remote kubectl command ───────────────
+# Found in code review 2026-09-05: neither script had a _validate() at all
+# (confirmed by grep), so struts_demo_ns/name and wordpress_ns/name reached
+# "kubectl delete -n {ns} ..." completely unvalidated and unquoted.
+struts_ssh_calls = []
+install_struts_demo.ssh_run = lambda *a, **kw: struts_ssh_calls.append(a)
+_struts_died = False
+try:
+    install_struts_demo.setup_struts_demo("host1", "/tmpl", {"struts_demo_ns": "bad;ns"})
+except SystemExit:
+    _struts_died = True
+check("setup_struts_demo: a malicious struts_demo_ns exits before ever calling ssh_run",
+      _struts_died and not struts_ssh_calls)
+
+wordpress_ssh_calls = []
+install_wordpress.ssh_run = lambda *a, **kw: wordpress_ssh_calls.append(a)
+_wordpress_died = False
+try:
+    install_wordpress.setup_wordpress("host1", "/tmpl", {"wordpress_name": "bad;name"})
+except SystemExit:
+    _wordpress_died = True
+check("setup_wordpress: a malicious wordpress_name exits before ever calling ssh_run",
+      _wordpress_died and not wordpress_ssh_calls)
+
+
+# ── install_smlm_proxy.generate_smlm_proxy_config(): nested spacecmd command
+# must be built with shlex.quote(), not hand-rolled single quotes ──────────
+# Found in code review 2026-09-05: admin_user/admin_pass/fqdn/server/email
+# are free-text addon-config values with no format validation at all, and
+# were embedded via hand-rolled single quotes that an embedded single quote
+# in any of them would have broken out of.
+proxy_subproc_calls = []
+install_smlm_proxy.subprocess.run = lambda args, **kw: proxy_subproc_calls.append(args) or FakeResult(returncode=1)
+proxy_cfg = {
+    "smlm_proxy_server_node": "smlm.mydemo.lab", "smlm_proxy_server_ns": "uyuni-server",
+    "smlm_proxy_admin_user": "it's-admin", "smlm_proxy_admin_pass": "pass",
+    "smlm_proxy_fqdn": "proxy.mydemo.lab", "smlm_proxy_server": "smlm.mydemo.lab",
+}
+try:
+    install_smlm_proxy.generate_smlm_proxy_config("proxy1.mydemo.lab", proxy_cfg)
+except SystemExit:
+    pass
+remote_cmd = proxy_subproc_calls[0][-1]
+check("generate_smlm_proxy_config: an embedded single quote in admin_user doesn't break "
+      "out of the remote command's own shell quoting (round-trips through shlex correctly)",
+      shlex.split(remote_cmd)[shlex.split(remote_cmd).index("-u") + 1] == "it's-admin")
 
 
 if failures:
