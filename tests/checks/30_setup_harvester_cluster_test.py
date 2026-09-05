@@ -6,7 +6,6 @@
 # against the real shipped templates, so a real substitution bug would
 # still be caught. Run from 30_setup_harvester_cluster.sh, in its own
 # container — see tests/run_tests.sh.
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -216,6 +215,42 @@ with tempfile.TemporaryDirectory() as tmp:
     config_text = (web_root / "config-harvester2.mydemo.lab.yaml").read_text()
     check("join config also gets the optional install.* extra-lines block",
           "replica_count: 1" in config_text)
+
+# ── _yaml_scalar(): a value's own quotes/backslashes/newlines must not corrupt
+#    or inject into the rendered YAML ──────────────────────────────────────
+# Found live 2026-09-05: without escaping, a system_settings value ending in
+# a literal newline injected a brand-new, unrelated top-level `install:` key
+# into the document — not just a cosmetic corruption, a real YAML-injection
+# bug (this project's own cluster.json is normally operator-controlled, but
+# nothing about _yaml_scalar() itself should silently trust that).
+check('_yaml_scalar: embedded double-quotes are escaped, not passed through raw',
+      shc._yaml_scalar('a"b') == '"a\\"b"')
+check('_yaml_scalar: embedded backslashes are escaped (before quotes, so the '
+      'escaping itself cannot be escaped away)',
+      shc._yaml_scalar('a\\b') == '"a\\\\b"')
+check('_yaml_scalar: embedded newlines/carriage-returns are escaped, not left literal',
+      shc._yaml_scalar('a\nb\rc') == '"a\\nb\\rc"')
+
+with tempfile.TemporaryDirectory() as tmp:
+    web_root = Path(tmp)
+    malicious = 'x"\ninstall:\n  wipe_all_disks: true\n#'
+    injection_cfg = dict(_CLUSTER_CFG, system_settings={"backup-target": malicious})
+    shc._render_node_files(injection_cfg, _CREATE_NODE, "http://10.0.0.1/lab_creation/harvester/v1.7.1", web_root)
+    config_text = (web_root / "config-harvester1.mydemo.lab.yaml").read_text()
+    if _has_yaml:
+        parsed = _yaml.safe_load(config_text)
+        check("a value containing a quote+newline is preserved as DATA, not parsed as new YAML "
+              "structure — install.mode must still be 'create', not overwritten/injected",
+              parsed["install"]["mode"] == "create"
+              and parsed["system_settings"]["backup-target"] == malicious)
+        check("no stray 'wipe_all_disks' KEY got injected into install: (checked structurally, "
+              "not textually — the escaped malicious value legitimately contains that substring "
+              "as inert string data, so a text search would always 'find' it)",
+              "wipe_all_disks" not in parsed["install"] and "wipe_all_disks" not in parsed)
+    else:
+        check("the malicious value's own literal newline never appears un-escaped in the "
+              "rendered YAML (substring check, no pyyaml)",
+              "\ninstall:\n  wipe_all_disks: true" not in config_text)
 
 # ── _create_netboot_vm(): correct disk-before-network boot order, no OS image ──
 captured_calls = []

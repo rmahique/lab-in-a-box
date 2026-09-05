@@ -82,12 +82,22 @@ def _yaml_scalar(value):
     blocks below — bool/int/float unquoted, everything else double-quoted.
     Deliberately simple (flat scalars only, no nested structures) — same
     "operator pre-configures it, we don't own the semantics" stance as
-    HARVESTER_NETWORK/Multus in libs/backends.py."""
+    HARVESTER_NETWORK/Multus in libs/backends.py.
+
+    A string value's own backslash/quote/newline characters are escaped
+    per YAML's double-quoted-scalar rules — confirmed live 2026-09-05 that
+    without this, a value containing so much as an embedded quote silently
+    corrupts the rendered YAML, and one with an embedded newline can
+    inject entirely new, unrelated top-level keys into the document (a
+    system_settings value ending in `"\ninstall:\n  wipe_all_disks: true`
+    really did add a real install.wipe_all_disks: true key to the config)."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
-    return '"{}"'.format(value)
+    escaped = (str(value).replace("\\", "\\\\").replace('"', '\\"')
+               .replace("\n", "\\n").replace("\r", "\\r"))
+    return '"{}"'.format(escaped)
 
 
 def _build_system_settings_block(cluster_cfg):
