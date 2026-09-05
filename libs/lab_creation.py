@@ -727,6 +727,35 @@ def ssh_output(hostname, cmd):
     return ssh_run(hostname, cmd, capture=True).stdout.strip()
 
 
+def purge_known_host(*names):
+    """
+    Remove any stale SSH host-key entries for the given hostname(s)/IP(s)
+    from this user's known_hosts, before the first real connection to a
+    freshly (re)created VM. This project's lab IPs get reused across many
+    disposable test VMs over time — without this, ssh_run()'s
+    StrictHostKeyChecking=accept-new still refuses a brand-new VM outright
+    ("REMOTE HOST IDENTIFICATION HAS CHANGED") whenever its address was
+    previously held by any other VM, even though the new one is genuinely
+    up and answering correctly.
+
+    Extracted 2026-09-05 after fixing the same class of bug in 3 separate
+    places (setup_lab.py/destroy_lab.py already had this inline;
+    setup_harvester_cluster.py's _create_netboot_vm() and
+    build_lab_usb.py's lab-host VM bootstrap both needed it added) — past
+    the point where duplicating it a 4th time made sense.
+
+    Best-effort: a name with no existing entry is a silent no-op (matches
+    ssh-keygen's own exit-code-1-on-nothing-to-remove behavior), never
+    raises.
+    """
+    known_hosts = str(Path.home() / ".ssh" / "known_hosts")
+    for name in names:
+        if not name:
+            continue
+        subprocess.run(["ssh-keygen", "-f", known_hosts, "-R", name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+
 def _has_local_binary(binary):
     """Thin shutil.which() wrapper so tests can force run_libvirt_tool()'s
     local-vs-SSH-fallback branch deterministically (patch this one name)

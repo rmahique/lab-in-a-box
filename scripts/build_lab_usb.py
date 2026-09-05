@@ -29,6 +29,7 @@
 __version__ = "__LABVERSION__"
 
 import ipaddress
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,7 +45,7 @@ from lab_creation import (  # noqa: E402
     log, die, ssh_run, ssh_output, run_libvirt_tool, check_ssh_conn,
     prepare_cloud_init, copy_to_hypervisor,
     total_lab_resources, ensure_lab_ssh_key, distribute_lab_ssh_key,
-    _generate_unused_mac,
+    _generate_unused_mac, purge_known_host,
 )
 
 # Registration-free base OS for the lab-host VM specifically — it's meant to
@@ -89,6 +90,37 @@ _DISK_OVERHEAD_GIB = 80
 _NESTED_AUTOMATION_IP = "192.168.150.2"
 _NAT_NETWORK_NAME = "labnat"
 _NAT_NETWORK_CIDR = "192.168.150.0/24"
+
+
+def _find_repo_root():
+    """
+    Locate the full lab-in-a-box git checkout — needed to copy
+    setup_demo_server/+libs/ onto the lab-host VM and to rsync the whole
+    tree onto the nested automation VM. Unlike every other script here,
+    this one needs sibling directories install_automation_node_scripts.sh
+    never deploys individually (only scripts/libs/templates/cgi-bin get
+    copied to their own fixed locations) — it can't assume "two
+    directories up from wherever I'm running" the way a merely-relocatable
+    script could.
+
+    Confirmed live 2026-09-05: running the INSTALLED copy
+    (/usr/local/bin/build_lab_usb.py, the normal way every OTHER script in
+    this project is meant to be invoked) breaks that old assumption
+    outright — Path(__file__).resolve().parent.parent resolves to
+    /usr/local, which has no setup_demo_server/ at all, and rsync died
+    with "No such file or directory".
+    """
+    result = subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip())
+    die("build_lab_usb.py must be run from inside a real lab-in-a-box git checkout — it needs "
+        "the full repo tree (setup_demo_server/, libs/, the whole thing to rsync onto the nested "
+        "automation VM), not just what install_automation_node_scripts.sh deploys individually. "
+        "Run it as e.g. 'cd /path/to/lab-in-a-box && python3.11 scripts/build_lab_usb.py <lab.json>', "
+        "not the installed /usr/local/bin/build_lab_usb.py copy.")
 
 
 def _lab_host_name(definition):
@@ -273,7 +305,7 @@ def bootstrap_lab_host_vm(lab_host_ip, defaults):
         check_ssh_conn(lab_host_ip)
 
     log("Copying setup_demo_server/ + libs/ onto the lab-host VM")
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _find_repo_root()
     ssh_run(lab_host_ip, "mkdir -p /root/setup_demo_server /root/libs")
     # setup_kvm_node.py resolves its own libs/ as a SIBLING directory
     # (_SCRIPT_DIR.parent / "libs") — mirroring the real repo layout, not
@@ -281,7 +313,7 @@ def bootstrap_lab_host_vm(lab_host_ip, defaults):
     # exist yet on a brand-new host. Both dirs need to land as actual
     # siblings under /root for that resolution to work.
     for src, dst in (("setup_demo_server", "/root/setup_demo_server/"), ("libs", "/root/libs/")):
-        r = __import__("subprocess").run([
+        r = subprocess.run([
             "rsync", "-aq", "{}/".format(repo_root / src), "root@{}:{}".format(lab_host_ip, dst),
         ])
         if r.returncode != 0:
@@ -366,6 +398,11 @@ def bootstrap_lab_host_vm(lab_host_ip, defaults):
         "cd /root/setup_demo_server && python3.11 setup_kvm_node.py -y",
         check=True,
     )
+    # _NESTED_AUTOMATION_IP is a fixed constant, reused unchanged across
+    # every run of this script — a stale host key from a PREVIOUS run's
+    # nested automation VM would otherwise collide here every single time,
+    # not just occasionally like a real DHCP-assigned address would.
+    purge_known_host(_NESTED_AUTOMATION_IP)
     check_ssh_conn(_NESTED_AUTOMATION_IP)
     log("Nested automation VM is up at {}".format(_NESTED_AUTOMATION_IP))
 
@@ -382,8 +419,8 @@ def deploy_lab_on_nested_automation(definition, host_name_hint):
     """
     log("Installing lab_creation onto the nested automation VM")
     ssh_run(_NESTED_AUTOMATION_IP, "mkdir -p /root/lab-in-a-box")
-    repo_root = str(Path(__file__).resolve().parent.parent)
-    r = __import__("subprocess").run([
+    repo_root = str(_find_repo_root())
+    r = subprocess.run([
         "rsync", "-aq", "--exclude=.git",
         "{}/".format(repo_root), "root@{}:/root/lab-in-a-box/".format(_NESTED_AUTOMATION_IP),
     ])
@@ -470,6 +507,16 @@ def main():
     bridge = config.get("NETWORK", "bridge=br0").split("=", 1)[-1]
     lab_host_ip = discover_lab_host_ip(host_name, remote_host, virt_srv, mymac, bridge)
     log("Lab-host VM reachable at {}".format(lab_host_ip))
+    # The lab-host VM gets a DHCP-assigned address, not a known-in-advance
+    # static one — unlike every other node this project creates, this can't
+    # be purged up front at VM-creation time. Confirmed live 2026-09-05: a
+    # stale known_hosts entry from whatever OTHER VM previously held this
+    # exact DHCP lease made the very first ssh_run() below fail outright
+    # ("REMOTE HOST IDENTIFICATION HAS CHANGED"), even though the lab-host
+    # VM itself was genuinely up and answering correctly — same class of bug
+    # already fixed for setup_lab.py/destroy_lab.py/setup_harvester_cluster.py
+    # (see purge_known_host()'s own docstring).
+    purge_known_host(lab_host_ip, host_name)
     check_ssh_conn(lab_host_ip)
 
     bootstrap_lab_host_vm(lab_host_ip, defaults)

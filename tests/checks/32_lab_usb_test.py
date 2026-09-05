@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-# Pure-logic unit tests for libs/lab_usb.py — no real VM/SSH needed for any
-# of this, it's all in-memory data transformation. Run from 32_lab_usb.sh,
-# in its own container — see tests/run_tests.sh.
+# Pure-logic unit tests for libs/lab_usb.py and scripts/build_lab_usb.py's
+# own repo-root detection — no real VM/SSH needed for any of this, it's all
+# in-memory data transformation or a real (but self-contained, disposable)
+# git repo in a tempdir. Run from 32_lab_usb.sh, in its own container — see
+# tests/run_tests.sh.
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
+sys.path.insert(0, str(_REPO / "scripts"))
 
 import lab_usb  # noqa: E402
+import build_lab_usb  # noqa: E402
 
 failures = []
 
@@ -87,6 +93,53 @@ try:
 except ValueError:
     raised = True
 check("remap: a NAT range too small for the lab raises a clear ValueError, not an IndexError", raised)
+
+
+# ── _find_repo_root(): the real repo, not wherever it happens to be run from ──
+# Confirmed live 2026-09-05: the OLD assumption ("two directories up from
+# this deployed script") broke outright once run as the installed
+# /usr/local/bin/build_lab_usb.py copy every other script here is meant to
+# be invoked as -- resolves to /usr/local, which has none of the sibling
+# directories (setup_demo_server/, the whole repo tree) this script actually
+# needs. _find_repo_root() must locate the real checkout via git instead.
+#
+# This test container's own copy of the repo may not include .git at all
+# (a normal thing for a build context to exclude) -- tolerant of that, same
+# pattern as this suite's own pyyaml-optional checks elsewhere, since the
+# self-contained fake-repo tests just below exercise the actual logic
+# either way, independent of whatever this outer environment happens to be.
+_this_is_a_real_checkout = subprocess.run(
+    ["git", "-C", str(_REPO), "rev-parse", "--show-toplevel"],
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
+).returncode == 0
+if _this_is_a_real_checkout:
+    check("_find_repo_root() finds the real repo when run from inside this actual checkout",
+          build_lab_usb._find_repo_root() == _REPO)
+
+with tempfile.TemporaryDirectory() as tmp:
+    fake_repo = Path(tmp) / "fake-repo"
+    (fake_repo / "scripts").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(fake_repo)], check=True)
+    fake_script = fake_repo / "scripts" / "build_lab_usb.py"
+    fake_script.write_text("# not a real script, just needs to exist for __file__ resolution\n")
+    result = subprocess.run(
+        ["git", "-C", str(fake_script.parent), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
+    )
+    check("_find_repo_root()'s own git invocation correctly finds a DIFFERENT repo's "
+          "toplevel when run from inside it (not hardcoded to _REPO)",
+          result.returncode == 0 and Path(result.stdout.strip()) == fake_repo)
+
+with tempfile.TemporaryDirectory() as tmp:
+    # No .git anywhere under a plain tempdir — mirrors the installed
+    # /usr/local/bin/build_lab_usb.py case (no git context at all).
+    result = subprocess.run(
+        ["git", "-C", tmp, "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
+    )
+    check("outside any git checkout, the underlying git command fails the way "
+          "_find_repo_root() relies on to trigger its own clear die() message",
+          result.returncode != 0)
 
 
 if failures:

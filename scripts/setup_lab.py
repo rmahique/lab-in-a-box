@@ -135,10 +135,7 @@ def phase_create_vms(definition, config, defaults, json_file, keep):
             lc.log("  Skipping \"{}{}{}\" — existing VM matches definition".format(lc._RED, vm_name, lc._RESET))
             continue
 
-        subprocess.run(
-            ["ssh-keygen", "-f", str(Path.home() / ".ssh" / "known_hosts"), "-R", vm_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-        )
+        lc.purge_known_host(vm_name)
         # bash's `destroy_vm.sh "${inputFile}" "${_vm_name}"` here has no `||`
         # error check — a failed/no-op destroy (e.g. the VM never existed on
         # a first run) must NOT stop the pipeline. Mirror that explicitly,

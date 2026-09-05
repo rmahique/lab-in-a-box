@@ -106,6 +106,33 @@ lc.subprocess.run = fake
 lc.ssh_run("host1", "echo hi", user="rancher")
 check("ssh_run: user= overrides the SSH login name", "rancher@host1" in fake.calls[0][0])
 
+# ── purge_known_host: shared fix for a real, repeatedly-found bug ───────────
+# Extracted 2026-09-05 after fixing the same "REMOTE HOST IDENTIFICATION HAS
+# CHANGED" bug in 3 separate places (a reused lab IP's stale host key made
+# ssh_run() refuse a genuinely-answering, freshly-created VM outright).
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.purge_known_host("host1", "192.168.88.150")
+check("purge_known_host: calls ssh-keygen -R once per name given",
+      len(fake.calls) == 2
+      and "ssh-keygen -f" in fake.calls[0][0] and fake.calls[0][0].endswith("-R host1")
+      and fake.calls[1][0].endswith("-R 192.168.88.150"))
+
+fake = FakeRun()
+lc.subprocess.run = fake
+lc.purge_known_host("", None, "real-host")
+check("purge_known_host: silently skips falsy names instead of shelling out for them",
+      len(fake.calls) == 1 and fake.calls[0][0].endswith("-R real-host"))
+
+fake = FakeRun(responses=[("ssh-keygen", FakeCompleted(returncode=1))])
+lc.subprocess.run = fake
+try:
+    lc.purge_known_host("nonexistent-host")
+    ok = True
+except Exception:
+    ok = False
+check("purge_known_host: never raises, even when ssh-keygen finds nothing to remove (exit 1)", ok)
+
 
 # ── ensure_lab_ssh_key / distribute_lab_ssh_key ──────────────────────────────
 # One keypair for the whole lab, generated and kept ON the lab-host VM

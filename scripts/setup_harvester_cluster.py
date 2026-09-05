@@ -49,7 +49,9 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 
 import primary  # noqa: E402
 import services  # noqa: E402
-from lab_creation import log, die, run_libvirt_tool, check_ssh_conn, process_template, ssh_run  # noqa: E402
+from lab_creation import (  # noqa: E402
+    log, die, run_libvirt_tool, check_ssh_conn, process_template, ssh_run, purge_known_host,
+)
 
 # Real Harvester release-asset naming, confirmed via github.com/harvester/
 # harvester's own releases page — one ISO plus 3 separate boot files per
@@ -279,9 +281,7 @@ def _create_netboot_vm(node, cluster_cfg, config):
     # itself was up and sshd was genuinely answering with a real host key,
     # StrictHostKeyChecking=accept-new still refused it outright because an
     # unrelated older VM's key for the same IP was already on file.
-    for target in (node["ip"], node["name"]):
-        subprocess.run(["ssh-keygen", "-f", str(Path.home() / ".ssh" / "known_hosts"), "-R", target],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    purge_known_host(node["ip"], node["name"])
 
     args = [
         "--name", node["name"], "--autostart",
