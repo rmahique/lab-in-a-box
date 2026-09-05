@@ -148,6 +148,42 @@ check("no nodes -> nothing to draw", sandbox.buildMermaidDiagram({}) === null);
     !def.includes('"weird"host') && !/\n.*name/.test(def.split("\n").find((l) => l.includes("weird"))));
 }
 
+{
+  // sanitizeId's char-class replace collapses any non-alphanumeric char to
+  // "_", so two DIFFERENT node names that differ only in punctuation
+  // ("a.b" vs "a-b") used to sanitize to the exact same id — mermaid then
+  // silently merged them into one box in the diagram, quietly dropping one
+  // node from the rendered picture entirely.
+  const lab = {
+    nodes: {
+      "a.b": { myip: "10.0.0.1" },
+      "a-b": { myip: "10.0.0.2" },
+    },
+  };
+  const def = sandbox.buildMermaidDiagram(lab);
+  const nodeLines = def.split("\n").filter((l) => l.includes("10.0.0.1") || l.includes("10.0.0.2"));
+  check("two node names differing only in punctuation still get two separate node lines",
+    nodeLines.length === 2);
+  const ids = nodeLines.map((l) => l.trim().split("[")[0]);
+  check("...and those two lines use two DIFFERENT mermaid ids, not the same one merged",
+    ids[0] !== ids[1]);
+  check("both node labels still show up intact (neither one silently dropped)",
+    def.includes('"a.b<br/>10.0.0.1"') && def.includes('"a-b<br/>10.0.0.2"'));
+}
+
+{
+  // The same raw name used twice within one render (a node acting as both a
+  // node-line and an addon-box owner) must still resolve to the SAME id
+  // both times — the dedup fix must not turn a stable, repeated lookup into
+  // a fresh disambiguated id on its second call.
+  const lab = { nodes: { "solo.mydemo.lab": { myip: "10.0.0.9", addons: ["longhorn"] } } };
+  const def = sandbox.buildMermaidDiagram(lab);
+  const nodeLine = def.split("\n").find((l) => l.includes("10.0.0.9"));
+  const nodeId = nodeLine.trim().split("[")[0];
+  check("a node's own id is reused as-is (not re-disambiguated) when it's also an addon-box owner",
+    def.includes(nodeId + " -.-> "));
+}
+
 if (failures) {
   console.error(failures + " check(s) failed");
   process.exit(1);

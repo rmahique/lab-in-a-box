@@ -514,8 +514,31 @@ function initMermaid() {
   mermaidReady = true;
 }
 
-const sanitizeId = (s) => "n_" + String(s).replace(/[^A-Za-z0-9_]/g, "_");
 const diagramLabel = (s) => String(s).replace(/["\r\n]/g, "'"); // quotes/newlines would break mermaid's own syntax
+
+/* A plain char-class replace collapses any non-alphanumeric character to
+ * "_", so two different raw strings that only differ in punctuation (e.g.
+ * "a.b" vs "a-b") sanitize to the exact same id — mermaid then treats them
+ * as ONE node/subgraph, silently merging or overwriting one in the
+ * diagram. Returns a per-render sanitizer: the same raw string always maps
+ * to the same id (stable across the node/cluster/addon calls below, which
+ * may re-derive an id for the same owner more than once), but a raw string
+ * that collides with a DIFFERENT one already seen gets a disambiguating
+ * numeric suffix instead of silently reusing that id. */
+function makeIdSanitizer() {
+  const idForRaw = new Map();
+  const claimed = new Set();
+  return function sanitizeId(raw) {
+    const key = String(raw);
+    if (idForRaw.has(key)) return idForRaw.get(key);
+    const base = "n_" + key.replace(/[^A-Za-z0-9_]/g, "_");
+    let id = base;
+    for (let n = 2; claimed.has(id); n++) id = base + "_" + n;
+    claimed.add(id);
+    idForRaw.set(key, id);
+    return id;
+  };
+}
 
 /* Build a mermaid `graph TB` definition from the lab assembled so far, or
  * null if there's nothing to draw yet (no nodes). One subgraph per
@@ -531,6 +554,7 @@ function buildMermaidDiagram(lab) {
   const nodeNames = Object.keys(nodes);
   if (!nodeNames.length) return null;
 
+  const sanitizeId = makeIdSanitizer(); // fresh dedup state for this render only
   const lines = ["graph TB"];
   const existingIds = [];
   const addonIds = [];
