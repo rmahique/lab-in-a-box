@@ -18,6 +18,7 @@ Typical usage:
 # Author/s: Raul Mahiques
 # License: GPLv3
 
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -156,11 +157,16 @@ class K3sDistro(K8sDistro):
 
         if token is None:
             log("  Installing K3s server on '{}' (first node of '{}')".format(hostname, clu_name))
+            # clu_rel/clu_name/mydomain are all free-text lab.json values
+            # with no format validation, piped straight into this remote
+            # shell command — found in code review 2026-09-05, same class
+            # of bug already fixed elsewhere this session.
             ssh_run(
                 hostname,
                 "curl -sfL https://get.k3s.io | "
                 "INSTALL_K3S_CHANNEL={} "
-                "sh -s - server --tls-san {}.{}".format(clu_rel, clu_name, mydomain)
+                "sh -s - server --tls-san {}.{}".format(
+                    shlex.quote(clu_rel), shlex.quote(clu_name), shlex.quote(mydomain))
             )
             # Confirmed live 2026-09-04: k3s's own install.sh does not
             # reliably leave the service running — on this project's own
@@ -187,7 +193,7 @@ class K3sDistro(K8sDistro):
                 "INSTALL_K3S_CHANNEL={} "
                 "K3S_URL=https://{}:6443 "
                 "K3S_TOKEN={} "
-                "sh -".format(clu_rel, rancher1_ip, token)
+                "sh -".format(shlex.quote(clu_rel), shlex.quote(rancher1_ip), shlex.quote(token))
             )
             ssh_run(hostname, "systemctl enable --now k3s-agent")
             return token, rancher1_ip
@@ -265,6 +271,13 @@ class RKE2Distro(K8sDistro):
         ssh_run(hostname, "mkdir -p /var/lib/rancher/{0} /etc/rancher/{0}".format(clu_type))
 
         log("  Installing RKE2 on '{}'".format(hostname))
+        # install_method/clu_rel are free-text lab.json values with no
+        # format validation, piped straight into this remote shell
+        # command — found in code review 2026-09-05, same class of bug
+        # already fixed elsewhere this session. clu_type/node_type are
+        # both fixed literals (self.name / the "server"/"agent" the
+        # caller passes explicitly), never raw config, so they don't
+        # need it.
         ssh_run(
             hostname,
             "curl -sfL https://get.{clu_type}.io | "
@@ -273,7 +286,7 @@ class RKE2Distro(K8sDistro):
             "INSTALL_RKE2_CHANNEL={clu_rel} "
             "sh -".format(
                 clu_type=clu_type, node_type=node_type,
-                install_method=install_method, clu_rel=clu_rel,
+                install_method=shlex.quote(install_method), clu_rel=shlex.quote(clu_rel),
             )
         )
 

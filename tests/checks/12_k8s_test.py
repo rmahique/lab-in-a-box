@@ -98,6 +98,19 @@ check("K3sDistro join: K3S_TOKEN carries the join token", "K3S_TOKEN=TOKEN123" i
 check("K3sDistro join: explicitly starts k3s-agent itself, same reasoning as the server case",
       any(c == "systemctl enable --now k3s-agent" for h, c, kw in fake.calls))
 
+# ── K3sDistro: clu_rel/clu_name/mydomain must be shell-quoted ────────────────
+# Found in code review 2026-09-05: clu_rel (a free-text lab.json value with
+# no format validation) was piped straight into the remote install command
+# unquoted, and clu_name/mydomain the same way in --tls-san. A value with a
+# shell metacharacter must not be able to break, or inject into, this
+# remote command.
+fake = FakeSSH(responses=[("node-token", FakeResult(stdout="TOKEN123\n"))])
+k8s.ssh_run = fake
+distro.install_server("vm1", "cluster1", {"clu_rel": "stable; rm -rf /", "mydomain": "mydemo.lab"})
+install_cmd = next(c for h, c, kw in fake.calls if "get.k3s.io" in c)
+check("K3sDistro first node: a shell metacharacter in clu_rel is quoted, not passed through raw",
+      "INSTALL_K3S_CHANNEL='stable; rm -rf /'" in install_cmd)
+
 
 # ── RKE2Distro.write_node_config: run from a scratch tempdir (repo is
 #    read-only in the test container) ─────────────────────────────────────────
@@ -151,6 +164,20 @@ try:
           any("systemctl enable --now rke2-server.service" in c for h, c, kw in fake_ssh.calls))
     check("RKE2Distro: rsyncs the rendered config to the remote host",
           any(a[0] == "rsync" for a, kw in fake_subproc.calls))
+
+    # ── clu_rel/install_method must be shell-quoted ──────────────────────
+    # Found in code review 2026-09-05: both are free-text lab.json values
+    # with no format validation, piped straight into this remote install
+    # command unquoted.
+    fake_ssh = FakeSSH(responses=[("node-token", FakeResult(stdout="RKE2TOKEN\n"))])
+    k8s.ssh_run = fake_ssh
+    distro.install_server("vm1", "cluster1", {
+        "clu_rel": "stable; rm -rf /", "mydomain": "mydemo.lab", "install_method": "tar; touch /tmp/pwned"})
+    install_cmd = next(c for h, c, kw in fake_ssh.calls if "get.rke2.io" in c)
+    check("RKE2Distro first node: a shell metacharacter in clu_rel is quoted, not passed through raw",
+          "INSTALL_RKE2_CHANNEL='stable; rm -rf /'" in install_cmd)
+    check("RKE2Distro first node: a shell metacharacter in install_method is quoted, not passed through raw",
+          "INSTALL_RKE2_METHOD='tar; touch /tmp/pwned'" in install_cmd)
 
     fake_ssh = FakeSSH()
     k8s.ssh_run = fake_ssh
