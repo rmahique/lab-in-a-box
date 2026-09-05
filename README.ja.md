@@ -21,13 +21,13 @@
 
 > *これはコミュニティによる翻訳です。正典となる情報源は [README.md](README.md)（英語）であり、このページより新しい場合があります。*
 
-<p align="center"><em>JSON ファイルを1つ用意するだけ。VM、DNS、Kubernetes、アドオンがすべて配線された、動作するラボが手に入る。</em></p>
+<p align="center"><em>JSON または YAML ファイルを1つ用意するだけ。VM、DNS、Kubernetes、アドオンがすべて配線された、動作するラボが手に入る。</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="このプロジェクトの開発・テストに使われた NUC の一台。" /></kbd>
 </p>
 
-**lab-in-a-box** は、1台のベアメタルマシンを自己完結型の「ラボ工場」に変える。欲しい VM、Kubernetes クラスター、ソフトウェアを記述した JSON ファイルを指定するだけで、DNS、プロビジョニング、クラスターの立ち上げ、アドオンまで、すべてを構築する — `virt-install` や Ansible を手で操作する必要はない。
+**lab-in-a-box** は、1台のベアメタルマシンを自己完結型の「ラボ工場」に変える。欲しい VM、Kubernetes クラスター、ソフトウェアを記述した JSON または YAML ファイルを指定するだけで、DNS、プロビジョニング、クラスターの立ち上げ、アドオンまで、すべてを構築する — `virt-install` や Ansible を手で操作する必要はない。
 
 ## なぜ lab-in-a-box なのか
 
@@ -35,7 +35,7 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 JSON ファイル1つ、コマンド1つ。**
+**🧱 JSON/YAML ファイル1つ、コマンド1つ。**
 VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。`setup_lab.py` が正しい順序ですべてを構築する。
 
 **🧩 41種類のアドオンをすぐに利用可能。**
@@ -93,18 +93,13 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 
 ```mermaid
 graph TB
-    Operator["オペレーターのクライアント<br/>(SSH / DNS / HTTP)"]
+    Operator["オペレーターのクライアント"] -->|"SSH / DNS / HTTP"| AutoVM
     subgraph HV["ハイパーバイザーノード — KVM/QEMU"]
         AutoVM["自動化 VM<br/>DNS · HTTP · スクリプト · Web UI"]
-        VM1["ラボ VM"]
-        VM2["ラボ VM"]
-        VM3["ラボ VM"]
+        AutoVM -->|"virt-install / virsh"| VM1["ラボ VM"]
+        AutoVM -->|"virt-install / virsh"| VM2["ラボ VM"]
+        AutoVM -->|"virt-install / virsh"| VM3["ラボ VM"]
     end
-    Operator --> AutoVM
-    AutoVM -- "virt-install / virsh (SSH)" --> HV
-    AutoVM -- "プロビジョニング (SSH)" --> VM1
-    AutoVM -- "プロビジョニング (SSH)" --> VM2
-    AutoVM -- "プロビジョニング (SSH)" --> VM3
 ```
 
 ### ハイパーバイザーノード
@@ -139,15 +134,13 @@ KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それ�
 
 ```mermaid
 flowchart LR
-    A["phase_services<br/>(PXE / ポートフォワード)"] --> B{"Kubernetes<br/>クラスターが定義されている？"}
-    B -- はい --> C["phase_dns"]
-    B -- いいえ --> D["phase_create_vms"]
-    C --> D
-    D --> E{"Kubernetes<br/>クラスターが定義されている？"}
-    E -- はい --> F["phase_reboot_and_wait_kept_nodes"]
+    A["phase_services"] -->|"kclusters あり"| C["phase_dns"]
+    A -->|"kclusters なし"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"kclusters あり"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"kclusters なし"| H["phase_vm_addons"]
     F --> G["phase_install_k8s_and_addons"]
     G --> H["phase_vm_addons"]
-    E -- いいえ --> H
 ```
 
 ### VM のプロビジョニング
@@ -217,6 +210,15 @@ KVM_HOSTS="hv1.mydemo.lab hv2.mydemo.lab hv3.mydemo.lab"
 
 <a id="quick-start"></a>
 ## クイックスタート
+
+```mermaid
+flowchart TD
+    S1["1. ハイパーバイザーの OS を準備する"] --> S2["2. セットアップスクリプトをブートストラップする"]
+    S2 --> S3["3. KVM ノードのセットアップを設定して実行する"]
+    S3 --> S4["4. 自動化 VM を設定する"]
+    S4 --> S5["5. クライアントの DNS を自動化 VM に向ける"]
+    S5 --> S6["6. 最初のラボを構築する"]
+```
 
 ### 必要条件
 
@@ -365,7 +367,7 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
 <a id="lab-definition-format"></a>
 ## ラボ定義フォーマット
 
-ラボは JSON ファイルとして定義される。現在のフォーマットは、ラボごとに複数の Kubernetes クラスター（`kclusters`）をサポートしている。従来のシングルクラスター形式（`cluster`）については `examples/cluster.json.template` を参照。
+ラボは JSON または YAML ファイルとして定義される（自動検出 — 下記の注記を参照）。現在のフォーマットは、ラボごとに複数の Kubernetes クラスター（`kclusters`）をサポートしている。従来のシングルクラスター形式（`cluster`）については `examples/cluster.json.template` を参照。
 
 ```mermaid
 graph TD
@@ -424,6 +426,52 @@ graph TD
   }
 }
 ```
+
+<details>
+<summary>同じラボを YAML で書くと</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" または "agent"
+    kcluster: cluster1          # このノードがどの kclusters エントリに属するか
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi（デフォルト）、firmware=bios、bios、uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" または "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 ノードレベルの任意フィールド：
 

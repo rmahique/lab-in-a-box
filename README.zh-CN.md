@@ -21,13 +21,13 @@
 
 > *这是社区翻译版本。权威来源是英文的 [README.md](README.md)，其内容可能比本页面更新。*
 
-<p align="center"><em>指向一个 JSON 文件，得到一个可用的实验环境——虚拟机、DNS、Kubernetes 和插件，一应俱全。</em></p>
+<p align="center"><em>指向一个 JSON 或 YAML 文件，得到一个可用的实验环境——虚拟机、DNS、Kubernetes 和插件，一应俱全。</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="用于开发和测试本项目的其中一台 NUC。" /></kbd>
 </p>
 
-**lab-in-a-box** 能把一台裸机变成一座自给自足的"实验环境工厂"：只需指向一个描述所需虚拟机、Kubernetes 集群和软件的 JSON 文件，它就会构建出全部内容——DNS、系统配置、集群搭建以及各类插件——完全不需要你手动操作 `virt-install` 或 Ansible。
+**lab-in-a-box** 能把一台裸机变成一座自给自足的"实验环境工厂"：只需指向一个描述所需虚拟机、Kubernetes 集群和软件的 JSON 或 YAML 文件，它就会构建出全部内容——DNS、系统配置、集群搭建以及各类插件——完全不需要你手动操作 `virt-install` 或 Ansible。
 
 ## 为什么选择 lab-in-a-box？
 
@@ -35,7 +35,7 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 一个 JSON 文件，一条命令。**
+**🧱 一个 JSON/YAML 文件，一条命令。**
 以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；`setup_lab.py` 会按正确的顺序把一切都构建出来。
 
 **🧩 41 个开箱即用的插件。**
@@ -93,18 +93,13 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 
 ```mermaid
 graph TB
-    Operator["操作者的客户端<br/>(SSH / DNS / HTTP)"]
+    Operator["操作者的客户端"] -->|"SSH / DNS / HTTP"| AutoVM
     subgraph HV["虚拟化主机节点 — KVM/QEMU"]
         AutoVM["自动化虚拟机<br/>DNS · HTTP · 脚本 · Web UI"]
-        VM1["实验环境虚拟机"]
-        VM2["实验环境虚拟机"]
-        VM3["实验环境虚拟机"]
+        AutoVM -->|"virt-install / virsh"| VM1["实验环境虚拟机"]
+        AutoVM -->|"virt-install / virsh"| VM2["实验环境虚拟机"]
+        AutoVM -->|"virt-install / virsh"| VM3["实验环境虚拟机"]
     end
-    Operator --> AutoVM
-    AutoVM -- "virt-install / virsh (SSH)" --> HV
-    AutoVM -- "配置 (SSH)" --> VM1
-    AutoVM -- "配置 (SSH)" --> VM2
-    AutoVM -- "配置 (SSH)" --> VM3
 ```
 
 ### 虚拟化主机节点
@@ -139,15 +134,13 @@ graph TB
 
 ```mermaid
 flowchart LR
-    A["phase_services<br/>(PXE / 端口转发)"] --> B{"是否定义了<br/>Kubernetes 集群？"}
-    B -- 是 --> C["phase_dns"]
-    B -- 否 --> D["phase_create_vms"]
-    C --> D
-    D --> E{"是否定义了<br/>Kubernetes 集群？"}
-    E -- 是 --> F["phase_reboot_and_wait_kept_nodes"]
+    A["phase_services"] -->|"有 kclusters"| C["phase_dns"]
+    A -->|"无 kclusters"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"有 kclusters"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"无 kclusters"| H["phase_vm_addons"]
     F --> G["phase_install_k8s_and_addons"]
     G --> H["phase_vm_addons"]
-    E -- 否 --> H
 ```
 
 ### 虚拟机配置
@@ -217,6 +210,15 @@ KVM_HOSTS="hv1.mydemo.lab hv2.mydemo.lab hv3.mydemo.lab"
 
 <a id="quick-start"></a>
 ## 快速开始
+
+```mermaid
+flowchart TD
+    S1["1. 准备虚拟化主机的操作系统"] --> S2["2. 引导安装配置脚本"]
+    S2 --> S3["3. 配置并运行 KVM 节点安装程序"]
+    S3 --> S4["4. 配置自动化虚拟机"]
+    S4 --> S5["5. 让客户端 DNS 指向自动化虚拟机"]
+    S5 --> S6["6. 构建你的第一个实验环境"]
+```
 
 ### 前提条件
 
@@ -365,7 +367,7 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
 <a id="lab-definition-format"></a>
 ## 实验环境定义格式
 
-实验环境以 JSON 文件的形式定义。当前格式支持每个实验环境包含多个 Kubernetes 集群（`kclusters`）；旧版单集群格式（`cluster`）请参见 `examples/cluster.json.template`。
+实验环境以 JSON 或 YAML 文件的形式定义（自动检测格式 —— 见下方说明）。当前格式支持每个实验环境包含多个 Kubernetes 集群（`kclusters`）；旧版单集群格式（`cluster`）请参见 `examples/cluster.json.template`。
 
 ```mermaid
 graph TD
@@ -424,6 +426,52 @@ graph TD
   }
 }
 ```
+
+<details>
+<summary>同一个实验环境，用 YAML 表示</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" 或 "agent"
+    kcluster: cluster1          # 该节点属于哪个 kclusters 条目
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi（默认）、firmware=bios、bios、uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" 或 "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 节点级别的可选字段：
 

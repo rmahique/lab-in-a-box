@@ -21,13 +21,13 @@
 
 > *Esta es una traducción de la comunidad. La fuente de referencia es [README.md](README.md) (inglés) y puede estar más actualizada que esta página.*
 
-<p align="center"><em>Apúntalo a un archivo JSON. Obtén de vuelta un laboratorio funcionando — VMs, DNS, Kubernetes y add-ons, todo conectado.</em></p>
+<p align="center"><em>Apúntalo a un archivo JSON o YAML. Obtén de vuelta un laboratorio funcionando — VMs, DNS, Kubernetes y add-ons, todo conectado.</em></p>
 
 <p align="center" float="left">
   <kbd><img src="media/NUC.jpg" width="400" alt="Uno de los NUC usados para desarrollar y probar este proyecto." /></kbd>
 </p>
 
-**lab-in-a-box** convierte una sola máquina física en una fábrica de laboratorios autocontenida: apúntalo a un archivo JSON que describa las VMs, los clústeres de Kubernetes y el software que quieres, y construye todo — DNS, aprovisionamiento, puesta en marcha del clúster y add-ons — sin que tengas que tocar `virt-install` o Ansible a mano.
+**lab-in-a-box** convierte una sola máquina física en una fábrica de laboratorios autocontenida: apúntalo a un archivo JSON o YAML que describa las VMs, los clústeres de Kubernetes y el software que quieres, y construye todo — DNS, aprovisionamiento, puesta en marcha del clúster y add-ons — sin que tengas que tocar `virt-install` o Ansible a mano.
 
 ## ¿Por qué lab-in-a-box?
 
@@ -35,7 +35,7 @@
 <tr>
 <td width="50%" valign="top">
 
-**🧱 Un archivo JSON, un comando.**
+**🧱 Un archivo JSON/YAML, un comando.**
 Describe VMs, clústeres de Kubernetes (RKE2/K3s) y add-ons de forma declarativa; `setup_lab.py` lo construye todo en el orden correcto.
 
 **🧩 41 add-ons listos para usar.**
@@ -93,18 +93,13 @@ El sistema está construido alrededor de una **arquitectura de dos niveles**:
 
 ```mermaid
 graph TB
-    Operator["Cliente del operador<br/>(SSH / DNS / HTTP)"]
+    Operator["Cliente del operador"] -->|"SSH / DNS / HTTP"| AutoVM
     subgraph HV["Nodo(s) hipervisor — KVM/QEMU"]
         AutoVM["VM de automatización<br/>DNS · HTTP · scripts · interfaz web"]
-        VM1["VM del laboratorio"]
-        VM2["VM del laboratorio"]
-        VM3["VM del laboratorio"]
+        AutoVM -->|"virt-install / virsh"| VM1["VM del laboratorio"]
+        AutoVM -->|"virt-install / virsh"| VM2["VM del laboratorio"]
+        AutoVM -->|"virt-install / virsh"| VM3["VM del laboratorio"]
     end
-    Operator --> AutoVM
-    AutoVM -- "virt-install / virsh (SSH)" --> HV
-    AutoVM -- "aprovisionamiento (SSH)" --> VM1
-    AutoVM -- "aprovisionamiento (SSH)" --> VM2
-    AutoVM -- "aprovisionamiento (SSH)" --> VM3
 ```
 
 ### Nodo(s) hipervisor
@@ -139,15 +134,13 @@ Las herramientas de línea de comandos y cada add-on son Python 3.11, viven en `
 
 ```mermaid
 flowchart LR
-    A["phase_services<br/>(PXE / port-forward)"] --> B{"¿Hay clústeres<br/>Kubernetes definidos?"}
-    B -- sí --> C["phase_dns"]
-    B -- no --> D["phase_create_vms"]
-    C --> D
-    D --> E{"¿Hay clústeres<br/>Kubernetes definidos?"}
-    E -- sí --> F["phase_reboot_and_wait_kept_nodes"]
+    A["phase_services"] -->|"con kclusters"| C["phase_dns"]
+    A -->|"sin kclusters"| D["phase_create_vms"]
+    C --> D["phase_create_vms"]
+    D -->|"con kclusters"| F["phase_reboot_and_wait_kept_nodes"]
+    D -->|"sin kclusters"| H["phase_vm_addons"]
     F --> G["phase_install_k8s_and_addons"]
     G --> H["phase_vm_addons"]
-    E -- no --> H
 ```
 
 ### Aprovisionamiento de VMs
@@ -217,6 +210,15 @@ Cada script carga su configuración en este orden:
 
 <a id="quick-start"></a>
 ## Inicio rápido
+
+```mermaid
+flowchart TD
+    S1["1. Preparar el sistema operativo del hipervisor"] --> S2["2. Preparar los scripts de instalación"]
+    S2 --> S3["3. Configurar y ejecutar la configuración del nodo KVM"]
+    S3 --> S4["4. Configurar la VM de automatización"]
+    S4 --> S5["5. Apuntar el DNS del cliente a la VM de automatización"]
+    S5 --> S6["6. Construir tu primer laboratorio"]
+```
 
 ### Requisitos
 
@@ -365,7 +367,7 @@ Para un despliegue en producción (Apache, o un servicio independiente systemd/s
 <a id="lab-definition-format"></a>
 ## Formato de definición del laboratorio
 
-Los laboratorios se definen como archivos JSON. El formato actual admite varios clústeres de Kubernetes por laboratorio (`kclusters`); ver `examples/cluster.json.template` para el formato heredado de un solo clúster (`cluster`).
+Los laboratorios se definen como archivos JSON o YAML (detectado automáticamente — ver la nota más abajo). El formato actual admite varios clústeres de Kubernetes por laboratorio (`kclusters`); ver `examples/cluster.json.template` para el formato heredado de un solo clúster (`cluster`).
 
 ```mermaid
 graph TD
@@ -424,6 +426,52 @@ graph TD
   }
 }
 ```
+
+<details>
+<summary>El mismo lab, en YAML</summary>
+
+```yaml
+nodes:
+  node101.mydemo.lab:
+    myip: "192.168.88.101"
+    mymac: "34:8a:b1:4b:1a:c1"
+    INSTALL_RKE2_TYPE: server   # "server" o "agent"
+    kcluster: cluster1          # a qué entrada de kclusters pertenece este nodo
+  node102.mydemo.lab:
+    myip: "192.168.88.102"
+    mymac: "34:8a:b1:4b:1a:c2"
+    INSTALL_RKE2_TYPE: agent
+    kcluster: cluster1
+
+common:
+  ISO_IMAGE: SL-Micro.x86_64-6.1-Default-qcow-GM.qcow2
+  VM_MEM: "24576"
+  VM_DSK: "80"
+  VM_CPU: "6"
+  VM_BOOT: uefi                # uefi (por defecto), firmware=bios, bios, uefi=off
+  mymask: "24"
+  mygw: "192.168.88.1"
+  mydns: "192.168.88.73"
+  mynet_reverse: "88.168.192"
+
+kclusters:
+  cluster1:
+    clu_type: rke2              # "rke2" o "k3s"
+    clu_rel: stable
+    mydomain: mydemo.lab
+    addons: [rancher, longhorn]
+
+rancher:
+  rancher_shorthn: rancher
+  rancher_rel: rancher-prime
+  rancher_repo_url: https://charts.rancher.com/server-charts/prime
+  rancher_helm_rel: rancher
+  rancher_helm_chart: rancher-prime/rancher
+  rancher_Version: "--version 2.13.3"
+  cert_manager_ver: "--version v1.14.4"
+```
+
+</details>
 
 Campos opcionales a nivel de nodo:
 

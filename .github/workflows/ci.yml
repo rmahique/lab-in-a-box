@@ -105,6 +105,18 @@ jobs:
           # not held to current lint standards. tests/ has its own
           # containerized suite as the real gate.
           ignore_paths: ".git legacy_bash tests"
+          # install_ds389 (never ported to Python — see README's "Under the
+          # hood") and the 4 bash helpers it needs at runtime
+          # (lab_creation.bash/k8s_functions.bash/primary_functions.bash/
+          # extensions.sh, deployed alongside the Python libs by
+          # install_automation_node_scripts.sh's own "one directory, one
+          # loop" comment — see there) are permanently unported, same
+          # "frozen, not held to current lint standards" stance as
+          # legacy_bash/ above. Found in code review 2026-09-05: these were
+          # never actually excluded, so this job has likely been failing on
+          # their own pre-existing warnings since the workflow was added,
+          # unrelated to whatever change a given run's diff actually made.
+          ignore_names: "install_ds389 lab_creation.bash k8s_functions.bash primary_functions.bash extensions.sh"
           additional_files: ".githooks/*"
           severity: warning
         env:
