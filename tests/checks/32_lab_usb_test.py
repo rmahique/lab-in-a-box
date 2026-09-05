@@ -65,6 +65,31 @@ check("remap: common.mydns points at the nested automation VM's own static IP",
 check("remap: other common fields (ISO_IMAGE, VM_MEM, …) pass through unchanged",
       remapped["common"]["ISO_IMAGE"] == "img.qcow2" and remapped["common"]["VM_MEM"] == "4096")
 
+# A node with a falsy config ({} or None — e.g. a minimal node relying
+# entirely on inherited common defaults) must still get a myip. Found in
+# code review 2026-09-05: `(node_cfg or {})["myip"] = ip` mutated a
+# throwaway dict instead of the real one whenever node_cfg was falsy,
+# silently dropping myip for that node in the remapped output.
+falsy_cfg_original = {
+    "common": {},
+    "nodes": {
+        "empty.mydemo.lab": {},
+        "null.mydemo.lab": None,
+        "normal.mydemo.lab": {"myip": "10.0.0.5"},
+    },
+}
+falsy_remapped = lab_usb.remap_lab_definition_to_nat(
+    falsy_cfg_original, nat_cidr="192.168.150.0/24", nested_automation_ip="192.168.150.2")
+check("remap: a node with an empty {} config still gets a myip",
+      "myip" in falsy_remapped["nodes"]["empty.mydemo.lab"])
+check("remap: a node with a null config still gets a myip",
+      "myip" in falsy_remapped["nodes"]["null.mydemo.lab"])
+check("remap: all three nodes end up with distinct addresses",
+      len({n.get("myip") for n in falsy_remapped["nodes"].values()}) == 3)
+check("remap: the original definition's falsy node entries are never mutated in place",
+      falsy_cfg_original["nodes"]["empty.mydemo.lab"] == {}
+      and falsy_cfg_original["nodes"]["null.mydemo.lab"] is None)
+
 # A custom start_offset shifts where remapped addresses begin.
 remapped2 = lab_usb.remap_lab_definition_to_nat(
     original, nat_cidr="192.168.150.0/24", nested_automation_ip="192.168.150.2", start_offset=50)

@@ -80,7 +80,16 @@ def remap_lab_definition_to_nat(definition, nat_cidr="192.168.150.0/24",
         )
 
     for (node_name, node_cfg), ip in zip(nodes.items(), available):
-        (node_cfg or {})["myip"] = ip
+        # `node_cfg or {}` builds a THROWAWAY dict when node_cfg is falsy
+        # (an empty {} or null node entry, e.g. a minimal node relying
+        # entirely on inherited common defaults) — mutating that instead
+        # of the real per-node dict silently drops myip for that node
+        # (confirmed live in code review 2026-09-05: a node with a plain
+        # `{}` entry never got a myip at all in the remapped output).
+        # Replace the falsy entry with a real dict in `nodes` itself first.
+        if not node_cfg:
+            node_cfg = nodes[node_name] = {}
+        node_cfg["myip"] = ip
 
     common = remapped.setdefault("common", {})
     common["mygw"] = str(list(network.hosts())[0])
