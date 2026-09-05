@@ -289,6 +289,7 @@ PLUGIN = {
     "aux_services": [],
 }
 
+import shlex
 import subprocess
 import sys
 import time
@@ -361,8 +362,8 @@ def setup_smlm_prereqs(hostname, cfg):
     print("  Generating self-signed TLS certificates")
     ssh_run(hostname, (
         "set -e\n"
-        "_fqdn='{fqdn}'\n"
-        "_ns='{ns}'\n"
+        "_fqdn={fqdn}\n"
+        "_ns={ns}\n"
         "_tmp=$(mktemp -d)\n"
         "\n"
         "openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \\\n"
@@ -391,7 +392,12 @@ def setup_smlm_prereqs(hostname, cfg):
         "    --dry-run=client -o yaml | kubectl apply -f -\n"
         "\n"
         "rm -rf ${{_tmp}}"
-    ).format(fqdn=cfg.get("smlm_fqdn", ""), ns=ns))
+    # smlm_fqdn is free-text with no format validation at all — the hand-
+    # rolled single quotes above (found in code review 2026-09-05) broke,
+    # or could be injected through, this remote command the moment the
+    # value contained an embedded single quote. shlex.quote() escapes
+    # correctly even nested inside the surrounding heredoc.
+    ).format(fqdn=shlex.quote(cfg.get("smlm_fqdn", "") or ""), ns=shlex.quote(ns)))
 
 
 # ─── EXPERIMENTAL: HA database (CloudNativePG) ───────────────────────────────

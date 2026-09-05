@@ -890,6 +890,33 @@ check("generate_smlm_proxy_config: an embedded single quote in admin_user doesn'
       shlex.split(remote_cmd)[shlex.split(remote_cmd).index("-u") + 1] == "it's-admin")
 
 
+# ── setup_smlm_prereqs/setup_smlm_proxy_prereqs: the self-signed-TLS-cert
+# heredoc's _fqdn='{fqdn}' must not break on an embedded single quote ──────
+# Found in code review 2026-09-05: smlm_fqdn/smlm_proxy_fqdn are free-text
+# with no format validation at all, and were embedded via hand-rolled
+# single quotes in a multi-line heredoc — an embedded single quote would
+# have broken out of that quoting.
+fqdn_calls = []
+install_smlm.ssh_run = lambda *a, **kw: fqdn_calls.append(a[1] if len(a) > 1 else kw.get("cmd", ""))
+install_smlm.k8s.ssh_run = lambda *a, **kw: FakeResult()
+install_smlm.k8s.set_longhorn_overprovisioning = lambda *a, **kw: None
+install_smlm.k8s.create_basic_auth_secret = lambda *a, **kw: None
+install_smlm.setup_smlm_prereqs("host1", {"smlm_fqdn": "a.b'; rm -rf /; echo '"})
+tls_cmd = next(c for c in fqdn_calls if "openssl" in c)
+check("setup_smlm_prereqs: an embedded single quote in smlm_fqdn round-trips through "
+      "shlex correctly (the TLS heredoc's _fqdn= line stays one shell assignment)",
+      shlex.split(tls_cmd.split("\n")[1])[0] == "_fqdn=a.b'; rm -rf /; echo '")
+
+fqdn_calls.clear()
+install_smlm_proxy.ssh_run = lambda *a, **kw: fqdn_calls.append(a[1] if len(a) > 1 else kw.get("cmd", ""))
+install_smlm_proxy.k8s.set_longhorn_overprovisioning = lambda *a, **kw: None
+install_smlm_proxy.setup_smlm_proxy_prereqs("host1", {"smlm_proxy_fqdn": "a.b'; rm -rf /; echo '"})
+tls_cmd = next(c for c in fqdn_calls if "openssl" in c)
+check("setup_smlm_proxy_prereqs: an embedded single quote in smlm_proxy_fqdn round-trips "
+      "through shlex correctly (the TLS heredoc's _fqdn= line stays one shell assignment)",
+      shlex.split(tls_cmd.split("\n")[1])[0] == "_fqdn=a.b'; rm -rf /; echo '")
+
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)
