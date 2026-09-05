@@ -793,6 +793,9 @@ install_longhorn --schema yaml      # ...o YAML
 
 Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo. El script `install_<name>` correspondiente debe estar en el `PATH`.
 
+<sub>Ir a: <a href="#addons-k8s">Kubernetes y GitOps</a> · <a href="#addons-security">Seguridad y cumplimiento</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Almacenamiento y bases de datos</a> · <a href="#addons-cicd">CI/CD y herramientas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualización y demos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Plataforma Kubernetes y GitOps</strong></summary>
 
@@ -813,6 +816,7 @@ Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Seguridad y cumplimiento</strong></summary>
 
@@ -829,6 +833,7 @@ Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -842,6 +847,7 @@ Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Almacenamiento y bases de datos</strong></summary>
 
@@ -854,6 +860,7 @@ Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD y herramientas de desarrollo</strong></summary>
 
@@ -866,6 +873,7 @@ Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>IA / ML</strong></summary>
 
@@ -878,6 +886,7 @@ Los add-ons se referencian por nombre en el array `addons` de un kcluster o nodo
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualización y demos</strong></summary>
 

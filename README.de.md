@@ -793,6 +793,9 @@ install_longhorn --schema yaml      # ...oder YAML
 
 Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referenziert. Das entsprechende `install_<name>`-Skript muss im `PATH` liegen.
 
+<sub>Direkt zu: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Sicherheit &amp; Compliance</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Storage &amp; Datenbanken</a> · <a href="#addons-cicd">CI/CD &amp; Werkzeuge</a> · <a href="#addons-ai">KI / ML</a> · <a href="#addons-virt">Virtualisierung &amp; Demos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes-Plattform &amp; GitOps</strong></summary>
 
@@ -813,6 +816,7 @@ Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referen
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Sicherheit &amp; Compliance</strong></summary>
 
@@ -829,6 +833,7 @@ Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referen
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -842,6 +847,7 @@ Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referen
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Storage &amp; Datenbanken</strong></summary>
 
@@ -854,6 +860,7 @@ Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referen
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD &amp; Entwicklerwerkzeuge</strong></summary>
 
@@ -866,6 +873,7 @@ Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referen
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>KI / ML</strong></summary>
 
@@ -878,6 +886,7 @@ Add-ons werden namentlich im `addons`-Array eines Kclusters oder Knotens referen
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualisierung &amp; Demos</strong></summary>
 

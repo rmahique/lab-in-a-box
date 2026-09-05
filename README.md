@@ -823,6 +823,9 @@ install_longhorn --schema yaml      # ...or YAML
 
 Addons are referenced by name in the `addons` array of a kcluster or node. The corresponding `install_<name>` script must be on `PATH`.
 
+<sub>Jump to: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Security &amp; compliance</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Storage &amp; databases</a> · <a href="#addons-cicd">CI/CD &amp; tooling</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">Virtualization &amp; demos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes platform &amp; GitOps</strong></summary>
 
@@ -843,6 +846,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Security &amp; compliance</strong></summary>
 
@@ -859,6 +863,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -872,6 +877,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Storage &amp; databases</strong></summary>
 
@@ -884,6 +890,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD &amp; developer tooling</strong></summary>
 
@@ -896,6 +903,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
@@ -908,6 +916,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualization &amp; demos</strong></summary>
 

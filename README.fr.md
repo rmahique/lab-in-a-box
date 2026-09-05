@@ -793,6 +793,9 @@ install_longhorn --schema yaml      # ...ou YAML
 
 Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kcluster ou d'un nœud. Le script `install_<name>` correspondant doit se trouver dans le `PATH`.
 
+<sub>Aller à : <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Sécurité &amp; conformité</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Stockage &amp; bases de données</a> · <a href="#addons-cicd">CI/CD &amp; outils</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualisation &amp; démos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Plateforme Kubernetes &amp; GitOps</strong></summary>
 
@@ -813,6 +816,7 @@ Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kclust
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Sécurité &amp; conformité</strong></summary>
 
@@ -829,6 +833,7 @@ Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kclust
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -842,6 +847,7 @@ Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kclust
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Stockage &amp; bases de données</strong></summary>
 
@@ -854,6 +860,7 @@ Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kclust
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD &amp; outils de développement</strong></summary>
 
@@ -866,6 +873,7 @@ Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kclust
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>IA / ML</strong></summary>
 
@@ -878,6 +886,7 @@ Les add-ons sont référencés par leur nom dans le tableau `addons` d'un kclust
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualisation &amp; démos</strong></summary>
 

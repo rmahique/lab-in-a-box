@@ -793,6 +793,9 @@ install_longhorn --schema yaml      # ...ou YAML
 
 Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O script `install_<name>` correspondente precisa estar no `PATH`.
 
+<sub>Ir para: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Segurança &amp; conformidade</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento &amp; bancos de dados</a> · <a href="#addons-cicd">CI/CD &amp; ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização &amp; demos</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Plataforma Kubernetes &amp; GitOps</strong></summary>
 
@@ -813,6 +816,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>Segurança &amp; conformidade</strong></summary>
 
@@ -829,6 +833,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -842,6 +847,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>Armazenamento &amp; bancos de dados</strong></summary>
 
@@ -854,6 +860,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD &amp; ferramentas de desenvolvimento</strong></summary>
 
@@ -866,6 +873,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>IA / ML</strong></summary>
 
@@ -878,6 +886,7 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>Virtualização &amp; demos</strong></summary>
 

@@ -793,6 +793,9 @@ install_longhorn --schema yaml      # ...または YAML
 
 アドオンは kcluster またはノードの `addons` 配列に名前で参照される。対応する `install_<name>` スクリプトが `PATH` 上に存在する必要がある。
 
+<sub>ジャンプ: <a href="#addons-k8s">Kubernetes & GitOps</a> · <a href="#addons-security">セキュリティ & コンプライアンス</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">ストレージ & データベース</a> · <a href="#addons-cicd">CI/CD & ツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化 & デモ</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes プラットフォーム & GitOps</strong></summary>
 
@@ -813,6 +816,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>セキュリティ & コンプライアンス</strong></summary>
 
@@ -829,6 +833,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -842,6 +847,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>ストレージ & データベース</strong></summary>
 
@@ -854,6 +860,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD & 開発者向けツール</strong></summary>
 
@@ -866,6 +873,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
@@ -878,6 +886,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>仮想化 & デモ</strong></summary>
 

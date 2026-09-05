@@ -793,6 +793,9 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 插件通过名称在 kcluster 或节点的 `addons` 数组中被引用。对应的 `install_<name>` 脚本必须位于 `PATH` 中。
 
+<sub>快速跳转: <a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化与演示</a></sub>
+
+<a id="addons-k8s"></a>
 <details open>
 <summary><strong>Kubernetes 平台与 GitOps</strong></summary>
 
@@ -813,6 +816,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-security"></a>
 <details open>
 <summary><strong>安全与合规</strong></summary>
 
@@ -829,6 +833,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-suma"></a>
 <details open>
 <summary><strong>SUSE Manager / Uyuni</strong></summary>
 
@@ -842,6 +847,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-storage"></a>
 <details open>
 <summary><strong>存储与数据库</strong></summary>
 
@@ -854,6 +860,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-cicd"></a>
 <details open>
 <summary><strong>CI/CD 与开发者工具</strong></summary>
 
@@ -866,6 +873,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-ai"></a>
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
@@ -878,6 +886,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 </details>
 
+<a id="addons-virt"></a>
 <details open>
 <summary><strong>虚拟化与演示</strong></summary>
 
