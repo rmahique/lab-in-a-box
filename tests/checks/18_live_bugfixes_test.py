@@ -583,6 +583,56 @@ check("reboot_vm: tries shutdown before giving up and resetting",
 backends.socket.create_connection = socket.create_connection
 
 
+# ── vm_is_reusable / reboot_vm: their domstate check must use 3.6-compatible
+# subprocess.run() kwargs ────────────────────────────────────────────────────
+# Found in code review 2026-09-05: both called self._virsh("domstate", ...,
+# capture_output=True, text=True) -- Python 3.7+-only kwargs. This project's
+# containerized test suite (and even the real automation VM's own bare
+# python3) runs Python 3.6, where subprocess.run() rejects those two kwargs
+# outright with a TypeError. Not currently reachable from any bare-python3
+# entry point (every real caller goes through a python3.11-shebanged
+# script), but a landmine for a future one -- fixed to the same
+# stdout=PIPE/stderr=PIPE/universal_newlines=True form used everywhere else
+# in this codebase.
+def _py36_strict_run(args, **kwargs):
+    # Mimics real Python 3.6's subprocess.run(): TypeError on either
+    # Python-3.7+-only kwarg, exactly what the fixed code must never pass.
+    if "capture_output" in kwargs or "text" in kwargs:
+        raise TypeError("run() got an unexpected keyword argument (mimics Python 3.6)")
+    if "event" in args:
+        return FakeResult(returncode=1)  # no lifecycle event -> forces reboot_vm's escalation
+    if "domstate" in args:
+        return FakeResult(returncode=0, stdout="shut off\n")
+    return FakeResult(returncode=0)
+
+
+backends.subprocess.run = _py36_strict_run
+domstate_error = None
+try:
+    # mymac="" skips the MAC-mismatch branch entirely (_empty(mymac) is
+    # True), and state != "running" (from the fake above) returns False
+    # immediately after the one call this test cares about -- isolating
+    # exactly the domstate check, without needing to also fake DNS/SSH.
+    backend.vm_is_reusable("vm1", "", "10.0.0.1")
+except TypeError as e:
+    domstate_error = e
+check("vm_is_reusable: its domstate check never raises TypeError under Python-3.6-strict "
+      "subprocess.run kwargs", domstate_error is None)
+
+backends.socket.create_connection = lambda addr, timeout=None: (_ for _ in ()).throw(OSError("unreachable"))
+domstate_error = None
+try:
+    # Guest unreachable over SSH -> falls to the virsh escalation path;
+    # reboot/shutdown both "fail" (no event) under this fake -> reaches the
+    # domstate check (the second fix) -> "shut off" -> starts the domain.
+    backend.reboot_vm("vm1")
+except TypeError as e:
+    domstate_error = e
+check("reboot_vm: its domstate check never raises TypeError under Python-3.6-strict "
+      "subprocess.run kwargs", domstate_error is None)
+backends.socket.create_connection = socket.create_connection
+
+
 # ── push_provisioning_files (cloud-init): quote vm_name-derived paths ───────
 # Found in code review 2026-09-05: the remote shell command that assembles
 # the NoCloud cidata ISO on the hypervisor built its rm-f/-o/mv paths from

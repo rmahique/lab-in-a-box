@@ -297,8 +297,11 @@ class LibvirtBackend(VMBackend):
         default credentials. Any failed check returns False (safe default =
         recreate).
         """
+        # stdout=PIPE/stderr=PIPE/universal_newlines=True, not
+        # capture_output=/text= (Python 3.7+ only) — see targets.py's
+        # check_ssh_only_reachability() for the identical fix and why.
         state = self._virsh(
-            "domstate", vm_name, capture_output=True, text=True,
+            "domstate", vm_name, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
         ).stdout.strip()
         if state != "running":
             log("  {}KEEP CHECK{} \"{}{}{}\": not running on hypervisor (state: {}) — will recreate".format(
@@ -398,9 +401,12 @@ class LibvirtBackend(VMBackend):
             "event", vm_name, "--event", "lifecycle", "--timeout", "120",
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
+        # stdout=PIPE/stderr=PIPE/universal_newlines=True, not
+        # capture_output=/text= (Python 3.7+ only) — same fix as
+        # vm_is_reusable() above.
         state = self._virsh(
             "domstate", vm_name,
-            capture_output=True, text=True, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=False,
         )
         if stopped.returncode == 0 or "shut off" in (state.stdout or ""):
             self._virsh("start", vm_name, check=False)

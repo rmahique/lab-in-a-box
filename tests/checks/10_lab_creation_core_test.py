@@ -23,6 +23,12 @@ import targets  # noqa: E402
 # this file) needs the REAL subprocess.run to actually shell out to bash.
 _real_subprocess_run = lc.subprocess.run
 
+# Same reasoning: targets.check_ssh_only_reachability itself gets
+# permanently reassigned to a lambda further down this file (mocking it
+# out for validate_lab_definition()'s own tests) — the Python-3.6-kwarg
+# regression test near the end of this file needs the REAL implementation.
+_real_check_ssh_only_reachability = targets.check_ssh_only_reachability
+
 # This test container has no local virsh/virt-install (see the file
 # header) — force run_libvirt_tool()'s local branch regardless, so the
 # mocked lc.subprocess.run below is what actually gets called (matching
@@ -769,6 +775,31 @@ with tempfile.TemporaryDirectory() as tmp:
 check("prepare_cloud_init: instance-id/local-hostname are populated even when the caller "
       "doesn't pass _vm_name explicitly",
       "instance-id: vm1.mydemo.lab" in meta_data and "local-hostname: vm1.mydemo.lab" in meta_data)
+
+
+# ── check_ssh_only_reachability: must use 3.6-compatible subprocess.run() ───
+# Found in code review 2026-09-05: used capture_output=True, text=True --
+# Python 3.7+-only kwargs. This project's containerized test suite (and
+# even the real automation VM's own bare python3) runs Python 3.6, where
+# subprocess.run() rejects those two kwargs outright with a TypeError. Not
+# currently reachable from any bare-python3 entry point today, but a
+# landmine for a future one.
+def _py36_strict_run(args, **kwargs):
+    if "capture_output" in kwargs or "text" in kwargs:
+        raise TypeError("run() got an unexpected keyword argument (mimics Python 3.6)")
+    return FakeCompleted(stdout="ok\n")
+
+
+targets.subprocess.run = _py36_strict_run
+ssh_reach_error = None
+try:
+    result = _real_check_ssh_only_reachability("vm1.mydemo.lab")
+except TypeError as e:
+    ssh_reach_error = e
+check("check_ssh_only_reachability: never raises TypeError under Python-3.6-strict "
+      "subprocess.run kwargs", ssh_reach_error is None)
+check("check_ssh_only_reachability: still returns the correct True/False result "
+      "once past that", result is True)
 
 
 if failures:
