@@ -91,6 +91,22 @@ Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` 
 
 El sistema está construido alrededor de una **arquitectura de dos niveles**:
 
+```mermaid
+graph TB
+    Operator["Cliente del operador<br/>(SSH / DNS / HTTP)"]
+    subgraph HV["Nodo(s) hipervisor — KVM/QEMU"]
+        AutoVM["VM de automatización<br/>DNS · HTTP · scripts · interfaz web"]
+        VM1["VM del laboratorio"]
+        VM2["VM del laboratorio"]
+        VM3["VM del laboratorio"]
+    end
+    Operator --> AutoVM
+    AutoVM -- "virt-install / virsh (SSH)" --> HV
+    AutoVM -- "aprovisionamiento (SSH)" --> VM1
+    AutoVM -- "aprovisionamiento (SSH)" --> VM2
+    AutoVM -- "aprovisionamiento (SSH)" --> VM3
+```
+
 ### Nodo(s) hipervisor
 
 Una o varias máquinas físicas que ejecutan KVM/QEMU. Cada una aloja las VMs del laboratorio y guarda las imágenes QCOW2 de origen en `/var/lib/libvirt/images/sources/`. Sirve un NUC, una estación de trabajo o cualquier máquina x86_64 capaz de ejecutar KVM. Los laboratorios que necesiten más capacidad que una sola máquina pueden repartirse entre **varios hosts KVM** — ver [laboratorios multi-host](#multi-host-labs) más abajo.
@@ -117,6 +133,23 @@ Las herramientas de línea de comandos y cada add-on son Python 3.11, viven en `
 <a id="how-it-works"></a>
 ## Cómo funciona
 
+### Pipeline de despliegue
+
+`setup_lab.py` ejecuta una secuencia fija de fases; las dos fases exclusivas de Kubernetes se omiten por completo en un laboratorio solo de VMs (sin sección `kclusters`):
+
+```mermaid
+flowchart LR
+    A["phase_services<br/>(PXE / port-forward)"] --> B{"¿Hay clústeres<br/>Kubernetes definidos?"}
+    B -- sí --> C["phase_dns"]
+    B -- no --> D["phase_create_vms"]
+    C --> D
+    D --> E{"¿Hay clústeres<br/>Kubernetes definidos?"}
+    E -- sí --> F["phase_reboot_and_wait_kept_nodes"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+    E -- no --> H
+```
+
 ### Aprovisionamiento de VMs
 
 Cada VM se crea siguiendo estos pasos:
@@ -135,6 +168,19 @@ El método de aprovisionamiento se controla con `config_method` en el JSON del l
 | `cloud-init` | ISO de cloud-init | openSUSE Leap, Ubuntu |
 | `virt_customize` | Modifica la QCOW2 directamente en el hipervisor (`virt-customize`) — no requiere soporte de Ignition/cloud-init en el invitado | CentOS 7, Debian/RHEL antiguos, o cualquier imagen sin Ignition/cloud-init |
 | `install_iso` | Instalación guionizada desde una ISO de instalador real (AutoYaST, Kickstart, Preseed o AutoInstall, según `install_type`) | Distribuciones sin ninguna otra vía de aprovisionamiento |
+
+### Backends de VM
+
+Qué tecnología de hipervisor crea realmente un nodo lo decide una interfaz `VMBackend` intercambiable, resuelta una vez por nodo (`backend: harvester` en la configuración de ese nodo selecciona `HarvesterBackend`; cualquier otro valor usa `LibvirtBackend` por defecto) — cada add-on y script de orquestación habla con el backend resuelto de la misma manera, sea cual sea:
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "por defecto" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["virt-install / virsh<br/>en un hipervisor KVM"]
+    HB --> KV["KubeVirt VirtualMachine<br/>en un clúster Harvester"]
+```
 
 ### Configuración de Kubernetes
 
@@ -320,6 +366,17 @@ Para un despliegue en producción (Apache, o un servicio independiente systemd/s
 ## Formato de definición del laboratorio
 
 Los laboratorios se definen como archivos JSON. El formato actual admite varios clústeres de Kubernetes por laboratorio (`kclusters`); ver `examples/cluster.json.template` para el formato heredado de un solo clúster (`cluster`).
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>por VM: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>valores por defecto compartidos: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["una sección por add-on<br/>p. ej. rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {

@@ -88,6 +88,22 @@ Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` 
 
 The system is built around a **two-tier architecture**:
 
+```mermaid
+graph TB
+    Operator["Operator's client<br/>(SSH / DNS / HTTP)"]
+    subgraph HV["Hypervisor node(s) — KVM/QEMU"]
+        AutoVM["Automation VM<br/>DNS · HTTP · scripts · web UI"]
+        VM1["Lab VM"]
+        VM2["Lab VM"]
+        VM3["Lab VM"]
+    end
+    Operator --> AutoVM
+    AutoVM -- "virt-install / virsh (SSH)" --> HV
+    AutoVM -- "provisioning (SSH)" --> VM1
+    AutoVM -- "provisioning (SSH)" --> VM2
+    AutoVM -- "provisioning (SSH)" --> VM3
+```
+
 ### Hypervisor node(s)
 
 One or more physical/bare-metal machines running KVM/QEMU. Each hosts lab VMs and holds QCOW2 source images in `/var/lib/libvirt/images/sources/`. A NUC, a workstation, or any x86_64 machine capable of running KVM will do. Labs that need more capacity than one box can span **multiple KVM hosts** — see [multi-host labs](#multi-host-labs) below.
@@ -113,6 +129,23 @@ The command-line tools and every add-on are Python 3.11, living in `libs/` and `
 
 ## How it works
 
+### Deploy pipeline
+
+`setup_lab.py` runs a fixed sequence of phases; the two Kubernetes-only phases are skipped entirely for a VM-only lab (no `kclusters` section):
+
+```mermaid
+flowchart LR
+    A["phase_services<br/>(PXE / port-forward)"] --> B{"Kubernetes<br/>clusters defined?"}
+    B -- yes --> C["phase_dns"]
+    B -- no --> D["phase_create_vms"]
+    C --> D
+    D --> E{"Kubernetes<br/>clusters defined?"}
+    E -- yes --> F["phase_reboot_and_wait_kept_nodes"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+    E -- no --> H
+```
+
 ### VM provisioning
 
 Each VM is created by:
@@ -131,6 +164,19 @@ Provisioning method is controlled by `config_method` in the lab JSON (per-node o
 | `cloud-init` | cloud-init ISO | openSUSE Leap, Ubuntu |
 | `virt_customize` | Modifies the QCOW2 directly on the hypervisor (`virt-customize`) — no Ignition/cloud-init support needed on the guest | CentOS 7, old Debian/RHEL, or any image lacking Ignition/cloud-init |
 | `install_iso` | Scripted install from a real installer ISO (AutoYaST, Kickstart, Preseed, or AutoInstall, selected by `install_type`) | Distros with no other provisioning path |
+
+### VM backends
+
+Which hypervisor technology actually creates a node is decided by a pluggable `VMBackend` interface, resolved once per node (`backend: harvester` in that node's config selects `HarvesterBackend`; anything else defaults to `LibvirtBackend`) — every add-on and orchestration script talks to the resolved backend the same way regardless of which one it is:
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "default" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["virt-install / virsh<br/>on a KVM hypervisor"]
+    HB --> KV["KubeVirt VirtualMachine<br/>on a Harvester cluster"]
+```
 
 ### Kubernetes setup
 
@@ -308,6 +354,17 @@ For production deployment (Apache, or a standalone systemd/init-independent serv
 ## Lab definition format
 
 Labs are defined as JSON files. The current format supports multiple Kubernetes clusters per lab (`kclusters`); see `examples/cluster.json.template` for the legacy single-cluster format (`cluster`).
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>per-VM: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>shared defaults: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["one section per add-on<br/>e.g. rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 > [!NOTE]
 > A `.yaml`/`.yml` file works too — the format is auto-detected from the extension (or by falling back to YAML if a file isn't valid JSON), the same way through `setup_lab.py`'s preflight check, `install_<addon> --validate`, and every addon's own load path. YAML input requires `pyyaml` (`pip install pyyaml`) on the automation VM; without it you get a clear error telling you to install it, not a silent JSON-only failure.

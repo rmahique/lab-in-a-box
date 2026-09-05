@@ -33,6 +33,17 @@ beyond the standard library.
 
 ## Making a change
 
+```mermaid
+flowchart LR
+    A["Branch off dev"] --> B["Make the change"]
+    B --> C["Add/update tests<br/>under tests/checks/"]
+    C --> D{"Schema or web UI<br/>affected?"}
+    D -- yes --> E["Update scripts/lab_schema<br/>+ the web UI, same change"]
+    D -- no --> F["tests/run_tests.sh"]
+    E --> F
+    F --> G["Open a PR"]
+```
+
 1. Create a branch off `dev` (not `main` — `main` tracks released state).
 2. Make your change. Match the style of the surrounding code:
    - Python targets **3.11**, stdlib-only. No new third-party dependency
@@ -54,8 +65,11 @@ beyond the standard library.
 4. If your change affects a script's own configuration schema (new field,
    new JSON section) or anything the web UI reads, update
    `scripts/lab_schema` and the web UI in the **same** change — see
-   [Web UI (lab-builder)](README.md#web-ui-lab-builder). A schema change
-   that isn't reflected in the UI is treated as incomplete.
+   [Web UI (lab-builder)](README.md#web-ui-lab-builder).
+
+   > [!WARNING]
+   > A schema change that isn't reflected in the UI is treated as incomplete.
+
 5. Run the full test suite before opening a PR:
    ```shell
    tests/run_tests.sh

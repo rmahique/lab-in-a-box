@@ -91,6 +91,22 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 
 整个系统围绕**双层架构**构建：
 
+```mermaid
+graph TB
+    Operator["操作者的客户端<br/>(SSH / DNS / HTTP)"]
+    subgraph HV["虚拟化主机节点 — KVM/QEMU"]
+        AutoVM["自动化虚拟机<br/>DNS · HTTP · 脚本 · Web UI"]
+        VM1["实验环境虚拟机"]
+        VM2["实验环境虚拟机"]
+        VM3["实验环境虚拟机"]
+    end
+    Operator --> AutoVM
+    AutoVM -- "virt-install / virsh (SSH)" --> HV
+    AutoVM -- "配置 (SSH)" --> VM1
+    AutoVM -- "配置 (SSH)" --> VM2
+    AutoVM -- "配置 (SSH)" --> VM3
+```
+
 ### 虚拟化主机节点
 
 一台或多台运行 KVM/QEMU 的物理裸机。每台主机都承载实验环境的虚拟机，并在 `/var/lib/libvirt/images/sources/` 中保存源 QCOW2 镜像。一台 NUC、一台工作站，或任何能够运行 KVM 的 x86_64 机器都可以胜任。需要超出单台机器容量的实验环境，可以跨越**多台 KVM 主机**——详见下文的[多主机实验环境](#multi-host-labs)。
@@ -117,6 +133,23 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 <a id="how-it-works"></a>
 ## 工作原理
 
+### 部署流水线
+
+`setup_lab.py` 按固定的阶段顺序执行；对于纯虚拟机实验环境（没有 `kclusters` 部分），两个仅与 Kubernetes 相关的阶段会被完全跳过：
+
+```mermaid
+flowchart LR
+    A["phase_services<br/>(PXE / 端口转发)"] --> B{"是否定义了<br/>Kubernetes 集群？"}
+    B -- 是 --> C["phase_dns"]
+    B -- 否 --> D["phase_create_vms"]
+    C --> D
+    D --> E{"是否定义了<br/>Kubernetes 集群？"}
+    E -- 是 --> F["phase_reboot_and_wait_kept_nodes"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+    E -- 否 --> H
+```
+
 ### 虚拟机配置
 
 每台虚拟机按以下步骤创建：
@@ -135,6 +168,19 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 | `cloud-init` | cloud-init ISO | openSUSE Leap、Ubuntu |
 | `virt_customize` | 直接在虚拟化主机上修改 QCOW2（`virt-customize`）——客户机无需支持 Ignition/cloud-init | CentOS 7、旧版 Debian/RHEL，或任何不支持 Ignition/cloud-init 的镜像 |
 | `install_iso` | 从真正的安装 ISO 进行脚本化安装（根据 `install_type` 选择 AutoYaST、Kickstart、Preseed 或 AutoInstall） | 没有其他配置方式的发行版 |
+
+### 虚拟机后端
+
+究竟由哪种虚拟化技术来创建一个节点，取决于一个可插拔的 `VMBackend` 接口，每个节点解析一次（该节点配置中的 `backend: harvester` 会选择 `HarvesterBackend`；其他情况默认使用 `LibvirtBackend`）——无论解析出的是哪个后端，每个插件和编排脚本都以同样的方式与它交互：
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "默认" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["KVM 虚拟化主机上的<br/>virt-install / virsh"]
+    HB --> KV["Harvester 集群上的<br/>KubeVirt VirtualMachine"]
+```
 
 ### Kubernetes 配置
 
@@ -320,6 +366,17 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
 ## 实验环境定义格式
 
 实验环境以 JSON 文件的形式定义。当前格式支持每个实验环境包含多个 Kubernetes 集群（`kclusters`）；旧版单集群格式（`cluster`）请参见 `examples/cluster.json.template`。
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>每台虚拟机：myip、mymac、kcluster、addons..."]
+    Lab --> Common["common<br/>共享默认值：ISO_IMAGE、VM_MEM、VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type、clu_rel、mydomain、addons"]
+    Lab --> AddonSections["每个插件一个部分<br/>例如 rancher、longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {

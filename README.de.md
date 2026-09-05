@@ -91,6 +91,22 @@ Ignition+Combustion (SLE Micro), cloud-init (openSUSE/Ubuntu), `virt-customize` 
 
 Das System basiert auf einer **zweistufigen Architektur**:
 
+```mermaid
+graph TB
+    Operator["Client des Betreibers<br/>(SSH / DNS / HTTP)"]
+    subgraph HV["Hypervisor-Knoten — KVM/QEMU"]
+        AutoVM["Automatisierungs-VM<br/>DNS · HTTP · Skripte · Web-UI"]
+        VM1["Lab-VM"]
+        VM2["Lab-VM"]
+        VM3["Lab-VM"]
+    end
+    Operator --> AutoVM
+    AutoVM -- "virt-install / virsh (SSH)" --> HV
+    AutoVM -- "Provisionierung (SSH)" --> VM1
+    AutoVM -- "Provisionierung (SSH)" --> VM2
+    AutoVM -- "Provisionierung (SSH)" --> VM3
+```
+
 ### Hypervisor-Knoten
 
 Eine oder mehrere physische Bare-Metal-Maschinen, die KVM/QEMU ausführen. Jede hostet Lab-VMs und hält QCOW2-Quellabbilder unter `/var/lib/libvirt/images/sources/`. Ein NUC, eine Workstation oder jede x86_64-Maschine, die KVM ausführen kann, reicht aus. Labs, die mehr Kapazität als eine Box benötigen, können sich über **mehrere KVM-Hosts** erstrecken — siehe [Multi-Host-Labs](#multi-host-labs) weiter unten.
@@ -117,6 +133,23 @@ Die Kommandozeilen-Tools und jedes Add-on sind Python 3.11, liegen in `libs/` un
 <a id="how-it-works"></a>
 ## Funktionsweise
 
+### Deploy-Pipeline
+
+`setup_lab.py` durchläuft eine feste Phasenfolge; die beiden Kubernetes-spezifischen Phasen werden für ein reines VM-Lab (ohne `kclusters`-Abschnitt) komplett übersprungen:
+
+```mermaid
+flowchart LR
+    A["phase_services<br/>(PXE / Port-Forwarding)"] --> B{"Kubernetes-<br/>Cluster definiert?"}
+    B -- ja --> C["phase_dns"]
+    B -- nein --> D["phase_create_vms"]
+    C --> D
+    D --> E{"Kubernetes-<br/>Cluster definiert?"}
+    E -- ja --> F["phase_reboot_and_wait_kept_nodes"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+    E -- nein --> H
+```
+
 ### VM-Provisionierung
 
 Jede VM wird so erstellt:
@@ -135,6 +168,19 @@ Die Provisionierungsmethode wird über `config_method` im Lab-JSON gesteuert (pr
 | `cloud-init` | cloud-init-ISO | openSUSE Leap, Ubuntu |
 | `virt_customize` | Ändert die QCOW2 direkt auf dem Hypervisor (`virt-customize`) — keine Ignition/cloud-init-Unterstützung im Gast nötig | CentOS 7, altes Debian/RHEL oder jedes Abbild ohne Ignition/cloud-init |
 | `install_iso` | Skriptgesteuerte Installation von einer echten Installer-ISO (AutoYaST, Kickstart, Preseed oder AutoInstall, je nach `install_type`) | Distributionen ohne anderen Provisionierungsweg |
+
+### VM-Backends
+
+Welche Hypervisor-Technologie einen Knoten tatsächlich erstellt, entscheidet eine austauschbare `VMBackend`-Schnittstelle, einmal pro Knoten aufgelöst (`backend: harvester` in der Knotenkonfiguration wählt `HarvesterBackend`; alles andere verwendet standardmäßig `LibvirtBackend`) — jedes Add-on und jedes Orchestrierungsskript spricht mit dem aufgelösten Backend auf die gleiche Weise, unabhängig davon, welches es ist:
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "Standard" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["virt-install / virsh<br/>auf einem KVM-Hypervisor"]
+    HB --> KV["KubeVirt VirtualMachine<br/>auf einem Harvester-Cluster"]
+```
 
 ### Kubernetes-Einrichtung
 
@@ -320,6 +366,17 @@ Für ein Produktions-Deployment (Apache, oder ein eigenständiger, init-unabhän
 ## Lab-Definitionsformat
 
 Labs werden als JSON-Dateien definiert. Das aktuelle Format unterstützt mehrere Kubernetes-Cluster pro Lab (`kclusters`); siehe `examples/cluster.json.template` für das ältere Single-Cluster-Format (`cluster`).
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>pro VM: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>gemeinsame Standardwerte: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["ein Abschnitt pro Add-on<br/>z.B. rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {

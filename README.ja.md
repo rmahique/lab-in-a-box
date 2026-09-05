@@ -91,6 +91,22 @@ Ignition+Combustion（SLE Micro）、cloud-init（openSUSE/Ubuntu）、`virt-cus
 
 このシステムは **2階層アーキテクチャ** を中心に構築されている：
 
+```mermaid
+graph TB
+    Operator["オペレーターのクライアント<br/>(SSH / DNS / HTTP)"]
+    subgraph HV["ハイパーバイザーノード — KVM/QEMU"]
+        AutoVM["自動化 VM<br/>DNS · HTTP · スクリプト · Web UI"]
+        VM1["ラボ VM"]
+        VM2["ラボ VM"]
+        VM3["ラボ VM"]
+    end
+    Operator --> AutoVM
+    AutoVM -- "virt-install / virsh (SSH)" --> HV
+    AutoVM -- "プロビジョニング (SSH)" --> VM1
+    AutoVM -- "プロビジョニング (SSH)" --> VM2
+    AutoVM -- "プロビジョニング (SSH)" --> VM3
+```
+
 ### ハイパーバイザーノード
 
 KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それぞれがラボの VM をホストし、`/var/lib/libvirt/images/sources/` に元となる QCOW2 イメージを保持する。NUC、ワークステーション、あるいは KVM を実行できる任意の x86_64 マシンであればよい。1台では容量が足りないラボは **複数の KVM ホスト** にまたがることができる — 詳細は下記の[マルチホストラボ](#multi-host-labs)を参照。
@@ -117,6 +133,23 @@ KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それ�
 <a id="how-it-works"></a>
 ## 動作の仕組み
 
+### デプロイパイプライン
+
+`setup_lab.py` は固定されたフェーズの順序で実行される。`kclusters` セクションを持たない VM のみのラボでは、Kubernetes 専用の2つのフェーズは完全にスキップされる：
+
+```mermaid
+flowchart LR
+    A["phase_services<br/>(PXE / ポートフォワード)"] --> B{"Kubernetes<br/>クラスターが定義されている？"}
+    B -- はい --> C["phase_dns"]
+    B -- いいえ --> D["phase_create_vms"]
+    C --> D
+    D --> E{"Kubernetes<br/>クラスターが定義されている？"}
+    E -- はい --> F["phase_reboot_and_wait_kept_nodes"]
+    F --> G["phase_install_k8s_and_addons"]
+    G --> H["phase_vm_addons"]
+    E -- いいえ --> H
+```
+
 ### VM のプロビジョニング
 
 各 VM は次の手順で作成される：
@@ -135,6 +168,19 @@ KVM/QEMU を実行する1台以上の物理・ベアメタルマシン。それ�
 | `cloud-init` | cloud-init ISO | openSUSE Leap、Ubuntu |
 | `virt_customize` | ハイパーバイザー上で QCOW2 を直接変更する（`virt-customize`）— ゲスト側で Ignition/cloud-init のサポートは不要 | CentOS 7、古い Debian/RHEL、または Ignition/cloud-init を持たない任意のイメージ |
 | `install_iso` | 実際のインストーラー ISO からのスクリプト化インストール（`install_type` に応じて AutoYaST、Kickstart、Preseed、AutoInstall） | 他にプロビジョニング手段のないディストリビューション |
+
+### VM バックエンド
+
+どのハイパーバイザー技術が実際にノードを作成するかは、ノードごとに一度だけ解決される差し替え可能な `VMBackend` インターフェースによって決まる（そのノードの設定で `backend: harvester` を指定すると `HarvesterBackend` が選ばれ、それ以外はデフォルトで `LibvirtBackend` が使われる）。どのアドオンやオーケストレーションスクリプトも、解決されたバックエンドがどちらであっても同じ方法でやり取りする：
+
+```mermaid
+graph TD
+    SV["setup_vm.py / setup_lab.py"] --> GB["backends.get_backend()"]
+    GB -- "デフォルト" --> LB["LibvirtBackend"]
+    GB -- "backend: harvester" --> HB["HarvesterBackend"]
+    LB --> KVM["KVM ハイパーバイザー上の<br/>virt-install / virsh"]
+    HB --> KV["Harvester クラスター上の<br/>KubeVirt VirtualMachine"]
+```
 
 ### Kubernetes のセットアップ
 
@@ -320,6 +366,17 @@ python3.11 webui/run-local.py            # → http://localhost:8677/
 ## ラボ定義フォーマット
 
 ラボは JSON ファイルとして定義される。現在のフォーマットは、ラボごとに複数の Kubernetes クラスター（`kclusters`）をサポートしている。従来のシングルクラスター形式（`cluster`）については `examples/cluster.json.template` を参照。
+
+```mermaid
+graph TD
+    Lab["lab.json"] --> Nodes["nodes<br/>VMごと: myip, mymac, kcluster, addons..."]
+    Lab --> Common["common<br/>共有デフォルト値: ISO_IMAGE, VM_MEM, VM_DSK..."]
+    Lab --> KClusters["kclusters<br/>clu_type, clu_rel, mydomain, addons"]
+    Lab --> AddonSections["アドオンごとのセクション<br/>例: rancher, longhorn"]
+    Nodes -. "kcluster" .-> KClusters
+    KClusters -. "addons" .-> AddonSections
+    Nodes -. "addons" .-> AddonSections
+```
 
 ```jsonc
 {
