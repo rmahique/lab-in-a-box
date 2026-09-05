@@ -76,6 +76,54 @@ def _merged_env(definition, config, defaults, vm_name):
     return env
 
 
+def validate_addon_configs(definition, json_file):
+    """
+    Run `install_<addon> --validate <json_file>` for every addon referenced
+    anywhere in the lab definition (kclusters[x].addons and nodes[x].addons —
+    see apps.collect_addon_names()), before any VM/cluster work starts.
+
+    Found in code review 2026-09-05: each addon's own Validator (vns/vport/
+    vver/vreq/...) checks were only ever reachable by an operator manually
+    running `install_<addon> --validate <file>` — setup_lab.py never called
+    it, so a bad addon-config value (say, an invalid namespace) surfaced
+    only once that addon actually ran, potentially deep into the pipeline
+    after VMs/clusters were already created. Wired in here as a genuine
+    preflight step instead, mirroring validate_lab_definition()'s own
+    "collect every issue, report once" style — one bad addon's config
+    should not leave a half-deployed lab behind it.
+
+    An addon whose --validate has nothing to check (no _validate() of its
+    own — several addons are like this, see handle_common_args()'s own
+    docstring) always exits 0 here, same as running it by hand would.
+
+    Returns True iff every addon validated clean.
+    """
+    addon_names = apps.collect_addon_names(definition)
+    if not addon_names:
+        return True
+
+    issues = []
+    for addon in addon_names:
+        installer = shutil.which("install_{}".format(addon))
+        if not installer:
+            issues.append("  [ERROR] addon '{}': install_{} not found on PATH".format(addon, addon))
+            continue
+        r = subprocess.run([installer, "--validate", json_file],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        if r.returncode != 0:
+            for line in (r.stdout or "").splitlines():
+                issues.append("  addon '{}': {}".format(addon, line))
+
+    if issues:
+        print("\n".join(issues))
+        print("{}✗ Addon-config preflight FAILED{} — fix the above before proceeding.".format(
+            lc._RED, lc._RESET))
+        return False
+    print("{}✓ Addon-config preflight passed{} — {} addon(s) checked.".format(
+        lc._GREEN, lc._RESET, len(addon_names)))
+    return True
+
+
 def phase_services(definition, config, defaults):
     """
     Configure+enable every service listed in common.services (optional;
@@ -350,6 +398,9 @@ def main():
     lab_setup_path = defaults.get("LAB_SETUP_PATH", "/srv/www/htdocs/lab_creation")
     vm_img_loc     = defaults.get("VM_IMG_LOC", "/var/lib/libvirt/images/").rstrip("/")
     if not lc.validate_lab_definition(definition, config, iso_loc, lab_setup_path, vm_img_loc=vm_img_loc):
+        sys.exit(1)
+
+    if not validate_addon_configs(definition, json_file):
         sys.exit(1)
 
     total_cpu, total_mem, total_disk = lc.total_lab_resources(definition)
