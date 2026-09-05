@@ -287,6 +287,30 @@ check("create_vm (autoinstall): the domain is started again after the boot-confi
       start_call is not None and edit_call is not None
       and calls_after_install.index(edit_call) < calls_after_install.index(start_call))
 
+# ── xorriso extraction command must quote its vm_name-derived paths ─────────
+# Found in code review 2026-09-05: the very next line after this extraction
+# (the cleanup `rm -f '{seed}' '{vmlinuz}' '{initrd}'`) already single-quotes
+# these same paths, but the extraction command that builds vmlinuz_remote/
+# initrd_remote in the first place did not — and both embed vm_name, a lab.
+# json node hostname never validated against shell metacharacters anywhere
+# in this codebase. Run over ssh_run(), which hands the whole string to the
+# remote shell, an unquoted vm_name containing a space (or worse) could
+# break — or inject into — this command.
+backends.os.unlink = lambda path: None
+subproc_calls.clear()
+backend.create_vm(
+    "two words", "2", "4096", "40", "network=default,model=virtio",
+    config_method="install_iso", install_type="autoinstall",
+    iso_image="ubuntu-24.04-live-server-amd64.iso", iso_loc="/iso",
+)
+backends.os.unlink = _real_os_unlink
+extract_call = next(c for c in subproc_calls if "xorriso" in c[-1])
+check("create_vm (autoinstall): xorriso extraction quotes the vm_name-derived vmlinuz/initrd paths",
+      "'/var/lib/libvirt/images/two words_vmlinuz'" in extract_call[-1]
+      and "'/var/lib/libvirt/images/two words_initrd'" in extract_call[-1])
+check("create_vm (autoinstall): xorriso extraction quotes the ISO source path too",
+      "'/iso/ubuntu-24.04-live-server-amd64.iso'" in extract_call[-1])
+
 
 # ── prepare_install_iso() autoinstall hostname: found live 2026-09-03, on the
 # same VM as the two bugs above, once it actually finished installing and

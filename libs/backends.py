@@ -683,8 +683,8 @@ class LibvirtBackend(VMBackend):
                 initrd_remote = "{}/{}_initrd".format(vm_img_loc, vm_name)
                 extract = ssh_run(
                     remote_host,
-                    "rm -f {v} {i} && xorriso -osirrox on -indev {iso_loc}/{iso_image} "
-                    "-extract /casper/vmlinuz {v} -extract /casper/initrd {i}".format(
+                    "rm -f '{v}' '{i}' && xorriso -osirrox on -indev '{iso_loc}/{iso_image}' "
+                    "-extract /casper/vmlinuz '{v}' -extract /casper/initrd '{i}'".format(
                         v=vmlinuz_remote, i=initrd_remote, iso_loc=iso_loc, iso_image=iso_image),
                     check=False)
                 if extract.returncode != 0:
