@@ -89,6 +89,15 @@ request, plus a couple of fast standalone checks (byte-compiling everything
 on Python 3.11, and confirming every add-on prints its schema) for quicker
 feedback than waiting on the full container run.
 
+> [!TIP]
+> If your change touches one of the documented [Examples](README.md#examples),
+> also run its real-hardware deploy+check test under `tests/examples/`
+> (`tests/examples/run_example.sh <name>`) before opening the PR — these need
+> a real KVM hypervisor, so they're not part of `tests/run_tests.sh`'s
+> automatic sweep, but they're the only thing that actually confirms the
+> example still deploys into a *working* cluster/VM, not just that
+> `setup_lab.py` exits 0. See [tests/examples/README.md](tests/examples/README.md).
+
 ## Commit messages
 
 Short, imperative, factual: `Add X`, `Fix Y`, `Retire Z`. Explain *why* in

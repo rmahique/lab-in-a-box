@@ -978,6 +978,9 @@ Covers bash and Python syntax across the whole tree, schema/webui consistency, m
 
 Wired into a pre-commit hook (enable once per clone, see [Contributing](#contributing--developer-setup)) — it runs automatically on every commit and skips with a warning if `podman` isn't installed, rather than blocking the commit.
 
+> [!NOTE]
+> The [Examples](#examples) above each have a matching real-hardware deploy+check test under `tests/examples/` — they need a working KVM hypervisor and automation VM, so they're **not** part of `tests/run_tests.sh`'s automatic sweep, but they're present and runnable by hand (`tests/examples/run_example.sh <name>`) before pushing a change that could affect one of these documented flows. See [tests/examples/README.md](tests/examples/README.md).
+
 <p align="right"><a href="#top">↑ back to top</a></p>
 
 ---
