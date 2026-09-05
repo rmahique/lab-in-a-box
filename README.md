@@ -913,7 +913,17 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 |---|---|
 | `ollama` | Local LLM runtime |
 | `deepseek` | DeepSeek model, served via Ollama |
-| `gemini` | Google Gemini API integration |
+| `apertus` | Apertus (Swiss AI Initiative) model, served via Ollama |
+| `gemini` | Google Gemini API proxy (LiteLLM) |
+| `anthropic` | Anthropic Claude API proxy (LiteLLM) |
+| `openai` | OpenAI API proxy (LiteLLM) |
+| `kimi` | Moonshot AI Kimi API proxy (LiteLLM) |
+| `open_webui` | Chat frontend for Ollama / OpenAI-compatible endpoints |
+| `suse_ai` | SUSE's own Ollama + Open WebUI + Milvus AI stack |
+| `milvus` | Milvus vector database (RAG/embedding search) |
+| `qdrant` | Qdrant vector database (RAG/embedding search) |
+| `weaviate` | Weaviate vector database (RAG/embedding search) |
+| `gpu_operator` | NVIDIA GPU Operator (GPU scheduling for AI workloads) |
 | `phoebe` | (see `install_phoebe --schema`) |
 
 </details>
