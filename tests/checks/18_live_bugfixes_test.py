@@ -338,7 +338,22 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     autoinstall_user_data = (Path(tmp) / "install_iso" / "venus.mydemo.lab" / "user-data").read_text()
 check("prepare_install_iso (autoinstall): a late-command sets /etc/hostname to the real node name",
-      "echo venus.mydemo.lab > /target/etc/hostname" in autoinstall_user_data)
+      'echo "venus.mydemo.lab" > /target/etc/hostname' in autoinstall_user_data)
+
+# vm_name is quoted in that late-command — found in code review 2026-09-05:
+# this string runs as a real shell command inside the install target, and
+# vm_name (a lab.json node hostname) is never validated against shell
+# metacharacters anywhere in this codebase. A name with an embedded space
+# must stay one shell word, not become "echo two words > ..." unquoted.
+with tempfile.TemporaryDirectory() as tmp:
+    lc.prepare_install_iso(
+        "two words", tmp, "autoinstall", "ubuntu-24.04-live-server-amd64.iso",
+        "52:54:00:aa:bb:cc", "192.168.88.116", "24", "192.168.88.1", "192.168.88.73",
+        "mydemo.lab", "x",
+    )
+    autoinstall_user_data = (Path(tmp) / "install_iso" / "two words" / "user-data").read_text()
+check("prepare_install_iso (autoinstall): the hostname late-command quotes vm_name",
+      'echo "two words" > /target/etc/hostname' in autoinstall_user_data)
 
 
 # ── copy_vm_image / disk_format: found live on nuc6 (2026-08-31) — create_vm's

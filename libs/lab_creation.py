@@ -1913,7 +1913,12 @@ def prepare_install_iso(
             # (the seed cdrom) is detached again right after this install
             # finishes, so nothing ever re-reads it on a later real boot.
             # Set directly instead, the same way the sshd config above is.
-            "    - echo {vm_name} > /target/etc/hostname\n"
+            # vm_name is quoted here (found in code review 2026-09-05) —
+            # this late-command runs as a real shell command inside the
+            # target, and vm_name (a lab.json node hostname) is never
+            # validated against shell metacharacters anywhere in this
+            # codebase.
+            "    - echo \"{vm_name}\" > /target/etc/hostname\n"
         ).format(
             mymac=mymac, myip=myip, mymask=mymask, mygw=mygw, mydns=mydns, mydomain=mydomain,
             root_pwd_hash=root_pwd_hash, root_ssh_pubkey=root_ssh_pubkey, vm_name=vm_name,
