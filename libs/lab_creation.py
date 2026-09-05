@@ -70,6 +70,31 @@ def _empty(value):
     return value is None or value is False or value == ""
 
 
+def yaml_scalar(value):
+    """Render a Python value as a YAML scalar for hand-built YAML config
+    blocks — bool/int/float unquoted, everything else double-quoted.
+    Deliberately simple (flat scalars only, no nested structures) — same
+    "operator pre-configures it, we don't own the semantics" stance as
+    HARVESTER_NETWORK/Multus in libs/backends.py.
+
+    A string value's own backslash/quote/newline characters are escaped
+    per YAML's double-quoted-scalar rules — confirmed live 2026-09-05
+    (first in scripts/setup_harvester_cluster.py, moved here 2026-09-05
+    after finding the identical bug in prepare_install_iso()'s Ubuntu
+    autoinstall cloud-config below) that without this, a value containing
+    so much as an embedded quote silently corrupts the rendered YAML, and
+    one with an embedded colon+newline can inject entirely new, unrelated
+    top-level keys into the document.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = (str(value).replace("\\", "\\\\").replace('"', '\\"')
+               .replace("\n", "\\n").replace("\r", "\\r"))
+    return '"{}"'.format(escaped)
+
+
 def resolve_install_type(install_type, iso_image):
     """
     Auto-detect the installer flavour from the ISO filename when install_type is
@@ -1877,7 +1902,7 @@ def prepare_install_iso(
             "          set-name: eth0\n"
             "          dhcp4: no\n"
             "          addresses:\n"
-            "            - {myip}/{mymask}\n"
+            "            - {mycidr}\n"
             "          gateway4: {mygw}\n"
             "          nameservers:\n"
             "            addresses: [{mydns}]\n"
@@ -1891,9 +1916,9 @@ def prepare_install_iso(
             "    users:\n"
             "      - name: root\n"
             "        lock_passwd: false\n"
-            "        hashed_passwd: \"{root_pwd_hash}\"\n"
+            "        hashed_passwd: {root_pwd_hash}\n"
             "        ssh_authorized_keys:\n"
-            "          - \"{root_ssh_pubkey}\"\n"
+            "          - {root_ssh_pubkey}\n"
             "  ssh:\n"
             "    install-server: true\n"
             "    allow-pw: true\n"
@@ -1920,8 +1945,20 @@ def prepare_install_iso(
             # codebase.
             "    - echo \"{vm_name}\" > /target/etc/hostname\n"
         ).format(
-            mymac=mymac, myip=myip, mymask=mymask, mygw=mygw, mydns=mydns, mydomain=mydomain,
-            root_pwd_hash=root_pwd_hash, root_ssh_pubkey=root_ssh_pubkey, vm_name=vm_name,
+            # mymac/myip/mymask/mygw/mydns/mydomain/root_pwd_hash/
+            # root_ssh_pubkey are all bare (myip/mymask/mygw/mydns/mydomain
+            # not even hand-quoted) YAML scalars in this hand-built
+            # #cloud-config document — found in code review 2026-09-05,
+            # confirmed live by direct execution: a mydomain value with an
+            # embedded colon+newline injected two new, unrelated top-level
+            # keys straight into the rendered YAML, the exact same bug
+            # already found and fixed in setup_harvester_cluster.py's own
+            # hand-built YAML. yaml_scalar() escapes each value correctly
+            # regardless of which one a lab.json author gets creative with.
+            mymac=yaml_scalar(mymac), mycidr=yaml_scalar("{}/{}".format(myip, mymask)),
+            mygw=yaml_scalar(mygw), mydns=yaml_scalar(mydns), mydomain=yaml_scalar(mydomain),
+            root_pwd_hash=yaml_scalar(root_pwd_hash), root_ssh_pubkey=yaml_scalar(root_ssh_pubkey),
+            vm_name=vm_name,
         )
         (out_dir / "user-data").write_text(user_data)
         (out_dir / "meta-data").write_text(

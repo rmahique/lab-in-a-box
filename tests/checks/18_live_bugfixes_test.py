@@ -10,6 +10,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Tolerant of pyyaml not being installed in this container — same pattern
+# already used in 11_primary_test.py/13_addon_common_test.py/
+# 30_setup_harvester_cluster_test.py.
+try:
+    import yaml as _yaml
+    _has_yaml = True
+except ImportError:
+    _has_yaml = False
+
 _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
 
@@ -360,6 +369,38 @@ with tempfile.TemporaryDirectory() as tmp:
     autoinstall_user_data = (Path(tmp) / "install_iso" / "two words" / "user-data").read_text()
 check("prepare_install_iso (autoinstall): the hostname late-command quotes vm_name",
       'echo "two words" > /target/etc/hostname' in autoinstall_user_data)
+
+# ── prepare_install_iso (autoinstall): the #cloud-config YAML must escape
+# its own network/credential values, not just quote (or not even quote) them
+# raw ─────────────────────────────────────────────────────────────────────
+# Found in code review 2026-09-05, confirmed by direct execution: myip/
+# mymask/mygw/mydns/mydomain were bare (not even hand-quoted) YAML scalars,
+# and root_pwd_hash/root_ssh_pubkey were hand-quoted but not escaped — the
+# exact same bug already found and fixed in setup_harvester_cluster.py's
+# own hand-built YAML, just worse here (some fields had no quoting at all).
+# A mydomain value with an embedded colon+newline injected two new,
+# unrelated top-level keys straight into the rendered document.
+malicious_domain = "mydemo.lab]\nssh_pwauth: false\nfake_key: injected"
+with tempfile.TemporaryDirectory() as tmp:
+    lc.prepare_install_iso(
+        "venus.mydemo.lab", tmp, "autoinstall", "ubuntu-24.04-live-server-amd64.iso",
+        "52:54:00:aa:bb:cc", "192.168.88.116", "24", "192.168.88.1", "192.168.88.73",
+        malicious_domain, "x",
+    )
+    autoinstall_user_data = (Path(tmp) / "install_iso" / "venus.mydemo.lab" / "user-data").read_text()
+if _has_yaml:
+    parsed = _yaml.safe_load(autoinstall_user_data)
+    check("prepare_install_iso (autoinstall): a mydomain value with an embedded colon+newline "
+          "is preserved as DATA, not parsed as new YAML structure — only 'autoinstall' is a "
+          "top-level key, nothing got injected",
+          list(parsed.keys()) == ["autoinstall"])
+    check("prepare_install_iso (autoinstall): the malicious value itself is still there, intact",
+          malicious_domain in parsed["autoinstall"]["network"]["network"]["ethernets"]["id0"]
+          ["nameservers"]["search"])
+else:
+    check("prepare_install_iso (autoinstall): the malicious value's own colon+newline never "
+          "appears un-escaped in the rendered YAML (substring check, no pyyaml)",
+          "\nssh_pwauth: false" not in autoinstall_user_data)
 
 
 # ── copy_vm_image / disk_format: found live on nuc6 (2026-08-31) — create_vm's
