@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.11
 """
-Post-deploy check for tests/examples/uyuni-lab.json (README's "SUSE Manager
-(Uyuni) server + a registered client" example) — confirms the activation
+Post-deploy check for tests/examples/uyuni-lab.json (README's "SUSE Multi-Linux
+Manager (Uyuni) server + a registered client" example) — confirms the activation
 key was actually created (not just that install_uyuni exited 0) and that
 client1 actually shows up as a registered system against the server, not
 just that client_registration's own script ran without error.

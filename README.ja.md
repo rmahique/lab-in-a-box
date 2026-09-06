@@ -39,7 +39,7 @@
 VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。正しい順序ですべてを構築する。
 
 `install_<addon>` · **41種類のアドオンをすぐに利用可能。**
-Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Manager/Uyuni（アクティベーションキー、RBAC、Content Lifecycle Management、Ansible 連携など）、セキュリティトレーニング用の脆弱なデモアプリなど。
+Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Multi-Linux Manager/Uyuni（アクティベーションキー、RBAC、Content Lifecycle Management、Ansible 連携など）、セキュリティトレーニング用の脆弱なデモアプリなど。
 
 [`lab-builder`](#web-ui-lab-builder) · **動的な Web UI。**
 各アドオン自身のスキーマからフォームを直接生成する — スクリプトにフィールドを追加すれば、フロントエンドを一切変更せずに UI がそれを取り込む。
@@ -550,7 +550,7 @@ setup_lab.py --keep rancher-cluster.json
 }
 ```
 
-### SUSE Manager（Uyuni）サーバー + 登録済みクライアント
+### SUSE Multi-Linux Manager（Uyuni）サーバー + 登録済みクライアント
 
 アクティベーションキー付きの Uyuni サーバーを立ち上げ、2台目の VM をそれに対する Salt クライアントとして登録する — 機能の全体像（`orgs`、RBAC、Content Lifecycle Management、Ansible 連携など）は[利用可能なアドオン](#available-addons)を参照：
 
@@ -655,7 +655,7 @@ setup_lab.py --keep rancher-cluster.json
    destroy_lab.py rancher-cluster.json
    ```
 
-### ウォークスルー2 — 登録済みクライアントを持つ SUSE Manager（Uyuni）サーバー
+### ウォークスルー2 — 登録済みクライアントを持つ SUSE Multi-Linux Manager（Uyuni）サーバー
 
 目標：本物のアクティベーションキーを持つ Uyuni サーバーと、それに対して自身を Salt 管理クライアントとして登録する2台目の VM。実際の Uyuni サーバーに対して**エンドツーエンドで実機テスト済み**。
 
@@ -795,7 +795,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 アドオンは kcluster またはノードの `addons` 配列に名前で参照される。対応する `install_<name>` スクリプトが `PATH` 上に存在する必要がある。
 
-<sub>ジャンプ: <a href="#addons-k8s">Kubernetes & GitOps</a> · <a href="#addons-security">セキュリティ & コンプライアンス</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">ストレージ & データベース</a> · <a href="#addons-cicd">CI/CD & ツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化 & デモ</a></sub>
+<sub>ジャンプ: <a href="#addons-k8s">Kubernetes & GitOps</a> · <a href="#addons-security">セキュリティ & コンプライアンス</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">ストレージ & データベース</a> · <a href="#addons-cicd">CI/CD & ツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化 & デモ</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -837,15 +837,15 @@ install_longhorn --schema yaml      # ...または YAML
 
 <a id="addons-suma"></a>
 <details open>
-<summary><strong>SUSE Manager / Uyuni</strong></summary>
+<summary><strong>SUSE Multi-Linux Manager / Uyuni</strong></summary>
 
 | アドオン名 | 説明 |
 |---|---|
 | `uyuni` | Uyuni サーバー（アップストリーム）：アクティベーションキー、組織、RBAC、Content Lifecycle Management、Ansible 連携、SCAP/CVE 監査、dev/QA/prod 環境トポロジー — フィールドの完全な一覧は `install_uyuni --schema` を参照 |
-| `smlm` | SUSE Manager Lifecycle Management サーバー — `uyuni` と同じ機能セットを Kubernetes/Helm でデプロイしたもの |
+| `smlm` | SUSE Multi-Linux Manager サーバー — `uyuni` と同じ機能セットを Kubernetes/Helm でデプロイしたもの |
 | `smlm_proxy` | SMLM プロキシ |
 | `client_registration` | 任意の VM を既存の `uyuni`/`smlm` サーバーの Salt クライアントとして登録する（アクティベーションキーによるブートストラップ + salt キーの承認） |
-| `suma` | SUSE Manager（SUMA）。`mgradm` を使って OS 上に直接インストールされる — Kubernetes ではない |
+| `suma` | SUSE Multi-Linux Manager（SUMA）。`mgradm` を使って OS 上に直接インストールされる — Kubernetes ではない |
 
 </details>
 
@@ -937,7 +937,7 @@ install_longhorn --schema yaml      # ...または YAML
 | `lab_creation.py` | VM ライフサイクル、DNS、マルチホスト解決、オーケストレーションのヘルパー |
 | `backends.py` | `VMBackend` インターフェース + `LibvirtBackend`（VM の作成/削除/再起動、プロビジョニングファイルの転送） |
 | `services.py` | DNS サービス管理 |
-| `spacecmd_common.py` | `install_uyuni`/`install_smlm`/`install_client_registration` が使用する、共有の SUSE Manager/Uyuni 自動化処理（アクティベーションキー、組織、RBAC、CLM、Ansible、SCAP/CVE） |
+| `spacecmd_common.py` | `install_uyuni`/`install_smlm`/`install_client_registration` が使用する、共有の SUSE Multi-Linux Manager/Uyuni 自動化処理（アクティベーションキー、組織、RBAC、CLM、Ansible、SCAP/CVE） |
 | `primary.py` | 入力検証と設定の読み込み |
 | `k8s.py` | Kubernetes クラスターディストリビューションのインターフェース（RKE2/K3s） |
 | `addon_common.py` | すべての `install_*` アドオンが使用する共通の CLI 基盤（`--help`/`--version`/`--schema` のディスパッチ、スキーマ検証） |

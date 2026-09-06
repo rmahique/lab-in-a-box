@@ -3,7 +3,7 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Uyuni is an open-source systems management solution (upstream of SUSE Manager).
+# Uyuni is an open-source systems management solution (upstream of SUSE Multi-Linux Manager).
 # This script installs it on a dedicated host VM using mgradm (container-based install).
 # The target VM must run openSUSE Leap 15.6 / SLE Micro with podman available.
 #

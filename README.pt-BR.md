@@ -39,7 +39,7 @@
 Descreva VMs, clusters Kubernetes (RKE2/K3s) e add-ons de forma declarativa; ele constrói tudo na ordem correta.
 
 `install_<addon>` · **41 add-ons prontos para uso.**
-Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Manager/Uyuni (chaves de ativação, RBAC, Content Lifecycle Management, integração com Ansible, e mais), aplicações de demonstração vulneráveis para treinamento de segurança, e mais.
+Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (chaves de ativação, RBAC, Content Lifecycle Management, integração com Ansible, e mais), aplicações de demonstração vulneráveis para treinamento de segurança, e mais.
 
 [`lab-builder`](#web-ui-lab-builder) · **Uma interface web dinâmica.**
 Gera formulários diretamente a partir do próprio esquema de cada add-on — adicione um campo a um script, e a interface o reconhece sem nenhuma mudança no frontend.
@@ -550,7 +550,7 @@ Fixe o servidor em um hipervisor e deixe os agentes se autoposicionarem em qualq
 }
 ```
 
-### Servidor SUSE Manager (Uyuni) + um cliente registrado
+### Servidor SUSE Multi-Linux Manager (Uyuni) + um cliente registrado
 
 Suba um servidor Uyuni com uma chave de ativação, depois registre uma segunda VM como cliente Salt contra ele — veja [Add-ons disponíveis](#available-addons) para o conjunto completo de recursos (`orgs`, RBAC, Content Lifecycle Management, integração com Ansible, e mais):
 
@@ -655,7 +655,7 @@ Objetivo: duas VMs SLE Micro, um cluster RKE2, Rancher para gestão, Longhorn pa
    destroy_lab.py rancher-cluster.json
    ```
 
-### Guia 2 — Servidor SUSE Manager (Uyuni) com um cliente registrado
+### Guia 2 — Servidor SUSE Multi-Linux Manager (Uyuni) com um cliente registrado
 
 Objetivo: um servidor Uyuni com uma chave de ativação real, e uma segunda VM que se registra como cliente gerenciado por Salt contra ele. **Testado ao vivo** de ponta a ponta contra um servidor Uyuni real.
 
@@ -795,7 +795,7 @@ install_longhorn --schema yaml      # ...ou YAML
 
 Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O script `install_<name>` correspondente precisa estar no `PATH`.
 
-<sub>Ir para: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Segurança &amp; conformidade</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento &amp; bancos de dados</a> · <a href="#addons-cicd">CI/CD &amp; ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização &amp; demos</a></sub>
+<sub>Ir para: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Segurança &amp; conformidade</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento &amp; bancos de dados</a> · <a href="#addons-cicd">CI/CD &amp; ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização &amp; demos</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -837,15 +837,15 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 <a id="addons-suma"></a>
 <details open>
-<summary><strong>SUSE Manager / Uyuni</strong></summary>
+<summary><strong>SUSE Multi-Linux Manager / Uyuni</strong></summary>
 
 | Nome do add-on | Descrição |
 |---|---|
 | `uyuni` | Servidor Uyuni (upstream): chaves de ativação, organizações, RBAC, Content Lifecycle Management, integração com Ansible, auditoria SCAP/CVE, topologia de ambientes dev/QA/prod — veja `install_uyuni --schema` para a lista completa de campos |
-| `smlm` | Servidor SUSE Manager Lifecycle Management — o mesmo conjunto de recursos que `uyuni`, implantado via Kubernetes/Helm |
+| `smlm` | Servidor SUSE Multi-Linux Manager — o mesmo conjunto de recursos que `uyuni`, implantado via Kubernetes/Helm |
 | `smlm_proxy` | Proxy do SMLM |
 | `client_registration` | Registra qualquer VM como cliente Salt de um servidor `uyuni`/`smlm` existente (bootstrap por chave de ativação + aceitação da chave salt) |
-| `suma` | SUSE Manager (SUMA), instalado diretamente no sistema operacional via `mgradm` — não em Kubernetes |
+| `suma` | SUSE Multi-Linux Manager (SUMA), instalado diretamente no sistema operacional via `mgradm` — não em Kubernetes |
 
 </details>
 
@@ -937,7 +937,7 @@ Módulos de biblioteca Python instalados. Atualizados ao executar `install_autom
 | `lab_creation.py` | Funções auxiliares de ciclo de vida de VM, DNS, resolução multi-host e orquestração |
 | `backends.py` | Interface `VMBackend` + `LibvirtBackend` (criar/excluir/reiniciar uma VM, envio de arquivos de provisionamento) |
 | `services.py` | Gerenciamento do serviço DNS |
-| `spacecmd_common.py` | Automação compartilhada do SUSE Manager/Uyuni (chaves de ativação, organizações, RBAC, CLM, Ansible, SCAP/CVE) usada por `install_uyuni`/`install_smlm`/`install_client_registration` |
+| `spacecmd_common.py` | Automação compartilhada do SUSE Multi-Linux Manager/Uyuni (chaves de ativação, organizações, RBAC, CLM, Ansible, SCAP/CVE) usada por `install_uyuni`/`install_smlm`/`install_client_registration` |
 | `primary.py` | Validação de entrada e carregamento de configuração |
 | `k8s.py` | Interface de distribuição de cluster Kubernetes (RKE2/K3s) |
 | `addon_common.py` | Infraestrutura de CLI compartilhada usada por cada add-on `install_*` (dispatch de `--help`/`--version`/`--schema`, validação de esquema) |

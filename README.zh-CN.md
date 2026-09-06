@@ -39,7 +39,7 @@
 以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；它会按正确的顺序把一切都构建出来。
 
 `install_<addon>` · **41 个开箱即用的插件。**
-Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Manager/Uyuni（激活密钥、RBAC、Content Lifecycle Management、Ansible 集成等）、用于安全培训的漏洞演示应用，以及更多。
+Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Multi-Linux Manager/Uyuni（激活密钥、RBAC、Content Lifecycle Management、Ansible 集成等）、用于安全培训的漏洞演示应用，以及更多。
 
 [`lab-builder`](#web-ui-lab-builder) · **动态 Web 界面。**
 直接根据各插件自身的 schema 生成表单——只要给脚本加一个字段，界面无需任何前端改动即可识别它。
@@ -550,7 +550,7 @@ setup_lab.py --keep rancher-cluster.json
 }
 ```
 
-### SUSE Manager（Uyuni）服务器 + 一台已注册的客户端
+### SUSE Multi-Linux Manager（Uyuni）服务器 + 一台已注册的客户端
 
 启动一台带有激活密钥的 Uyuni 服务器，然后将第二台虚拟机注册为它的 Salt 客户端——完整功能集（`orgs`、RBAC、Content Lifecycle Management、Ansible 集成等）请参见[可用插件](#available-addons)：
 
@@ -655,7 +655,7 @@ setup_lab.py --keep rancher-cluster.json
    destroy_lab.py rancher-cluster.json
    ```
 
-### 教程 2 —— 带有已注册客户端的 SUSE Manager（Uyuni）服务器
+### 教程 2 —— 带有已注册客户端的 SUSE Multi-Linux Manager（Uyuni）服务器
 
 目标：一台拥有真实激活密钥的 Uyuni 服务器，以及一台将自身注册为其 Salt 托管客户端的第二台虚拟机。已针对真实 Uyuni 服务器完成**端到端实机测试**。
 
@@ -795,7 +795,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 插件通过名称在 kcluster 或节点的 `addons` 数组中被引用。对应的 `install_<name>` 脚本必须位于 `PATH` 中。
 
-<sub>快速跳转: <a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化与演示</a></sub>
+<sub>快速跳转: <a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化与演示</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -837,15 +837,15 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 <a id="addons-suma"></a>
 <details open>
-<summary><strong>SUSE Manager / Uyuni</strong></summary>
+<summary><strong>SUSE Multi-Linux Manager / Uyuni</strong></summary>
 
 | 插件名称 | 说明 |
 |---|---|
 | `uyuni` | Uyuni 服务器（上游）：激活密钥、组织、RBAC、Content Lifecycle Management、Ansible 集成、SCAP/CVE 审计、dev/QA/prod 环境拓扑——完整字段列表见 `install_uyuni --schema` |
-| `smlm` | SUSE Manager Lifecycle Management 服务器——与 `uyuni` 相同的功能集，通过 Kubernetes/Helm 部署 |
+| `smlm` | SUSE Multi-Linux Manager 服务器——与 `uyuni` 相同的功能集，通过 Kubernetes/Helm 部署 |
 | `smlm_proxy` | SMLM 代理 |
 | `client_registration` | 将任意虚拟机注册为现有 `uyuni`/`smlm` 服务器的 Salt 客户端（激活密钥引导 + salt 密钥接受） |
-| `suma` | SUSE Manager（SUMA），通过 `mgradm` 直接安装在操作系统上——不基于 Kubernetes |
+| `suma` | SUSE Multi-Linux Manager（SUMA），通过 `mgradm` 直接安装在操作系统上——不基于 Kubernetes |
 
 </details>
 
@@ -937,7 +937,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 | `lab_creation.py` | 虚拟机生命周期、DNS、多主机解析以及编排相关的辅助函数 |
 | `backends.py` | `VMBackend` 接口 + `LibvirtBackend`（创建/删除/重启虚拟机、推送配置文件） |
 | `services.py` | DNS 服务管理 |
-| `spacecmd_common.py` | 被 `install_uyuni`/`install_smlm`/`install_client_registration` 使用的共享 SUSE Manager/Uyuni 自动化逻辑（激活密钥、组织、RBAC、CLM、Ansible、SCAP/CVE） |
+| `spacecmd_common.py` | 被 `install_uyuni`/`install_smlm`/`install_client_registration` 使用的共享 SUSE Multi-Linux Manager/Uyuni 自动化逻辑（激活密钥、组织、RBAC、CLM、Ansible、SCAP/CVE） |
 | `primary.py` | 输入验证与配置加载 |
 | `k8s.py` | Kubernetes 集群发行版接口（RKE2/K3s） |
 | `addon_common.py` | 每个 `install_*` 插件共用的 CLI 基础设施（`--help`/`--version`/`--schema` 分发、schema 校验） |
