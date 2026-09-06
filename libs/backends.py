@@ -2935,6 +2935,200 @@ class OVHcloudBackend(VMBackend):
         return 9999, 999999, 999999
 
 
+class ExoscaleBackend(VMBackend):
+    """
+    Talks to Exoscale by shelling out to the real `exo` CLI (`exo compute instance ...`) — same
+    "wrap the standard CLI tool, don't reimplement its API client" convention as AWSBackend/
+    GCPBackend/AlibabaBackend, for the same reason (Exoscale's own IAM-key request signing is a
+    proprietary scheme, not worth hand-rolling, and `exo` is the standard, already-documented way
+    most operators already have credentials configured for). Auth: `EXOSCALE_API_KEY`+
+    `EXOSCALE_API_SECRET` (passed as env vars to the `exo` subprocess only, never written to disk —
+    `exo`'s own documented non-interactive auth method, no separate config-file profile needed).
+    `EXOSCALE_ZONE` (e.g. "ch-gva-2"/"de-fra-1"/"at-vie-1") is required too — Exoscale has no
+    single global region default, it's always zone-scoped.
+
+    Real, documented mismatches with this project's KVM-shaped assumptions (same stance as every
+    CLI-wrapped backend above):
+    config_method: ONLY "cloud-init" — passed as `exo compute instance create`'s own
+    `--cloud-init <file>` flag, pointed directly at the operator's own generated cloud-init file
+    (no separate stash/encode step needed, unlike Alibaba's Base64 requirement or Scaleway's
+    separate PATCH call — the simplest cloud-init delivery of any cloud backend in this file, since
+    the CLI itself handles reading and encoding the file). ISO_IMAGE must be a real Exoscale
+    template ID/name the operator already has access to, not a qcow2/ISO filename. vm_cpu/vm_mem
+    are matched to the smallest sufficient fixed `instance-type`
+    (`ExoscaleBackend.INSTANCE_TYPES`, Exoscale's own "standard.<size>" family naming) — same
+    fixed-SKU-table shape as Hetzner/AWS/Alibaba/Scaleway; this specific size table is the weakest-
+    verified part of this backend (see below). vm_dsk_gb maps directly via `--disk-size`. MAC
+    addresses aren't a customer-assignable concept here either.
+
+    NOT live-tested (no real Exoscale account available in this session) — the `exo compute
+    instance` subcommand shapes (create/list/delete/reboot, `--zone`/`--instance-type`/
+    `--cloud-init`/`--disk-size` flags, `-O json` output) are confirmed against Exoscale's own
+    current CLI documentation, 2026-09-06. One real exception, flagged rather than presented as
+    equally solid: the exact vCPU/RAM figures in `INSTANCE_TYPES` are from general knowledge of
+    Exoscale's "standard" instance-type family naming convention, NOT independently re-confirmed
+    against a live `exo compute instance-type list` call this session — verify against that command
+    before relying on this table for a real deployment; the weakest-verified part of this specific
+    backend.
+    """
+
+    # Smallest-to-largest by (cores, memory_gb) — Exoscale's own "standard" family naming; NOT
+    # independently re-confirmed live this session, see this class's own docstring.
+    INSTANCE_TYPES = [
+        ("standard.tiny", 1, 1), ("standard.small", 1, 2), ("standard.medium", 2, 4),
+        ("standard.large", 4, 8), ("standard.extra-large", 4, 16),
+    ]
+
+    def __init__(self, api_key, api_secret, zone, vm_img_loc=None, lab_setup_path=None):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.zone = zone
+        self.vm_img_loc = vm_img_loc
+        self.lab_setup_path = lab_setup_path
+        self._userdata_path_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
+
+    @classmethod
+    def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
+                iso_loc=None, lab_setup_path=None):
+        api_key = config.get("EXOSCALE_API_KEY")
+        api_secret = config.get("EXOSCALE_API_SECRET")
+        zone = config.get("EXOSCALE_ZONE")
+        missing = [k for k, v in (("EXOSCALE_API_KEY", api_key), ("EXOSCALE_API_SECRET", api_secret),
+                                   ("EXOSCALE_ZONE", zone)) if not v]
+        if missing:
+            die("backend 'exoscale' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
+                ", ".join(missing), vm_name))
+        return cls(api_key, api_secret, zone, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+
+    def _exo(self, *args, **kwargs):
+        """One `exo` CLI invocation, zone/auth applied uniformly. Returns the parsed JSON stdout
+        (or None for a command with no output), raises RuntimeError with the real CLI stderr on a
+        non-zero exit — mirrors AWSBackend._aws()'s own contract."""
+        env = dict(os.environ)
+        env["EXOSCALE_API_KEY"] = self.api_key
+        env["EXOSCALE_API_SECRET"] = self.api_secret
+        cmd = ["exo"] + list(args) + ["--zone", self.zone, "-O", "json"]
+        result = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 universal_newlines=True)
+        if result.returncode != 0:
+            raise RuntimeError("exo {} failed: {}".format(" ".join(args), result.stderr.strip()))
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def _require_cloud_init(self, config_method, vm_name):
+        if config_method != "cloud-init":
+            die("ExoscaleBackend only supports config_method=\"cloud-init\" (got '{}') for VM "
+                "'{}'".format(config_method or "<empty>", vm_name))
+
+    def _find_instance(self, vm_name):
+        result = self._exo("compute", "instance", "list") or []
+        return next((i for i in result if i.get("name") == vm_name), None)
+
+    def _pick_instance_type(self, vm_cpu, vm_mem_mb, vm_name):
+        needed_mem_gb = int(vm_mem_mb) / 1024.0
+        for name, cores, mem_gb in self.INSTANCE_TYPES:
+            if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
+                return name
+        die("ExoscaleBackend has no known instance-type big enough for VM '{}' ({} vCPU / {} MiB) "
+            "— extend ExoscaleBackend.INSTANCE_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+
+    def vm_exists(self, vm_name):
+        return self._find_instance(vm_name) is not None
+
+    def list_used_macs(self):
+        return [], {}
+
+    def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
+        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_is_reusable(self, vm_name, mymac, myip):
+        instance = self._find_instance(vm_name)
+        state = (instance or {}).get("state")
+        if not instance or state != "running":
+            log("  {}KEEP CHECK{} \"{}{}{}\": not running on Exoscale (state: {}) — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, state or "not found"))
+            return False
+
+        try:
+            resolved_ip = socket.gethostbyname(vm_name)
+        except OSError:
+            resolved_ip = None
+        if resolved_ip != myip:
+            log("  {}KEEP CHECK{} \"{}{}{}\": IP mismatch (want \"{}\", DNS gives \"{}\") — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, myip, resolved_ip or "none"))
+            return False
+
+        ssh_test = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(vm_name), "exit 0"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if ssh_test.returncode != 0:
+            log("  {}KEEP CHECK{} \"{}{}{}\": SSH not accessible — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET))
+            return False
+
+        return True
+
+    def reboot_vm(self, vm_name):
+        if not self.vm_exists(vm_name):
+            die("Exoscale instance '{}' not found — cannot reboot".format(vm_name))
+        try:
+            self._exo("compute", "instance", "reboot", vm_name, "-f")
+        except RuntimeError as e:
+            die(str(e))
+
+    def delete_vm(self, vm_name):
+        log("Deleting VM '{}'".format(vm_name))
+        if not self.vm_exists(vm_name):
+            return
+        try:
+            self._exo("compute", "instance", "delete", vm_name, "-f")
+        except RuntimeError as e:
+            die(str(e))
+
+    def copy_vm_image(self, iso_image, vm_name, vm_dsk_gb, config_method=""):
+        self._require_cloud_init(config_method, vm_name)
+        if not iso_image:
+            die("ISO_IMAGE is required for VM '{}' on the 'exoscale' backend — set it to a real "
+                "Exoscale template ID/name".format(vm_name))
+
+    def push_provisioning_files(self, vm_name, config_method="", vm_img_loc=None):
+        """Just validates the file exists — `exo`'s own `--cloud-init` flag reads the file path
+        directly at create time, no stash/encode step needed (unlike Alibaba's Base64 requirement
+        or Scaleway's separate PATCH call)."""
+        self._require_cloud_init(config_method, vm_name)
+        base = Path(self.lab_setup_path) / "cloud-init"
+        userdata_path = base / "{}_user-data".format(vm_name)
+        if not userdata_path.is_file():
+            die("cloud-init user-data not found for '{}' at {}".format(vm_name, userdata_path))
+        self._userdata_path_by_vm[vm_name] = str(userdata_path)
+
+    def create_vm(
+        self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        config_method="", iso_image="", mymac=None, **kwargs
+    ):
+        self._require_cloud_init(config_method, vm_name)
+        instance_type = self._pick_instance_type(vm_cpu, vm_mem, vm_name)
+        userdata_path = self._userdata_path_by_vm.get(vm_name)
+
+        log("Creating VM '{}' on Exoscale (instance-type={})".format(vm_name, instance_type))
+        args = [
+            "compute", "instance", "create", vm_name,
+            "--template", iso_image,
+            "--instance-type", instance_type,
+            "--disk-size", str(int(vm_dsk_gb)),
+        ]
+        if userdata_path:
+            args += ["--cloud-init", userdata_path]
+        try:
+            self._exo(*args)
+        except RuntimeError as e:
+            die(str(e))
+
+    def host_resources(self):
+        return 9999, 999999, 999999
+
+
 BACKENDS = {
     "libvirt": LibvirtBackend,
     "harvester": HarvesterBackend,
@@ -2945,6 +3139,7 @@ BACKENDS = {
     "scaleway": ScalewayBackend,
     "upcloud": UpCloudBackend,
     "ovhcloud": OVHcloudBackend,
+    "exoscale": ExoscaleBackend,
 }
 
 
