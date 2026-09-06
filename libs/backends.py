@@ -1840,11 +1840,239 @@ class AWSBackend(VMBackend):
         return 9999, 999999, 999999
 
 
+class GCPBackend(VMBackend):
+    """
+    Talks to Google Compute Engine by shelling out to the real `gcloud` CLI (`gcloud compute
+    instances ...`) — same "wrap the standard CLI tool" convention as AWSBackend's own use of
+    `aws`, for the same reason (GCP request auth is service-account-token-based, not something
+    worth hand-rolling when the standard tool already exists and is what most operators already
+    have configured). Auth: `GCP_SERVICE_ACCOUNT_KEY` (path to a service-account JSON key file) —
+    activated once via `gcloud auth activate-service-account --key-file=...` the first time this
+    backend is resolved (idempotent to call repeatedly; gcloud's own credential store persists it
+    across invocations, unlike AWSBackend's per-call env vars — a real, documented difference
+    between the two CLIs' own auth models, not something this backend can paper over).
+    `GCP_PROJECT` and `GCP_ZONE` are both required.
+
+    Real, documented mismatches with this project's KVM-shaped assumptions (same stance as every
+    other cloud backend above — operator pre-configures the cloud-native prerequisite):
+
+    - config_method: ONLY "cloud-init" — passed as `--metadata-from-file user-data=<path>`,
+      pointed directly at the same cloud-init file `prepare_cloud_init()` already generates on
+      disk (no separate copy/upload step needed, unlike AWS/Hetzner's own "stash then send inline"
+      shape — GCP's metadata mechanism reads straight from a local file path).
+    - ISO_IMAGE: must be a real GCE image NAME the operator already has access to (a public image
+      like "debian-12", or their own custom image) — this backend does not build or import one.
+      `GCP_IMAGE_PROJECT` (optional) names which project that image lives in when it isn't
+      GCP_PROJECT's own (e.g. "debian-cloud" for Google's own public Debian images) — omitted,
+      GCP_PROJECT is assumed to own the image itself.
+    - vm_cpu/vm_mem: unlike Hetzner/AWS's own fixed-SKU tables, GCP genuinely supports CUSTOM
+      machine types (`e2-custom-<cpu>-<mem_mb>`) — this backend builds one directly from
+      vm_cpu/vm_mem rather than picking from a table, the closest match to this project's own
+      "just say how much CPU/RAM you want" model of any backend so far. Real, NOT exhaustively
+      validated constraint, rounded conservatively rather than left to fail at the API: GCE
+      requires memory in exact 256MB multiples (rounded UP here) and an even vCPU count above 1
+      (rounded UP to the next even number here) — see _normalize_custom_shape()'s own comment.
+    - vm_dsk_gb maps directly via `--boot-disk-size`, same as AWSBackend (unlike Hetzner).
+    - Networking: `GCP_NETWORK`/`GCP_SUBNET` are optional — omitted, gcloud falls back to the
+      project's own "default" auto-mode VPC (present in every new GCP project unless deliberately
+      removed), same "fine for a quick lab, not for anything real" caveat as AWS's own default-VPC
+      fallback.
+    - MAC addresses: GCE does not let you assign a custom MAC on its standard VirtIO NIC either
+      (confirmed against its own documented instance-creation flags) — same no-MAC-concept stub
+      stance as every other cloud backend here.
+
+    NOT live-tested (no real GCP project available in this session) — CLI flags/JSON output
+    shapes verified against Google Cloud's own current CLI reference documentation and multiple
+    independently-published examples, 2026-09-06, not guessed.
+    """
+
+    def __init__(self, project, zone, service_account_key=None, image_project=None, network=None,
+                 subnet=None, vm_img_loc=None, lab_setup_path=None):
+        self.project = project
+        self.zone = zone
+        self.service_account_key = service_account_key
+        self.image_project = image_project
+        self.network = network
+        self.subnet = subnet
+        self.vm_img_loc = vm_img_loc
+        self.lab_setup_path = lab_setup_path
+
+    @classmethod
+    def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
+                iso_loc=None, lab_setup_path=None):
+        project = config.get("GCP_PROJECT")
+        zone = config.get("GCP_ZONE")
+        if not project or not zone:
+            die("backend 'gcp' requires both GCP_PROJECT and GCP_ZONE to be set in "
+                "/etc/lab_creation.cfg (VM '{}')".format(vm_name))
+        service_account_key = config.get("GCP_SERVICE_ACCOUNT_KEY")
+        if service_account_key:
+            result = subprocess.run(
+                ["gcloud", "auth", "activate-service-account", "--key-file", service_account_key],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, universal_newlines=True,
+            )
+            if result.returncode != 0:
+                die("gcloud auth activate-service-account failed: {}".format(result.stderr.strip()))
+        return cls(project, zone, service_account_key=service_account_key,
+                   image_project=config.get("GCP_IMAGE_PROJECT"), network=config.get("GCP_NETWORK"),
+                   subnet=config.get("GCP_SUBNET"), vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+
+    def _gcloud(self, *args, **kwargs):
+        """One `gcloud` CLI invocation, project applied uniformly. Returns the parsed JSON stdout
+        (or None for no output), raises RuntimeError with the real CLI stderr on a non-zero exit —
+        same contract as HetznerBackend._api()/AWSBackend._aws()."""
+        cmd = ["gcloud"] + list(args) + ["--project", self.project, "--format", "json", "--quiet"]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        if result.returncode != 0:
+            raise RuntimeError("gcloud {} failed: {}".format(" ".join(args), result.stderr.strip()))
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def _require_cloud_init(self, config_method, vm_name):
+        if config_method != "cloud-init":
+            die("GCPBackend only supports config_method=\"cloud-init\" (got '{}') for VM '{}'".format(
+                config_method or "<empty>", vm_name))
+
+    def _find_instance(self, vm_name):
+        result = self._gcloud("compute", "instances", "list", "--filter", "name={}".format(vm_name))
+        instances = result or []
+        return instances[0] if instances else None
+
+    @staticmethod
+    def _normalize_custom_shape(vm_cpu, vm_mem_mb):
+        """Rounds a requested (vCPU, memory) pair to GCE's own custom-machine-type constraints:
+        memory in exact 256MB multiples, an even vCPU count above 1. Rounds UP in both cases
+        (never under-provisions relative to what was actually requested) rather than dying on
+        every lab JSON that wasn't originally sized with GCP's own rules in mind."""
+        cpu = int(vm_cpu)
+        if cpu > 1 and cpu % 2 != 0:
+            cpu += 1
+        mem_mb = int(vm_mem_mb)
+        if mem_mb % 256 != 0:
+            mem_mb += 256 - (mem_mb % 256)
+        return cpu, mem_mb
+
+    def vm_exists(self, vm_name):
+        return self._find_instance(vm_name) is not None
+
+    def list_used_macs(self):
+        """GCE has no customer-assignable MAC-address concept on its standard VirtIO NIC —
+        nothing to check a new one against."""
+        return [], {}
+
+    def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
+        """Resolves/saves a mymac value for consistency with every other backend (see this
+        class's own docstring) — never actually sent to or read from GCP."""
+        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_is_reusable(self, vm_name, mymac, myip):
+        """Same intent as the other backends': True = keep, False = destroy and recreate."""
+        instance = self._find_instance(vm_name)
+        status = (instance or {}).get("status")
+        if not instance or status != "RUNNING":
+            log("  {}KEEP CHECK{} \"{}{}{}\": not RUNNING on GCE (status: {}) — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, status or "not found"))
+            return False
+
+        try:
+            resolved_ip = socket.gethostbyname(vm_name)
+        except OSError:
+            resolved_ip = None
+        if resolved_ip != myip:
+            log("  {}KEEP CHECK{} \"{}{}{}\": IP mismatch (want \"{}\", DNS gives \"{}\") — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, myip, resolved_ip or "none"))
+            return False
+
+        ssh_test = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(vm_name), "exit 0"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if ssh_test.returncode != 0:
+            log("  {}KEEP CHECK{} \"{}{}{}\": SSH not accessible — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET))
+            return False
+
+        return True
+
+    def reboot_vm(self, vm_name):
+        try:
+            self._gcloud("compute", "instances", "reset", vm_name, "--zone", self.zone)
+        except RuntimeError as e:
+            die(str(e))
+
+    def delete_vm(self, vm_name):
+        log("Deleting VM '{}'".format(vm_name))
+        if not self.vm_exists(vm_name):
+            return  # already gone — idempotent, matches every other backend's delete_vm()
+        try:
+            self._gcloud("compute", "instances", "delete", vm_name, "--zone", self.zone)
+        except RuntimeError as e:
+            die(str(e))
+
+    def copy_vm_image(self, iso_image, vm_name, vm_dsk_gb, config_method=""):
+        """No-op beyond validation — ISO_IMAGE is a real GCE image name here, not a file to copy
+        anywhere (see this class's own docstring)."""
+        self._require_cloud_init(config_method, vm_name)
+        if not iso_image:
+            die("ISO_IMAGE is required for VM '{}' on the 'gcp' backend — set it to a real GCE "
+                "image name (e.g. \"debian-12\")".format(vm_name))
+
+    def push_provisioning_files(self, vm_name, config_method="", vm_img_loc=None):
+        """Unlike AWS/Hetzner, nothing to stash — create_vm() points --metadata-from-file directly
+        at the same cloud-init file this validates exists (matches every other backend's call-
+        order assumption: this always runs before create_vm(), see setup_vm.py's provision_vm())."""
+        self._require_cloud_init(config_method, vm_name)
+        userdata_path = Path(self.lab_setup_path) / "cloud-init" / "{}_user-data".format(vm_name)
+        if not userdata_path.is_file():
+            die("cloud-init user-data not found for '{}' at {}".format(vm_name, userdata_path))
+
+    def create_vm(
+        self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        config_method="", iso_image="", mymac=None, **kwargs
+    ):
+        self._require_cloud_init(config_method, vm_name)
+        cpu, mem_mb = self._normalize_custom_shape(vm_cpu, vm_mem)
+        machine_type = "e2-custom-{}-{}".format(cpu, mem_mb)
+        userdata_path = Path(self.lab_setup_path) / "cloud-init" / "{}_user-data".format(vm_name)
+
+        args = [
+            "compute", "instances", "create", vm_name,
+            "--zone", self.zone,
+            "--machine-type", machine_type,
+            "--image", iso_image,
+            "--boot-disk-size", "{}GB".format(int(vm_dsk_gb)),
+            "--metadata-from-file", "user-data={}".format(userdata_path),
+        ]
+        if self.image_project:
+            args += ["--image-project", self.image_project]
+        if self.network:
+            args += ["--network", self.network]
+        if self.subnet:
+            args += ["--subnet", self.subnet]
+
+        log("Creating VM '{}' on GCP (machine_type={})".format(vm_name, machine_type))
+        try:
+            self._gcloud(*args)
+        except RuntimeError as e:
+            die(str(e))
+
+    def host_resources(self):
+        """
+        Best-effort free-capacity signal for select_kvm_host()'s host-picking logic. GCE has no
+        "cluster capacity" concept the way libvirt/Harvester do — a real constraint would be this
+        project's own per-region quota, not queried here (a real follow-up, not implemented — see
+        HetznerBackend/AWSBackend's identical reasoning). Returns a large constant so a "gcp" node
+        is never wrongly treated as out of capacity.
+        """
+        return 9999, 999999, 999999
+
+
 BACKENDS = {
     "libvirt": LibvirtBackend,
     "harvester": HarvesterBackend,
     "hetzner": HetznerBackend,
     "aws": AWSBackend,
+    "gcp": GCPBackend,
 }
 
 
