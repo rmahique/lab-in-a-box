@@ -831,22 +831,22 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>Kubernetes platform &amp; GitOps</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `rancher` | SUSE Rancher Prime Kubernetes management platform |
-| `longhorn` | SUSE Longhorn distributed block storage |
-| `harbor` | Container registry |
-| `argocd` | Argo CD GitOps controller |
-| `kubewarden` | Kubernetes policy engine |
-| `istio` | Service mesh |
-| `linkerd` | Service mesh |
-| `traefik` | Ingress controller |
-| `nginx` | Ingress controller / reverse proxy |
-| `coredns` | Cluster DNS |
-| `kucero` | Kubernetes cluster certificate rotation |
-| `fluid` | Data orchestration/caching for cloud-native workloads |
-| `suse_observability` | SUSE Observability (StackState-based metrics/traces/topology) |
-| `agones` | Dedicated game-server hosting/scaling (agones.dev) |
+| Addon name | Description | License |
+|---|---|---|
+| [`rancher`](https://www.rancher.com/) | SUSE Rancher Prime Kubernetes management platform | Apache-2.0 |
+| [`longhorn`](https://longhorn.io/) | SUSE Longhorn distributed block storage | Apache-2.0 |
+| [`harbor`](https://goharbor.io/) | Container registry | Apache-2.0 |
+| [`argocd`](https://argo-cd.readthedocs.io/) | Argo CD GitOps controller | Apache-2.0 |
+| [`kubewarden`](https://www.kubewarden.io/) | Kubernetes policy engine | Apache-2.0 |
+| [`istio`](https://istio.io/) | Service mesh | Apache-2.0 |
+| [`linkerd`](https://linkerd.io/) | Service mesh | Apache-2.0 |
+| [`traefik`](https://traefik.io/) | Ingress controller | MIT |
+| [`nginx`](https://nginx.org/) | Ingress controller / reverse proxy | BSD-2-Clause |
+| [`coredns`](https://coredns.io/) | Cluster DNS | Apache-2.0 |
+| [`kucero`](https://github.com/SUSE/kucero) | Kubernetes cluster certificate rotation | Apache-2.0 |
+| [`fluid`](https://fluid-cloudnative.github.io/) | Data orchestration/caching for cloud-native workloads | Apache-2.0 |
+| [`suse_observability`](https://www.suse.com/products/suse-observability/) | SUSE Observability (StackState-based metrics/traces/topology) | Commercial (SUSE) |
+| [`agones`](https://agones.dev/) | Dedicated game-server hosting/scaling (agones.dev) | Apache-2.0 |
 
 </details>
 
@@ -854,16 +854,16 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>Security &amp; compliance</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `neuvector` | SUSE NeuVector container security platform |
-| `nv_testing` | NeuVector security testing workloads (nginx/node/redis pods) |
-| `nv-demo-helm` | NeuVector Helm-based demo workloads |
-| `complianceascode` | OpenSCAP/ComplianceAsCode operator |
-| `keycloak` | Identity and access management |
-| `kagent` | Kubernetes agentic-AI security assistant |
-| `insecure_app` | Intentionally vulnerable web application (demo/training) |
-| `struts_demo` | Apache Struts2 vulnerable demo application (CVE-2017-5638) |
+| Addon name | Description | License |
+|---|---|---|
+| [`neuvector`](https://open-docs.neuvector.com/) | SUSE NeuVector container security platform | Apache-2.0 |
+| [`nv_testing`](https://open-docs.neuvector.com/testing/testing) | NeuVector security testing workloads (nginx/node/redis pods) | N/A (demo workload) |
+| [`nv-demo-helm`](https://open-docs.neuvector.com/) | NeuVector Helm-based demo workloads | N/A (demo workload) |
+| [`complianceascode`](https://complianceascode.github.io/) | OpenSCAP/ComplianceAsCode operator | BSD-3-Clause |
+| [`keycloak`](https://www.keycloak.org/) | Identity and access management | Apache-2.0 |
+| [`kagent`](https://kagent.dev/) | Kubernetes agentic-AI security assistant | Apache-2.0 |
+| `insecure_app` | Intentionally vulnerable web application (demo/training) | N/A (training app) |
+| [`struts_demo`](https://struts.apache.org/) | Apache Struts2 vulnerable demo application (CVE-2017-5638) | Apache-2.0 |
 
 </details>
 
@@ -871,13 +871,13 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>SUSE Multi-Linux Manager / Uyuni</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `uyuni` | Uyuni server (upstream): activation keys, orgs, RBAC, Content Lifecycle Management, Ansible integration, SCAP/CVE auditing, dev/QA/prod environment topology — see `install_uyuni --schema` for the full field list |
-| `smlm` | SUSE Multi-Linux Manager server — the same feature set as `uyuni`, Kubernetes/Helm-deployed |
-| `smlm_proxy` | SMLM proxy |
-| `client_registration` | Register any VM as a Salt client of an existing `uyuni`/`smlm` server (activation key bootstrap + salt-key acceptance) |
-| `suma` | SUSE Multi-Linux Manager (SUMA), installed directly on the OS via `mgradm` — not Kubernetes |
+| Addon name | Description | License |
+|---|---|---|
+| [`uyuni`](https://www.uyuni-project.org/) | Uyuni server (upstream): activation keys, orgs, RBAC, Content Lifecycle Management, Ansible integration, SCAP/CVE auditing, dev/QA/prod environment topology — see `install_uyuni --schema` for the full field list | GPL-2.0 |
+| [`smlm`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager server — the same feature set as `uyuni`, Kubernetes/Helm-deployed | Commercial (SUSE) |
+| [`smlm_proxy`](https://www.suse.com/products/multi-linux-manager/) | SMLM proxy | Commercial (SUSE) |
+| `client_registration` | Register any VM as a Salt client of an existing `uyuni`/`smlm` server (activation key bootstrap + salt-key acceptance) | N/A (this project's own addon) |
+| [`suma`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager (SUMA), installed directly on the OS via `mgradm` — not Kubernetes | Commercial (SUSE) |
 
 </details>
 
@@ -885,12 +885,12 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>Storage &amp; databases</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `mariadb` | MariaDB database |
-| `postgresql` | PostgreSQL database |
-| `openldap` | OpenLDAP directory service |
-| `ds389` | 389 Directory Server (LDAP) — the one add-on still implemented in bash |
+| Addon name | Description | License |
+|---|---|---|
+| [`mariadb`](https://mariadb.org/) | MariaDB database | GPL-2.0 |
+| [`postgresql`](https://www.postgresql.org/) | PostgreSQL database | PostgreSQL License |
+| [`openldap`](https://www.openldap.org/) | OpenLDAP directory service | OpenLDAP Public License |
+| [`ds389`](https://www.port389.org/) | 389 Directory Server (LDAP) — the one add-on still implemented in bash | GPL-2.0 (with linking exception) |
 
 </details>
 
@@ -898,12 +898,12 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>CI/CD &amp; developer tooling</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `jenkins` | Jenkins CI |
-| `appcollection` | SUSE Application Collection |
-| `stackpack` | StackState monitoring integration |
-| `trento` | SAP infrastructure monitoring |
+| Addon name | Description | License |
+|---|---|---|
+| [`jenkins`](https://www.jenkins.io/) | Jenkins CI | MIT |
+| [`appcollection`](https://apps.rancher.io/) | SUSE Application Collection | Commercial (SUSE catalog) |
+| [`stackpack`](https://www.stackstate.com/) | StackState monitoring integration | Commercial (SUSE) |
+| [`trento`](https://www.trento-project.io/) | SAP infrastructure monitoring | Apache-2.0 |
 
 </details>
 
@@ -911,26 +911,26 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>AI / ML</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `ollama` | Local LLM runtime |
-| `deepseek` | DeepSeek model, served via Ollama |
-| `apertus` | Apertus (Swiss AI Initiative) model, served via Ollama |
-| `gemini` | Google Gemini API proxy (LiteLLM) |
-| `anthropic` | Anthropic Claude API proxy (LiteLLM) |
-| `openai` | OpenAI API proxy (LiteLLM) |
-| `kimi` | Moonshot AI Kimi API proxy (LiteLLM) |
-| `open_webui` | Chat frontend for Ollama / OpenAI-compatible endpoints |
-| `suse_ai` | SUSE's own Ollama + Open WebUI + Milvus AI stack |
-| `milvus` | Milvus vector database (RAG/embedding search) |
-| `qdrant` | Qdrant vector database (RAG/embedding search) |
-| `weaviate` | Weaviate vector database (RAG/embedding search) |
-| `gpu_operator` | NVIDIA GPU Operator (GPU scheduling for AI workloads) |
-| `qwen` | Qwen2.5 model, served via Ollama |
-| `mistral` | Mistral model, served via Ollama |
-| `codellama` | Code Llama model, served via Ollama |
-| `starcoder2` | StarCoder2 model, served via Ollama |
-| `phoebe` | (see `install_phoebe --schema`) |
+| Addon name | Description | License |
+|---|---|---|
+| [`ollama`](https://ollama.com/) | Local LLM runtime | MIT |
+| [`deepseek`](https://www.deepseek.com/) | DeepSeek model, served via Ollama | DeepSeek License (model-specific) |
+| [`apertus`](https://www.swiss-ai.org/apertus) | Apertus (Swiss AI Initiative) model, served via Ollama | Apache-2.0 |
+| [`gemini`](https://ai.google.dev/gemini-api) | Google Gemini API proxy (LiteLLM) | Proprietary (Google API) |
+| [`anthropic`](https://www.anthropic.com/) | Anthropic Claude API proxy (LiteLLM) | Proprietary (Anthropic API) |
+| [`openai`](https://openai.com/) | OpenAI API proxy (LiteLLM) | Proprietary (OpenAI API) |
+| [`kimi`](https://www.moonshot.ai/) | Moonshot AI Kimi API proxy (LiteLLM) | Custom license (Moonshot AI) |
+| [`open_webui`](https://openwebui.com/) | Chat frontend for Ollama / OpenAI-compatible endpoints | BSD-3-Clause (+branding clause, v0.6.6+) |
+| [`suse_ai`](https://www.suse.com/solutions/artificial-intelligence/) | SUSE's own Ollama + Open WebUI + Milvus AI stack | Commercial (SUSE) |
+| [`milvus`](https://milvus.io/) | Milvus vector database (RAG/embedding search) | Apache-2.0 |
+| [`qdrant`](https://qdrant.tech/) | Qdrant vector database (RAG/embedding search) | Apache-2.0 |
+| [`weaviate`](https://weaviate.io/) | Weaviate vector database (RAG/embedding search) | BSD-3-Clause |
+| [`gpu_operator`](https://github.com/NVIDIA/gpu-operator) | NVIDIA GPU Operator (GPU scheduling for AI workloads) | Apache-2.0 |
+| [`qwen`](https://qwenlm.github.io/) | Qwen2.5 model, served via Ollama | Apache-2.0 |
+| [`mistral`](https://mistral.ai/) | Mistral model, served via Ollama | Apache-2.0 |
+| [`codellama`](https://github.com/meta-llama/codellama) | Code Llama model, served via Ollama | Llama 2 Community License |
+| [`starcoder2`](https://github.com/bigcode-project/starcoder2) | StarCoder2 model, served via Ollama | BigCode OpenRAIL-M |
+| [`phoebe`](https://github.com/SUSE/phoebe) | (see `install_phoebe --schema`) | BSD-3-Clause |
 
 </details>
 
@@ -938,21 +938,21 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 <details open>
 <summary><strong>Virtualization &amp; demos</strong></summary>
 
-| Addon name | Description |
-|---|---|
-| `harvester` | SUSE Virtualization (Harvester/KubeVirt) node provisioning |
-| `wordpress` | WordPress + MySQL demo application |
-| `kiwi` | KIWI appliance builder |
-| `fluentd` | Log aggregation |
-| `mailman` | GNU Mailman 3 mailing-list management + web interface |
-| `mediagoblin` | GNU MediaGoblin federated media-publishing platform |
-| `colt` | Colt, a git-backed blog engine on GNU Artanis |
-| `wikimusic` | WikiMusic, a musical-knowledge CMS on GNU Artanis |
-| `games` | A small "arcade" page linking to curated open-source itch.io games |
+| Addon name | Description | License |
+|---|---|---|
+| [`harvester`](https://harvesterhci.io/) | SUSE Virtualization (Harvester/KubeVirt) node provisioning | Apache-2.0 |
+| [`wordpress`](https://wordpress.org/) | WordPress + MySQL demo application | GPL-2.0-or-later |
+| [`kiwi`](https://osinside.github.io/kiwi/) | KIWI appliance builder | GPL-3.0-or-later |
+| [`fluentd`](https://www.fluentd.org/) | Log aggregation | Apache-2.0 |
+| [`mailman`](https://www.list.org/) | GNU Mailman 3 mailing-list management + web interface | GPL-3.0-or-later |
+| [`mediagoblin`](https://www.mediagoblin.org/) | GNU MediaGoblin federated media-publishing platform | AGPL-3.0 |
+| [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt, a git-backed blog engine on GNU Artanis | GPL-3.0 |
+| [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic, a musical-knowledge CMS on GNU Artanis | GPL (per repo's COPYING file) |
+| [`games`](https://itch.io/games/html5/tag-open-source) | A small "arcade" page linking to curated open-source itch.io games | N/A (links out; each game its own license) |
 
 </details>
 
-To add a new addon: create `scripts/install_<name>.py` following the pattern of an existing one (source `addon_common`, load the relevant JSON section via `load_definition()`, do the work over SSH), add templates under `templates/addons/<name>/` if needed, and reference `"<name>"` in the `addons` array of your JSON — `install_automation_node_scripts.sh`'s deploy loop and the web UI both discover it automatically.
+To add a new addon: create `scripts/install_<name>.py` following the pattern of an existing one (source `addon_common`, load the relevant JSON section via `load_definition()`, do the work over SSH), add templates under `templates/addons/<name>/` if needed, and reference `"<name>"` in the `addons` array of your JSON — `install_automation_node_scripts.sh`'s deploy loop and the web UI both discover it automatically. Add a row to the relevant table above in the same change — a link to the upstream project's official page and its license, alongside the name and description (use `N/A` for either column when there's no separate upstream project, e.g. an addon that's this project's own construct).
 
 <p align="right"><a href="#top">↑ back to top</a></p>
 
