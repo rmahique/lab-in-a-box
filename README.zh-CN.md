@@ -38,7 +38,7 @@
 `setup_lab.py` · **一个 JSON/YAML 文件，一条命令。**
 以声明式方式描述虚拟机、Kubernetes 集群（RKE2/K3s）和插件；它会按正确的顺序把一切都构建出来。
 
-`install_<addon>` · **61 个开箱即用的插件。**
+`install_<addon>` · **65 个开箱即用的插件。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Multi-Linux Manager/Uyuni（激活密钥、RBAC、Content Lifecycle Management、Ansible 集成等）、用于安全培训的漏洞演示应用，以及更多。
 
 [`lab-builder`](#web-ui-lab-builder) · **动态 Web 界面。**
@@ -795,7 +795,7 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 插件通过名称在 kcluster 或节点的 `addons` 数组中被引用。对应的 `install_<name>` 脚本必须位于 `PATH` 中。
 
-<sub>快速跳转: <a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化与演示</a></sub>
+<sub>快速跳转: <a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化</a> · <a href="#addons-demos">演示应用</a> · <a href="#addons-games">游戏</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -803,19 +803,20 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 | 插件名称 | 说明 |
 |---|---|
-| `rancher` | SUSE Rancher Prime Kubernetes 管理平台 |
-| `longhorn` | SUSE Longhorn 分布式块存储 |
-| `harbor` | 容器镜像仓库 |
-| `argocd` | Argo CD GitOps 控制器 |
-| `kubewarden` | Kubernetes 策略引擎 |
-| `istio` | 服务网格 |
-| `linkerd` | 服务网格 |
-| `traefik` | Ingress 控制器 |
-| `nginx` | Ingress 控制器 / 反向代理 |
-| `coredns` | 集群 DNS |
-| `kucero` | Kubernetes 集群证书轮换 |
-| `fluid` | 面向云原生工作负载的数据编排/缓存 |
-
+| [`rancher`](https://www.rancher.com/) | SUSE Rancher Prime Kubernetes 管理平台 |
+| [`longhorn`](https://longhorn.io/) | SUSE Longhorn 分布式块存储 |
+| [`harbor`](https://goharbor.io/) | 容器镜像仓库 |
+| [`argocd`](https://argo-cd.readthedocs.io/) | Argo CD GitOps 控制器 |
+| [`kubewarden`](https://www.kubewarden.io/) | Kubernetes 策略引擎 |
+| [`istio`](https://istio.io/) | 服务网格 |
+| [`linkerd`](https://linkerd.io/) | 服务网格 |
+| [`traefik`](https://traefik.io/) | Ingress 控制器 |
+| [`nginx`](https://nginx.org/) | Ingress 控制器 / 反向代理 |
+| [`coredns`](https://coredns.io/) | 集群 DNS |
+| [`kucero`](https://github.com/SUSE/kucero) | Kubernetes 集群证书轮换 |
+| [`fluid`](https://fluid-cloudnative.github.io/) | 面向云原生工作负载的数据编排/缓存 |
+| [`suse_observability`](https://www.suse.com/products/suse-observability/) | SUSE Observability（基于 StackState 的指标/追踪/拓扑） |
+| [`agones`](https://agones.dev/) | 专用游戏服务器托管/伸缩（agones.dev） |
 </details>
 
 <a id="addons-security"></a>
@@ -824,15 +825,14 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 | 插件名称 | 说明 |
 |---|---|
-| `neuvector` | SUSE NeuVector 容器安全平台 |
-| `nv_testing` | NeuVector 安全测试工作负载（nginx/node/redis pod） |
-| `nv-demo-helm` | 基于 Helm 的 NeuVector 演示工作负载 |
-| `complianceascode` | OpenSCAP/ComplianceAsCode 操作器 |
-| `keycloak` | 身份与访问管理 |
-| `kagent` | 面向 Kubernetes 的智能体式 AI 安全助手 |
+| [`neuvector`](https://open-docs.neuvector.com/) | SUSE NeuVector 容器安全平台 |
+| [`nv_testing`](https://open-docs.neuvector.com/testing/testing) | NeuVector 安全测试工作负载（nginx/node/redis pod） |
+| [`nv-demo-helm`](https://open-docs.neuvector.com/) | 基于 Helm 的 NeuVector 演示工作负载 |
+| [`complianceascode`](https://complianceascode.github.io/) | OpenSCAP/ComplianceAsCode 操作器 |
+| [`keycloak`](https://www.keycloak.org/) | 身份与访问管理 |
+| [`kagent`](https://kagent.dev/) | 面向 Kubernetes 的智能体式 AI 安全助手 |
 | `insecure_app` | 故意存在漏洞的 Web 应用（用于演示/培训） |
-| `struts_demo` | 存在漏洞的 Apache Struts2 演示应用（CVE-2017-5638） |
-
+| [`struts_demo`](https://struts.apache.org/) | 存在漏洞的 Apache Struts2 演示应用（CVE-2017-5638） |
 </details>
 
 <a id="addons-suma"></a>
@@ -841,12 +841,11 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 | 插件名称 | 说明 |
 |---|---|
-| `uyuni` | Uyuni 服务器（上游）：激活密钥、组织、RBAC、Content Lifecycle Management、Ansible 集成、SCAP/CVE 审计、dev/QA/prod 环境拓扑——完整字段列表见 `install_uyuni --schema` |
-| `smlm` | SUSE Multi-Linux Manager 服务器——与 `uyuni` 相同的功能集，通过 Kubernetes/Helm 部署 |
-| `smlm_proxy` | SMLM 代理 |
+| [`uyuni`](https://www.uyuni-project.org/) | Uyuni 服务器（上游）：激活密钥、组织、RBAC、Content Lifecycle Management、Ansible 集成、SCAP/CVE 审计、dev/QA/prod 环境拓扑——完整字段列表见 `install_uyuni --schema` |
+| [`smlm`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager 服务器——与 `uyuni` 相同的功能集，通过 Kubernetes/Helm 部署 |
+| [`smlm_proxy`](https://www.suse.com/products/multi-linux-manager/) | SMLM 代理 |
 | `client_registration` | 将任意虚拟机注册为现有 `uyuni`/`smlm` 服务器的 Salt 客户端（激活密钥引导 + salt 密钥接受） |
-| `suma` | SUSE Multi-Linux Manager（SUMA），通过 `mgradm` 直接安装在操作系统上——不基于 Kubernetes |
-
+| [`suma`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager（SUMA），通过 `mgradm` 直接安装在操作系统上——不基于 Kubernetes |
 </details>
 
 <a id="addons-storage"></a>
@@ -855,11 +854,10 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 | 插件名称 | 说明 |
 |---|---|
-| `mariadb` | MariaDB 数据库 |
-| `postgresql` | PostgreSQL 数据库 |
-| `openldap` | OpenLDAP 目录服务 |
-| `ds389` | 389 Directory Server（LDAP）——唯一仍以 bash 实现的插件 |
-
+| [`mariadb`](https://mariadb.org/) | MariaDB 数据库 |
+| [`postgresql`](https://www.postgresql.org/) | PostgreSQL 数据库 |
+| [`openldap`](https://www.openldap.org/) | OpenLDAP 目录服务 |
+| [`ds389`](https://www.port389.org/) | 389 Directory Server（LDAP）——唯一仍以 bash 实现的插件 |
 </details>
 
 <a id="addons-cicd"></a>
@@ -868,11 +866,10 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 | 插件名称 | 说明 |
 |---|---|
-| `jenkins` | Jenkins CI |
-| `appcollection` | SUSE Application Collection |
-| `stackpack` | StackState 监控集成 |
-| `trento` | SAP 基础设施监控 |
-
+| [`jenkins`](https://www.jenkins.io/) | Jenkins CI |
+| [`appcollection`](https://apps.rancher.io/) | SUSE Application Collection |
+| [`stackpack`](https://www.stackstate.com/) | StackState 监控集成 |
+| [`trento`](https://www.trento-project.io/) | SAP 基础设施监控 |
 </details>
 
 <a id="addons-ai"></a>
@@ -881,23 +878,62 @@ install_longhorn --schema yaml      # ……或 YAML 格式
 
 | 插件名称 | 说明 |
 |---|---|
-| `ollama` | 本地 LLM 运行时 |
-| `deepseek` | 通过 Ollama 提供的 DeepSeek 模型 |
-| `gemini` | Google Gemini API 集成 |
-| `phoebe` | （参见 `install_phoebe --schema`） |
-
+| [`ollama`](https://ollama.com/) | 本地 LLM 运行时 |
+| [`deepseek`](https://www.deepseek.com/) | 通过 Ollama 提供的 DeepSeek 模型 |
+| [`apertus`](https://www.swiss-ai.org/apertus) | 通过 Ollama 提供的 Apertus（Swiss AI Initiative）模型 |
+| [`gemini`](https://ai.google.dev/gemini-api) | Google Gemini API 代理（LiteLLM） |
+| [`anthropic`](https://www.anthropic.com/) | Anthropic Claude API 代理（LiteLLM） |
+| [`openai`](https://openai.com/) | OpenAI API 代理（LiteLLM） |
+| [`kimi`](https://www.moonshot.ai/) | Moonshot AI Kimi API 代理（LiteLLM） |
+| [`open_webui`](https://openwebui.com/) | 面向 Ollama / 兼容 OpenAI 端点的聊天前端 |
+| [`suse_ai`](https://www.suse.com/solutions/artificial-intelligence/) | SUSE 自研的 Ollama + Open WebUI + Milvus AI 技术栈 |
+| [`milvus`](https://milvus.io/) | Milvus 向量数据库（RAG/embedding 检索） |
+| [`qdrant`](https://qdrant.tech/) | Qdrant 向量数据库（RAG/embedding 检索） |
+| [`weaviate`](https://weaviate.io/) | Weaviate 向量数据库（RAG/embedding 检索） |
+| [`gpu_operator`](https://github.com/NVIDIA/gpu-operator) | NVIDIA GPU Operator（面向 AI 工作负载的 GPU 调度） |
+| [`qwen`](https://qwenlm.github.io/) | 通过 Ollama 提供的 Qwen2.5 模型 |
+| [`mistral`](https://mistral.ai/) | 通过 Ollama 提供的 Mistral 模型 |
+| [`codellama`](https://github.com/meta-llama/codellama) | 通过 Ollama 提供的 Code Llama 模型 |
+| [`starcoder2`](https://github.com/bigcode-project/starcoder2) | 通过 Ollama 提供的 StarCoder2 模型 |
+| [`phoebe`](https://github.com/SUSE/phoebe) | （参见 `install_phoebe --schema`） |
 </details>
 
 <a id="addons-virt"></a>
 <details open>
-<summary><strong>虚拟化与演示</strong></summary>
+<summary><strong>虚拟化</strong></summary>
 
 | 插件名称 | 说明 |
 |---|---|
-| `harvester` | SUSE Virtualization（Harvester/KubeVirt）节点配置 |
-| `wordpress` | WordPress + MySQL 演示应用 |
-| `kiwi` | KIWI 镜像构建工具 |
-| `fluentd` | 日志聚合 |
+| [`harvester`](https://harvesterhci.io/) | SUSE Virtualization（Harvester/KubeVirt）节点配置 |
+| [`kiwi`](https://osinside.github.io/kiwi/) | KIWI 镜像构建工具 |
+
+</details>
+
+<a id="addons-demos"></a>
+<details open>
+<summary><strong>演示应用</strong></summary>
+
+| 插件名称 | 说明 |
+|---|---|
+| [`wordpress`](https://wordpress.org/) | WordPress + MySQL 演示应用 |
+| [`fluentd`](https://www.fluentd.org/) | 日志聚合 |
+| [`mailman`](https://www.list.org/) | GNU Mailman 3 邮件列表管理 + Web 界面 |
+| [`mediagoblin`](https://www.mediagoblin.org/) | GNU MediaGoblin 联邦式媒体发布平台 |
+| [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt，基于 GNU Artanis 的 git 后端博客引擎 |
+| [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic，基于 GNU Artanis 的音乐知识 CMS |
+| [`home_assistant`](https://www.home-assistant.io/) | Home Assistant 家庭自动化平台 |
+
+</details>
+
+<a id="addons-games"></a>
+<details open>
+<summary><strong>游戏</strong></summary>
+
+| 插件名称 | 说明 |
+|---|---|
+| [`supertux_classic`](https://github.com/Alzter/SuperTux-Classic) | SuperTux Classic，一款自托管的开源 Godot 平台跳跃游戏 |
+| [`skynet_simulator`](https://github.com/edisgreat/skynet-simulator) | Skynet Simulator，一款自托管的开源浏览器解谜/放置类游戏 |
+| [`open_saber`](https://github.com/leandrodreamer/BeepSaber) | Open Saber，一款自托管的开源节奏/切方块游戏 |
 
 </details>
 

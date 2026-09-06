@@ -36,7 +36,7 @@
 `setup_lab.py` · **One JSON/YAML file, one command.**
 Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; it builds everything in the right order.
 
-`install_<addon>` · **64 ready-made add-ons.**
+`install_<addon>` · **65 ready-made add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (activation keys, RBAC, Content Lifecycle Management, Ansible integration, and more), vulnerable demo apps for security training, and more.
 
 [`lab-builder`](#web-ui-lab-builder) · **A dynamic web UI.**

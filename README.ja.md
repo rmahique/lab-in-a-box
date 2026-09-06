@@ -38,7 +38,7 @@
 `setup_lab.py` · **JSON/YAML ファイル1つ、コマンド1つ。**
 VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。正しい順序ですべてを構築する。
 
-`install_<addon>` · **61種類のアドオンをすぐに利用可能。**
+`install_<addon>` · **65種類のアドオンをすぐに利用可能。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Multi-Linux Manager/Uyuni（アクティベーションキー、RBAC、Content Lifecycle Management、Ansible 連携など）、セキュリティトレーニング用の脆弱なデモアプリなど。
 
 [`lab-builder`](#web-ui-lab-builder) · **動的な Web UI。**
@@ -795,7 +795,7 @@ install_longhorn --schema yaml      # ...または YAML
 
 アドオンは kcluster またはノードの `addons` 配列に名前で参照される。対応する `install_<name>` スクリプトが `PATH` 上に存在する必要がある。
 
-<sub>ジャンプ: <a href="#addons-k8s">Kubernetes & GitOps</a> · <a href="#addons-security">セキュリティ & コンプライアンス</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">ストレージ & データベース</a> · <a href="#addons-cicd">CI/CD & ツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化 & デモ</a></sub>
+<sub>ジャンプ: <a href="#addons-k8s">Kubernetes & GitOps</a> · <a href="#addons-security">セキュリティ & コンプライアンス</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">ストレージ & データベース</a> · <a href="#addons-cicd">CI/CD & ツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化</a> · <a href="#addons-demos">デモアプリケーション</a> · <a href="#addons-games">ゲーム</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -803,19 +803,20 @@ install_longhorn --schema yaml      # ...または YAML
 
 | アドオン名 | 説明 |
 |---|---|
-| `rancher` | SUSE Rancher Prime Kubernetes 管理プラットフォーム |
-| `longhorn` | SUSE Longhorn 分散ブロックストレージ |
-| `harbor` | コンテナレジストリ |
-| `argocd` | Argo CD GitOps コントローラー |
-| `kubewarden` | Kubernetes ポリシーエンジン |
-| `istio` | サービスメッシュ |
-| `linkerd` | サービスメッシュ |
-| `traefik` | Ingress コントローラー |
-| `nginx` | Ingress コントローラー / リバースプロキシ |
-| `coredns` | クラスター DNS |
-| `kucero` | Kubernetes クラスター証明書のローテーション |
-| `fluid` | クラウドネイティブワークロード向けのデータオーケストレーション/キャッシュ |
-
+| [`rancher`](https://www.rancher.com/) | SUSE Rancher Prime Kubernetes 管理プラットフォーム |
+| [`longhorn`](https://longhorn.io/) | SUSE Longhorn 分散ブロックストレージ |
+| [`harbor`](https://goharbor.io/) | コンテナレジストリ |
+| [`argocd`](https://argo-cd.readthedocs.io/) | Argo CD GitOps コントローラー |
+| [`kubewarden`](https://www.kubewarden.io/) | Kubernetes ポリシーエンジン |
+| [`istio`](https://istio.io/) | サービスメッシュ |
+| [`linkerd`](https://linkerd.io/) | サービスメッシュ |
+| [`traefik`](https://traefik.io/) | Ingress コントローラー |
+| [`nginx`](https://nginx.org/) | Ingress コントローラー / リバースプロキシ |
+| [`coredns`](https://coredns.io/) | クラスター DNS |
+| [`kucero`](https://github.com/SUSE/kucero) | Kubernetes クラスター証明書のローテーション |
+| [`fluid`](https://fluid-cloudnative.github.io/) | クラウドネイティブワークロード向けのデータオーケストレーション/キャッシュ |
+| [`suse_observability`](https://www.suse.com/products/suse-observability/) | SUSE Observability（StackState ベースのメトリクス/トレース/トポロジー） |
+| [`agones`](https://agones.dev/) | 専用ゲームサーバーのホスティング/スケーリング（agones.dev） |
 </details>
 
 <a id="addons-security"></a>
@@ -824,15 +825,14 @@ install_longhorn --schema yaml      # ...または YAML
 
 | アドオン名 | 説明 |
 |---|---|
-| `neuvector` | SUSE NeuVector コンテナセキュリティプラットフォーム |
-| `nv_testing` | NeuVector セキュリティテストワークロード（nginx/node/redis pod） |
-| `nv-demo-helm` | NeuVector の Helm ベースのデモワークロード |
-| `complianceascode` | OpenSCAP/ComplianceAsCode オペレーター |
-| `keycloak` | アイデンティティ・アクセス管理 |
-| `kagent` | Kubernetes 向けエージェント型 AI セキュリティアシスタント |
+| [`neuvector`](https://open-docs.neuvector.com/) | SUSE NeuVector コンテナセキュリティプラットフォーム |
+| [`nv_testing`](https://open-docs.neuvector.com/testing/testing) | NeuVector セキュリティテストワークロード（nginx/node/redis pod） |
+| [`nv-demo-helm`](https://open-docs.neuvector.com/) | NeuVector の Helm ベースのデモワークロード |
+| [`complianceascode`](https://complianceascode.github.io/) | OpenSCAP/ComplianceAsCode オペレーター |
+| [`keycloak`](https://www.keycloak.org/) | アイデンティティ・アクセス管理 |
+| [`kagent`](https://kagent.dev/) | Kubernetes 向けエージェント型 AI セキュリティアシスタント |
 | `insecure_app` | 意図的に脆弱な Web アプリケーション（デモ/トレーニング用） |
-| `struts_demo` | 脆弱な Apache Struts2 デモアプリケーション（CVE-2017-5638） |
-
+| [`struts_demo`](https://struts.apache.org/) | 脆弱な Apache Struts2 デモアプリケーション（CVE-2017-5638） |
 </details>
 
 <a id="addons-suma"></a>
@@ -841,12 +841,11 @@ install_longhorn --schema yaml      # ...または YAML
 
 | アドオン名 | 説明 |
 |---|---|
-| `uyuni` | Uyuni サーバー（アップストリーム）：アクティベーションキー、組織、RBAC、Content Lifecycle Management、Ansible 連携、SCAP/CVE 監査、dev/QA/prod 環境トポロジー — フィールドの完全な一覧は `install_uyuni --schema` を参照 |
-| `smlm` | SUSE Multi-Linux Manager サーバー — `uyuni` と同じ機能セットを Kubernetes/Helm でデプロイしたもの |
-| `smlm_proxy` | SMLM プロキシ |
+| [`uyuni`](https://www.uyuni-project.org/) | Uyuni サーバー（アップストリーム）：アクティベーションキー、組織、RBAC、Content Lifecycle Management、Ansible 連携、SCAP/CVE 監査、dev/QA/prod 環境トポロジー — フィールドの完全な一覧は `install_uyuni --schema` を参照 |
+| [`smlm`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager サーバー — `uyuni` と同じ機能セットを Kubernetes/Helm でデプロイしたもの |
+| [`smlm_proxy`](https://www.suse.com/products/multi-linux-manager/) | SMLM プロキシ |
 | `client_registration` | 任意の VM を既存の `uyuni`/`smlm` サーバーの Salt クライアントとして登録する（アクティベーションキーによるブートストラップ + salt キーの承認） |
-| `suma` | SUSE Multi-Linux Manager（SUMA）。`mgradm` を使って OS 上に直接インストールされる — Kubernetes ではない |
-
+| [`suma`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager（SUMA）。`mgradm` を使って OS 上に直接インストールされる — Kubernetes ではない |
 </details>
 
 <a id="addons-storage"></a>
@@ -855,11 +854,10 @@ install_longhorn --schema yaml      # ...または YAML
 
 | アドオン名 | 説明 |
 |---|---|
-| `mariadb` | MariaDB データベース |
-| `postgresql` | PostgreSQL データベース |
-| `openldap` | OpenLDAP ディレクトリサービス |
-| `ds389` | 389 Directory Server（LDAP）— まだ bash で実装されている唯一のアドオン |
-
+| [`mariadb`](https://mariadb.org/) | MariaDB データベース |
+| [`postgresql`](https://www.postgresql.org/) | PostgreSQL データベース |
+| [`openldap`](https://www.openldap.org/) | OpenLDAP ディレクトリサービス |
+| [`ds389`](https://www.port389.org/) | 389 Directory Server（LDAP）— まだ bash で実装されている唯一のアドオン |
 </details>
 
 <a id="addons-cicd"></a>
@@ -868,11 +866,10 @@ install_longhorn --schema yaml      # ...または YAML
 
 | アドオン名 | 説明 |
 |---|---|
-| `jenkins` | Jenkins CI |
-| `appcollection` | SUSE Application Collection |
-| `stackpack` | StackState 監視連携 |
-| `trento` | SAP インフラストラクチャ監視 |
-
+| [`jenkins`](https://www.jenkins.io/) | Jenkins CI |
+| [`appcollection`](https://apps.rancher.io/) | SUSE Application Collection |
+| [`stackpack`](https://www.stackstate.com/) | StackState 監視連携 |
+| [`trento`](https://www.trento-project.io/) | SAP インフラストラクチャ監視 |
 </details>
 
 <a id="addons-ai"></a>
@@ -881,23 +878,62 @@ install_longhorn --schema yaml      # ...または YAML
 
 | アドオン名 | 説明 |
 |---|---|
-| `ollama` | ローカル LLM ランタイム |
-| `deepseek` | Ollama 経由で提供される DeepSeek モデル |
-| `gemini` | Google Gemini API 連携 |
-| `phoebe` | （`install_phoebe --schema` を参照） |
-
+| [`ollama`](https://ollama.com/) | ローカル LLM ランタイム |
+| [`deepseek`](https://www.deepseek.com/) | Ollama 経由で提供される DeepSeek モデル |
+| [`apertus`](https://www.swiss-ai.org/apertus) | Ollama 経由で提供される Apertus（Swiss AI Initiative）モデル |
+| [`gemini`](https://ai.google.dev/gemini-api) | Google Gemini API プロキシ（LiteLLM） |
+| [`anthropic`](https://www.anthropic.com/) | Anthropic Claude API プロキシ（LiteLLM） |
+| [`openai`](https://openai.com/) | OpenAI API プロキシ（LiteLLM） |
+| [`kimi`](https://www.moonshot.ai/) | Moonshot AI Kimi API プロキシ（LiteLLM） |
+| [`open_webui`](https://openwebui.com/) | Ollama / OpenAI 互換エンドポイント向けのチャットフロントエンド |
+| [`suse_ai`](https://www.suse.com/solutions/artificial-intelligence/) | SUSE 独自の Ollama + Open WebUI + Milvus AI スタック |
+| [`milvus`](https://milvus.io/) | Milvus ベクトルデータベース（RAG/embedding 検索） |
+| [`qdrant`](https://qdrant.tech/) | Qdrant ベクトルデータベース（RAG/embedding 検索） |
+| [`weaviate`](https://weaviate.io/) | Weaviate ベクトルデータベース（RAG/embedding 検索） |
+| [`gpu_operator`](https://github.com/NVIDIA/gpu-operator) | NVIDIA GPU Operator（AI ワークロード向け GPU スケジューリング） |
+| [`qwen`](https://qwenlm.github.io/) | Ollama 経由で提供される Qwen2.5 モデル |
+| [`mistral`](https://mistral.ai/) | Ollama 経由で提供される Mistral モデル |
+| [`codellama`](https://github.com/meta-llama/codellama) | Ollama 経由で提供される Code Llama モデル |
+| [`starcoder2`](https://github.com/bigcode-project/starcoder2) | Ollama 経由で提供される StarCoder2 モデル |
+| [`phoebe`](https://github.com/SUSE/phoebe) | （`install_phoebe --schema` を参照） |
 </details>
 
 <a id="addons-virt"></a>
 <details open>
-<summary><strong>仮想化 & デモ</strong></summary>
+<summary><strong>仮想化</strong></summary>
 
 | アドオン名 | 説明 |
 |---|---|
-| `harvester` | SUSE Virtualization（Harvester/KubeVirt）ノードのプロビジョニング |
-| `wordpress` | WordPress + MySQL デモアプリケーション |
-| `kiwi` | KIWI アプライアンスビルダー |
-| `fluentd` | ログ集約 |
+| [`harvester`](https://harvesterhci.io/) | SUSE Virtualization（Harvester/KubeVirt）ノードのプロビジョニング |
+| [`kiwi`](https://osinside.github.io/kiwi/) | KIWI アプライアンスビルダー |
+
+</details>
+
+<a id="addons-demos"></a>
+<details open>
+<summary><strong>デモアプリケーション</strong></summary>
+
+| アドオン名 | 説明 |
+|---|---|
+| [`wordpress`](https://wordpress.org/) | WordPress + MySQL デモアプリケーション |
+| [`fluentd`](https://www.fluentd.org/) | ログ集約 |
+| [`mailman`](https://www.list.org/) | GNU Mailman 3 メーリングリスト管理 + Web インターフェース |
+| [`mediagoblin`](https://www.mediagoblin.org/) | GNU MediaGoblin 連合型メディア公開プラットフォーム |
+| [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt、GNU Artanis 上の git ベースのブログエンジン |
+| [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic、GNU Artanis 上の音楽ナレッジ CMS |
+| [`home_assistant`](https://www.home-assistant.io/) | Home Assistant ホームオートメーションプラットフォーム |
+
+</details>
+
+<a id="addons-games"></a>
+<details open>
+<summary><strong>ゲーム</strong></summary>
+
+| アドオン名 | 説明 |
+|---|---|
+| [`supertux_classic`](https://github.com/Alzter/SuperTux-Classic) | SuperTux Classic、セルフホスト型オープンソースの Godot 製プラットフォーマー |
+| [`skynet_simulator`](https://github.com/edisgreat/skynet-simulator) | Skynet Simulator、セルフホスト型オープンソースのブラウザパズル/放置ゲーム |
+| [`open_saber`](https://github.com/leandrodreamer/BeepSaber) | Open Saber、セルフホスト型オープンソースのリズム/ブロック切断ゲーム |
 
 </details>
 
