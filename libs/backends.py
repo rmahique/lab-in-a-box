@@ -26,6 +26,7 @@ those still call resolve_kvm_host/locate_kvm_host directly, unchanged, to
 keep this move zero-risk; a later task can switch them over.
 """
 
+import base64
 import json
 import os
 import re
@@ -2067,12 +2068,238 @@ class GCPBackend(VMBackend):
         return 9999, 999999, 999999
 
 
+class AlibabaBackend(VMBackend):
+    """
+    Talks to Alibaba Cloud ECS by shelling out to the real `aliyun` CLI (`aliyun ecs ...`) — same
+    "wrap the standard CLI tool" convention as AWSBackend/GCPBackend, for the same reason (Alibaba
+    Cloud's own request signing is a proprietary scheme, not worth hand-rolling). Auth:
+    `ALIBABA_ACCESS_KEY_ID`+`ALIBABA_ACCESS_KEY_SECRET` (required, passed as explicit `--access-
+    key-id`/`--access-key-secret` flags per call — aliyun's own documented equivalent of AWS's
+    per-call env vars, not a persistent activated-credential model like gcloud's). `ALIBABA_REGION`
+    is required too.
+
+    Real, documented mismatches with this project's KVM-shaped assumptions (same stance as every
+    other cloud backend above — operator pre-configures the cloud-native prerequisite):
+
+    - config_method: ONLY "cloud-init" — passed as `--UserData`, which Alibaba Cloud's own API
+      REQUIRES to be Base64-encoded (confirmed against its own current documentation) — unlike
+      AWS/GCP, which both accept raw text; this backend encodes it itself, the operator's own
+      cloud-init file on disk stays plain text either way.
+    - ISO_IMAGE: must be a real Alibaba Cloud ImageId the operator already has access to — this
+      backend does not build or import one.
+    - Networking is REQUIRED here, not optional-with-a-default the way AWS/GCP's own backends are:
+      Alibaba Cloud VPC-type instances need an explicit security group AND VSwitch — there is no
+      simple "default VPC" fallback the way AWS/GCP both provide out of the box for a fresh
+      account. `ALIBABA_SECURITY_GROUP_ID` and `ALIBABA_VSWITCH_ID` are both MANDATORY.
+    - vm_cpu/vm_mem: Alibaba Cloud also sells fixed (cpu, memory) InstanceType SKUs, same "pick
+      the smallest sufficient one from a small table" approach as Hetzner/AWS — see
+      AlibabaBackend.INSTANCE_TYPES.
+    - vm_dsk_gb maps directly via `--SystemDisk.Size` (Alibaba's own dotted-parameter convention
+      for nested API fields), same as AWS/GCP.
+    - InstanceName is a genuine native field here (unlike AWS's tag-based workaround) — the
+      simplest name-to-instance mapping of any cloud backend so far:
+      `DescribeInstances --InstanceName <vm_name>`.
+    - MAC addresses: ECS does not let you assign a custom MAC either (confirmed against its own
+      documented instance-creation parameters) — same no-MAC-concept stub stance as every other
+      cloud backend here.
+
+    NOT live-tested (no real Alibaba Cloud account available in this session) — CLI
+    flags/behavior verified against Alibaba Cloud's own current documentation and multiple
+    independently-published examples, 2026-09-06, not guessed.
+    """
+
+    # Smallest-to-largest by (cores, memory_gb) — enough of Alibaba's own current general-purpose
+    # lineup to cover this project's typical lab-sized nodes; extend as needed.
+    INSTANCE_TYPES = [
+        ("ecs.g6.large", 2, 8), ("ecs.g6.xlarge", 4, 16), ("ecs.g6.2xlarge", 8, 32),
+    ]
+
+    def __init__(self, access_key_id, access_key_secret, region, security_group_id, vswitch_id,
+                 vm_img_loc=None, lab_setup_path=None):
+        self.access_key_id = access_key_id
+        self.access_key_secret = access_key_secret
+        self.region = region
+        self.security_group_id = security_group_id
+        self.vswitch_id = vswitch_id
+        self.vm_img_loc = vm_img_loc
+        self.lab_setup_path = lab_setup_path
+        self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
+
+    @classmethod
+    def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
+                iso_loc=None, lab_setup_path=None):
+        access_key_id = config.get("ALIBABA_ACCESS_KEY_ID")
+        access_key_secret = config.get("ALIBABA_ACCESS_KEY_SECRET")
+        region = config.get("ALIBABA_REGION")
+        security_group_id = config.get("ALIBABA_SECURITY_GROUP_ID")
+        vswitch_id = config.get("ALIBABA_VSWITCH_ID")
+        missing = [k for k, v in (
+            ("ALIBABA_ACCESS_KEY_ID", access_key_id), ("ALIBABA_ACCESS_KEY_SECRET", access_key_secret),
+            ("ALIBABA_REGION", region), ("ALIBABA_SECURITY_GROUP_ID", security_group_id),
+            ("ALIBABA_VSWITCH_ID", vswitch_id),
+        ) if not v]
+        if missing:
+            die("backend 'alibaba' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
+                ", ".join(missing), vm_name))
+        return cls(access_key_id, access_key_secret, region, security_group_id, vswitch_id,
+                   vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+
+    def _aliyun(self, *args, **kwargs):
+        """One `aliyun` CLI invocation, region/auth applied uniformly. Returns the parsed JSON
+        stdout (or None for no output), raises RuntimeError with the real CLI stderr on a non-zero
+        exit — same contract as the other cloud backends' own request helpers."""
+        cmd = ["aliyun", "ecs"] + list(args) + [
+            "--region", self.region,
+            "--access-key-id", self.access_key_id,
+            "--access-key-secret", self.access_key_secret,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        if result.returncode != 0:
+            raise RuntimeError("aliyun ecs {} failed: {}".format(" ".join(args), result.stderr.strip()))
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def _require_cloud_init(self, config_method, vm_name):
+        if config_method != "cloud-init":
+            die("AlibabaBackend only supports config_method=\"cloud-init\" (got '{}') for VM "
+                "'{}'".format(config_method or "<empty>", vm_name))
+
+    def _find_instance(self, vm_name):
+        result = self._aliyun("DescribeInstances", "--InstanceName", vm_name)
+        instances = ((result or {}).get("Instances") or {}).get("Instance", [])
+        return instances[0] if instances else None
+
+    def _pick_instance_type(self, vm_cpu, vm_mem_mb, vm_name):
+        needed_mem_gb = int(vm_mem_mb) / 1024.0
+        for name, cores, mem_gb in self.INSTANCE_TYPES:
+            if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
+                return name
+        die("AlibabaBackend has no known InstanceType big enough for VM '{}' ({} vCPU / {} MiB) — "
+            "extend AlibabaBackend.INSTANCE_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+
+    def vm_exists(self, vm_name):
+        return self._find_instance(vm_name) is not None
+
+    def list_used_macs(self):
+        """ECS has no customer-assignable MAC-address concept — nothing to check against."""
+        return [], {}
+
+    def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
+        """Resolves/saves a mymac value for consistency with every other backend (see this
+        class's own docstring) — never actually sent to or read from Alibaba Cloud."""
+        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_is_reusable(self, vm_name, mymac, myip):
+        """Same intent as the other backends': True = keep, False = destroy and recreate."""
+        instance = self._find_instance(vm_name)
+        status = (instance or {}).get("Status")
+        if not instance or status != "Running":
+            log("  {}KEEP CHECK{} \"{}{}{}\": not Running on Alibaba Cloud (status: {}) — will "
+                "recreate".format(_YELLOW, _RESET, _RED, vm_name, _RESET, status or "not found"))
+            return False
+
+        try:
+            resolved_ip = socket.gethostbyname(vm_name)
+        except OSError:
+            resolved_ip = None
+        if resolved_ip != myip:
+            log("  {}KEEP CHECK{} \"{}{}{}\": IP mismatch (want \"{}\", DNS gives \"{}\") — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, myip, resolved_ip or "none"))
+            return False
+
+        ssh_test = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(vm_name), "exit 0"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if ssh_test.returncode != 0:
+            log("  {}KEEP CHECK{} \"{}{}{}\": SSH not accessible — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET))
+            return False
+
+        return True
+
+    def reboot_vm(self, vm_name):
+        instance = self._find_instance(vm_name)
+        if not instance:
+            die("Alibaba Cloud instance '{}' not found — cannot reboot".format(vm_name))
+        try:
+            self._aliyun("RebootInstance", "--InstanceId", instance["InstanceId"])
+        except RuntimeError as e:
+            die(str(e))
+
+    def delete_vm(self, vm_name):
+        log("Deleting VM '{}'".format(vm_name))
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return  # already gone — idempotent, matches every other backend's delete_vm()
+        try:
+            self._aliyun("DeleteInstance", "--InstanceId", instance["InstanceId"], "--Force", "true")
+        except RuntimeError as e:
+            die(str(e))
+
+    def copy_vm_image(self, iso_image, vm_name, vm_dsk_gb, config_method=""):
+        """No-op beyond validation — ISO_IMAGE is a real Alibaba Cloud ImageId here, not a file to
+        copy anywhere (see this class's own docstring)."""
+        self._require_cloud_init(config_method, vm_name)
+        if not iso_image:
+            die("ISO_IMAGE is required for VM '{}' on the 'alibaba' backend — set it to a real "
+                "Alibaba Cloud ImageId".format(vm_name))
+
+    def push_provisioning_files(self, vm_name, config_method="", vm_img_loc=None):
+        """Stashes this VM's already-generated cloud-init user-data, Base64-encoded (Alibaba
+        Cloud's own API requires this — confirmed against its current documentation, unlike AWS/
+        GCP which both accept raw text), for create_vm() to send at launch time. Matches every
+        other backend's call-order assumption: this always runs before create_vm(), see
+        setup_vm.py's provision_vm()."""
+        self._require_cloud_init(config_method, vm_name)
+        base = Path(self.lab_setup_path) / "cloud-init"
+        userdata_path = base / "{}_user-data".format(vm_name)
+        if not userdata_path.is_file():
+            die("cloud-init user-data not found for '{}' at {}".format(vm_name, userdata_path))
+        raw = userdata_path.read_bytes()
+        self._user_data_by_vm[vm_name] = base64.b64encode(raw).decode("ascii")
+
+    def create_vm(
+        self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        config_method="", iso_image="", mymac=None, **kwargs
+    ):
+        self._require_cloud_init(config_method, vm_name)
+        instance_type = self._pick_instance_type(vm_cpu, vm_mem, vm_name)
+        user_data = self._user_data_by_vm.get(vm_name, "")
+
+        log("Creating VM '{}' on Alibaba Cloud ECS (InstanceType={})".format(vm_name, instance_type))
+        try:
+            self._aliyun(
+                "RunInstances",
+                "--ImageId", iso_image,
+                "--InstanceType", instance_type,
+                "--InstanceName", vm_name,
+                "--SecurityGroupId", self.security_group_id,
+                "--VSwitchId", self.vswitch_id,
+                "--SystemDisk.Size", str(int(vm_dsk_gb)),
+                "--UserData", user_data,
+            )
+        except RuntimeError as e:
+            die(str(e))
+
+    def host_resources(self):
+        """
+        Best-effort free-capacity signal for select_kvm_host()'s host-picking logic. ECS has no
+        "cluster capacity" concept the way libvirt/Harvester do — a real constraint would be this
+        account's own per-region instance quota, not queried here (a real follow-up, not
+        implemented — see HetznerBackend/AWSBackend/GCPBackend's identical reasoning). Returns a
+        large constant so an "alibaba" node is never wrongly treated as out of capacity.
+        """
+        return 9999, 999999, 999999
+
+
 BACKENDS = {
     "libvirt": LibvirtBackend,
     "harvester": HarvesterBackend,
     "hetzner": HetznerBackend,
     "aws": AWSBackend,
     "gcp": GCPBackend,
+    "alibaba": AlibabaBackend,
 }
 
 
