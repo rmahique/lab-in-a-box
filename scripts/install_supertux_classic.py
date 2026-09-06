@@ -22,10 +22,11 @@
 # into a shared volume, an ordinary nginx container serves it. No Godot build toolchain needed;
 # this is the developer's own already-exported web build, not something built from source here.
 #
-# NOT live-tested (no cluster available in this session) — the release asset's own internal file
-# layout (whether index.html sits at the zip's top level or one directory down) was NOT verified by
-# actually downloading and inspecting it; the fetch script below defensively flattens one level if
-# index.html isn't found at the top after extraction, but this exact case hasn't been exercised.
+# LIVE-TESTED 2026-09-06 on a disposable single-node RKE2 cluster on nuc6.mydemo.lab: full
+# success end-to-end — the initContainer downloaded and unzipped the real release asset cleanly
+# (index.html WAS at the zip's top level, confirmed live — the defensive one-level flatten in the
+# fetch script never had to trigger), the pod reached Running in under 30s, and the real Traefik
+# ingress served a genuine HTTP 200 with <title>SuperTux Classic</title>.
 
 __version__ = "__LABVERSION__"
 

@@ -20,10 +20,11 @@
 # nesting defensively) into a shared volume; an ordinary nginx container serves it. No Godot build
 # toolchain needed; this is the developer's own already-exported web build.
 #
-# NOT live-tested (no cluster available in this session) — the release asset's exact internal
-# nesting (a zip containing another zip, vs. the game's files directly after one unzip) was NOT
-# verified by actually downloading and inspecting it; the fetch script below checks for a nested
-# .zip and unzips it if found, otherwise uses the first extraction directly.
+# LIVE-TESTED 2026-09-06 on a disposable single-node RKE2 cluster on nuc6.mydemo.lab: full
+# success end-to-end — the double-zip handling in the fetch script worked correctly against the
+# real release asset (index.html ended up at the top level after both extraction stages, confirmed
+# by inspecting the pod's own filesystem), the pod reached Running in under 30s, and the real
+# Traefik ingress served a genuine HTTP 200 with <title>Open Saber</title>.
 
 __version__ = "__LABVERSION__"
 

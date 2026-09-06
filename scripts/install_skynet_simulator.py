@@ -20,7 +20,10 @@
 # PHP/MySQL logging feature (update.php/log.sql) — deliberately NOT wired up here (no PHP/DB
 # runtime in this addon's nginx-only pod); the game itself works fully without it.
 #
-# NOT live-tested (no cluster available in this session).
+# LIVE-TESTED 2026-09-06 on a disposable single-node RKE2 cluster on nuc6.mydemo.lab: full
+# success end-to-end — the initContainer's github archive-tarball fetch + flatten worked cleanly,
+# the pod reached Running in ~15s (no build step, as expected), and the real Traefik ingress
+# served a genuine HTTP 200 with <title>Skynet Simulator</title>.
 
 __version__ = "__LABVERSION__"
 
