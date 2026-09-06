@@ -12,7 +12,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-containerized%20(podman)-success.svg">
-  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-63-informational.svg">
+  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-64-informational.svg">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 `setup_lab.py` · **One JSON/YAML file, one command.**
 Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; it builds everything in the right order.
 
-`install_<addon>` · **63 ready-made add-ons.**
+`install_<addon>` · **64 ready-made add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (activation keys, RBAC, Content Lifecycle Management, Ansible integration, and more), vulnerable demo apps for security training, and more.
 
 [`lab-builder`](#web-ui-lab-builder) · **A dynamic web UI.**
@@ -951,6 +951,7 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 | [`mediagoblin`](https://www.mediagoblin.org/) | GNU MediaGoblin federated media-publishing platform |
 | [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt, a git-backed blog engine on GNU Artanis |
 | [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic, a musical-knowledge CMS on GNU Artanis |
+| [`home_assistant`](https://www.home-assistant.io/) | Home Assistant home-automation platform |
 
 </details>
 

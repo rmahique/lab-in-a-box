@@ -87,10 +87,11 @@ check("attach_capabilities on an empty plugin dict fills in empty/None defaults,
 # qdrant, weaviate, gpu_operator, anthropic, openai) on top of the prior 40, then +11 more
 # (qwen, mistral, codellama, starcoder2, agones, suse_observability, games, mailman,
 # mediagoblin, colt, wikimusic), then the single bundled "games" addon was replaced with one
-# addon per self-hosted game (-1 games, +3: supertux_classic, skynet_simulator, open_saber).
+# addon per self-hosted game (-1 games, +3: supertux_classic, skynet_simulator, open_saber),
+# then +1 more (home_assistant).
 scripts_dir = _REPO / "scripts"
 addon_files = sorted(glob.glob(str(scripts_dir / "install_*.py")))
-check("found the expected 63 python addon scripts to check", len(addon_files) == 63)
+check("found the expected 64 python addon scripts to check", len(addon_files) == 64)
 missing_layers = []
 for path in addon_files:
     plugin = apps.load_plugin_from_path(path)
