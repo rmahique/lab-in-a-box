@@ -12,7 +12,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-containerized%20(podman)-success.svg">
-  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-61-informational.svg">
+  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-63-informational.svg">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 `setup_lab.py` · **One JSON/YAML file, one command.**
 Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; it builds everything in the right order.
 
-`install_<addon>` · **61 ready-made add-ons.**
+`install_<addon>` · **63 ready-made add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (activation keys, RBAC, Content Lifecycle Management, Ansible integration, and more), vulnerable demo apps for security training, and more.
 
 [`lab-builder`](#web-ui-lab-builder) · **A dynamic web UI.**
@@ -833,21 +833,20 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `rancher` | SUSE Rancher Prime Kubernetes management platform |
-| `longhorn` | SUSE Longhorn distributed block storage |
-| `harbor` | Container registry |
-| `argocd` | Argo CD GitOps controller |
-| `kubewarden` | Kubernetes policy engine |
-| `istio` | Service mesh |
-| `linkerd` | Service mesh |
-| `traefik` | Ingress controller |
-| `nginx` | Ingress controller / reverse proxy |
-| `coredns` | Cluster DNS |
-| `kucero` | Kubernetes cluster certificate rotation |
-| `fluid` | Data orchestration/caching for cloud-native workloads |
-| `suse_observability` | SUSE Observability (StackState-based metrics/traces/topology) |
-| `agones` | Dedicated game-server hosting/scaling (agones.dev) |
-
+| [`rancher`](https://www.rancher.com/) | SUSE Rancher Prime Kubernetes management platform |
+| [`longhorn`](https://longhorn.io/) | SUSE Longhorn distributed block storage |
+| [`harbor`](https://goharbor.io/) | Container registry |
+| [`argocd`](https://argo-cd.readthedocs.io/) | Argo CD GitOps controller |
+| [`kubewarden`](https://www.kubewarden.io/) | Kubernetes policy engine |
+| [`istio`](https://istio.io/) | Service mesh |
+| [`linkerd`](https://linkerd.io/) | Service mesh |
+| [`traefik`](https://traefik.io/) | Ingress controller |
+| [`nginx`](https://nginx.org/) | Ingress controller / reverse proxy |
+| [`coredns`](https://coredns.io/) | Cluster DNS |
+| [`kucero`](https://github.com/SUSE/kucero) | Kubernetes cluster certificate rotation |
+| [`fluid`](https://fluid-cloudnative.github.io/) | Data orchestration/caching for cloud-native workloads |
+| [`suse_observability`](https://www.suse.com/products/suse-observability/) | SUSE Observability (StackState-based metrics/traces/topology) |
+| [`agones`](https://agones.dev/) | Dedicated game-server hosting/scaling (agones.dev) |
 </details>
 
 <a id="addons-security"></a>
@@ -856,15 +855,14 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `neuvector` | SUSE NeuVector container security platform |
-| `nv_testing` | NeuVector security testing workloads (nginx/node/redis pods) |
-| `nv-demo-helm` | NeuVector Helm-based demo workloads |
-| `complianceascode` | OpenSCAP/ComplianceAsCode operator |
-| `keycloak` | Identity and access management |
-| `kagent` | Kubernetes agentic-AI security assistant |
+| [`neuvector`](https://open-docs.neuvector.com/) | SUSE NeuVector container security platform |
+| [`nv_testing`](https://open-docs.neuvector.com/testing/testing) | NeuVector security testing workloads (nginx/node/redis pods) |
+| [`nv-demo-helm`](https://open-docs.neuvector.com/) | NeuVector Helm-based demo workloads |
+| [`complianceascode`](https://complianceascode.github.io/) | OpenSCAP/ComplianceAsCode operator |
+| [`keycloak`](https://www.keycloak.org/) | Identity and access management |
+| [`kagent`](https://kagent.dev/) | Kubernetes agentic-AI security assistant |
 | `insecure_app` | Intentionally vulnerable web application (demo/training) |
-| `struts_demo` | Apache Struts2 vulnerable demo application (CVE-2017-5638) |
-
+| [`struts_demo`](https://struts.apache.org/) | Apache Struts2 vulnerable demo application (CVE-2017-5638) |
 </details>
 
 <a id="addons-suma"></a>
@@ -873,12 +871,11 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `uyuni` | Uyuni server (upstream): activation keys, orgs, RBAC, Content Lifecycle Management, Ansible integration, SCAP/CVE auditing, dev/QA/prod environment topology — see `install_uyuni --schema` for the full field list |
-| `smlm` | SUSE Multi-Linux Manager server — the same feature set as `uyuni`, Kubernetes/Helm-deployed |
-| `smlm_proxy` | SMLM proxy |
+| [`uyuni`](https://www.uyuni-project.org/) | Uyuni server (upstream): activation keys, orgs, RBAC, Content Lifecycle Management, Ansible integration, SCAP/CVE auditing, dev/QA/prod environment topology — see `install_uyuni --schema` for the full field list |
+| [`smlm`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager server — the same feature set as `uyuni`, Kubernetes/Helm-deployed |
+| [`smlm_proxy`](https://www.suse.com/products/multi-linux-manager/) | SMLM proxy |
 | `client_registration` | Register any VM as a Salt client of an existing `uyuni`/`smlm` server (activation key bootstrap + salt-key acceptance) |
-| `suma` | SUSE Multi-Linux Manager (SUMA), installed directly on the OS via `mgradm` — not Kubernetes |
-
+| [`suma`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager (SUMA), installed directly on the OS via `mgradm` — not Kubernetes |
 </details>
 
 <a id="addons-storage"></a>
@@ -887,11 +884,10 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `mariadb` | MariaDB database |
-| `postgresql` | PostgreSQL database |
-| `openldap` | OpenLDAP directory service |
-| `ds389` | 389 Directory Server (LDAP) — the one add-on still implemented in bash |
-
+| [`mariadb`](https://mariadb.org/) | MariaDB database |
+| [`postgresql`](https://www.postgresql.org/) | PostgreSQL database |
+| [`openldap`](https://www.openldap.org/) | OpenLDAP directory service |
+| [`ds389`](https://www.port389.org/) | 389 Directory Server (LDAP) — the one add-on still implemented in bash |
 </details>
 
 <a id="addons-cicd"></a>
@@ -900,11 +896,10 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `jenkins` | Jenkins CI |
-| `appcollection` | SUSE Application Collection |
-| `stackpack` | StackState monitoring integration |
-| `trento` | SAP infrastructure monitoring |
-
+| [`jenkins`](https://www.jenkins.io/) | Jenkins CI |
+| [`appcollection`](https://apps.rancher.io/) | SUSE Application Collection |
+| [`stackpack`](https://www.stackstate.com/) | StackState monitoring integration |
+| [`trento`](https://www.trento-project.io/) | SAP infrastructure monitoring |
 </details>
 
 <a id="addons-ai"></a>
@@ -913,25 +908,24 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `ollama` | Local LLM runtime |
-| `deepseek` | DeepSeek model, served via Ollama |
-| `apertus` | Apertus (Swiss AI Initiative) model, served via Ollama |
-| `gemini` | Google Gemini API proxy (LiteLLM) |
-| `anthropic` | Anthropic Claude API proxy (LiteLLM) |
-| `openai` | OpenAI API proxy (LiteLLM) |
-| `kimi` | Moonshot AI Kimi API proxy (LiteLLM) |
-| `open_webui` | Chat frontend for Ollama / OpenAI-compatible endpoints |
-| `suse_ai` | SUSE's own Ollama + Open WebUI + Milvus AI stack |
-| `milvus` | Milvus vector database (RAG/embedding search) |
-| `qdrant` | Qdrant vector database (RAG/embedding search) |
-| `weaviate` | Weaviate vector database (RAG/embedding search) |
-| `gpu_operator` | NVIDIA GPU Operator (GPU scheduling for AI workloads) |
-| `qwen` | Qwen2.5 model, served via Ollama |
-| `mistral` | Mistral model, served via Ollama |
-| `codellama` | Code Llama model, served via Ollama |
-| `starcoder2` | StarCoder2 model, served via Ollama |
-| `phoebe` | (see `install_phoebe --schema`) |
-
+| [`ollama`](https://ollama.com/) | Local LLM runtime |
+| [`deepseek`](https://www.deepseek.com/) | DeepSeek model, served via Ollama |
+| [`apertus`](https://www.swiss-ai.org/apertus) | Apertus (Swiss AI Initiative) model, served via Ollama |
+| [`gemini`](https://ai.google.dev/gemini-api) | Google Gemini API proxy (LiteLLM) |
+| [`anthropic`](https://www.anthropic.com/) | Anthropic Claude API proxy (LiteLLM) |
+| [`openai`](https://openai.com/) | OpenAI API proxy (LiteLLM) |
+| [`kimi`](https://www.moonshot.ai/) | Moonshot AI Kimi API proxy (LiteLLM) |
+| [`open_webui`](https://openwebui.com/) | Chat frontend for Ollama / OpenAI-compatible endpoints |
+| [`suse_ai`](https://www.suse.com/solutions/artificial-intelligence/) | SUSE's own Ollama + Open WebUI + Milvus AI stack |
+| [`milvus`](https://milvus.io/) | Milvus vector database (RAG/embedding search) |
+| [`qdrant`](https://qdrant.tech/) | Qdrant vector database (RAG/embedding search) |
+| [`weaviate`](https://weaviate.io/) | Weaviate vector database (RAG/embedding search) |
+| [`gpu_operator`](https://github.com/NVIDIA/gpu-operator) | NVIDIA GPU Operator (GPU scheduling for AI workloads) |
+| [`qwen`](https://qwenlm.github.io/) | Qwen2.5 model, served via Ollama |
+| [`mistral`](https://mistral.ai/) | Mistral model, served via Ollama |
+| [`codellama`](https://github.com/meta-llama/codellama) | Code Llama model, served via Ollama |
+| [`starcoder2`](https://github.com/bigcode-project/starcoder2) | StarCoder2 model, served via Ollama |
+| [`phoebe`](https://github.com/SUSE/phoebe) | (see `install_phoebe --schema`) |
 </details>
 
 <a id="addons-virt"></a>
@@ -940,15 +934,17 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 | Addon name | Description |
 |---|---|
-| `harvester` | SUSE Virtualization (Harvester/KubeVirt) node provisioning |
-| `wordpress` | WordPress + MySQL demo application |
-| `kiwi` | KIWI appliance builder |
-| `fluentd` | Log aggregation |
-| `mailman` | GNU Mailman 3 mailing-list management + web interface |
-| `mediagoblin` | GNU MediaGoblin federated media-publishing platform |
-| `colt` | Colt, a git-backed blog engine on GNU Artanis |
-| `wikimusic` | WikiMusic, a musical-knowledge CMS on GNU Artanis |
-| `games` | A small "arcade" page linking to curated open-source itch.io games |
+| [`harvester`](https://harvesterhci.io/) | SUSE Virtualization (Harvester/KubeVirt) node provisioning |
+| [`wordpress`](https://wordpress.org/) | WordPress + MySQL demo application |
+| [`kiwi`](https://osinside.github.io/kiwi/) | KIWI appliance builder |
+| [`fluentd`](https://www.fluentd.org/) | Log aggregation |
+| [`mailman`](https://www.list.org/) | GNU Mailman 3 mailing-list management + web interface |
+| [`mediagoblin`](https://www.mediagoblin.org/) | GNU MediaGoblin federated media-publishing platform |
+| [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt, a git-backed blog engine on GNU Artanis |
+| [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic, a musical-knowledge CMS on GNU Artanis |
+| [`supertux_classic`](https://github.com/Alzter/SuperTux-Classic) | SuperTux Classic, a self-hosted open-source Godot platformer |
+| [`skynet_simulator`](https://github.com/edisgreat/skynet-simulator) | Skynet Simulator, a self-hosted open-source browser puzzle/idle game |
+| [`open_saber`](https://github.com/leandrodreamer/BeepSaber) | Open Saber, a self-hosted open-source rhythm/block-cutting game |
 
 </details>
 
