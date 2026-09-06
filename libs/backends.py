@@ -1589,10 +1589,262 @@ class HetznerBackend(VMBackend):
         return 9999, 999999, 999999
 
 
+class AWSBackend(VMBackend):
+    """
+    Talks to Amazon EC2 by shelling out to the real `aws` CLI (`aws ec2 ...`), the same
+    "wrap the standard CLI tool, don't reimplement its API client" convention this project already
+    uses for virsh/virt-install (LibvirtBackend) and kubectl/virtctl (HarvesterBackend) — AWS's own
+    request-signing (SigV4) makes a raw urllib implementation (HetznerBackend's own approach, a
+    plain Bearer-token REST API) impractical to hand-roll correctly, and `aws` is the standard,
+    already-documented way most operators already have credentials configured for. Auth: either
+    `AWS_PROFILE` (a named profile from `~/.aws/config`) or `AWS_ACCESS_KEY_ID`+
+    `AWS_SECRET_ACCESS_KEY` (passed as env vars to the `aws` subprocess only, never written to
+    disk) — both in `/etc/lab_creation.cfg`. `AWS_REGION` is required either way.
+
+    Real, documented mismatches with this project's KVM-shaped assumptions (same stance as
+    HetznerBackend/HarvesterBackend — operator pre-configures the cloud-native prerequisite,
+    this backend only consumes it):
+
+    - config_method: ONLY "cloud-init" — passed as EC2's own `--user-data` at launch time.
+    - ISO_IMAGE: must be a real AMI ID (e.g. "ami-0123456789abcdef0") the operator already has
+      access to — this backend does not build, import, or copy any image.
+    - Networking: EC2 needs a subnet + security group to be reachable at all. `AWS_SUBNET_ID`/
+      `AWS_SECURITY_GROUP_ID` are optional — omitted, EC2 falls back to the account's own default
+      VPC/security group (fine for a quick lab, not recommended for anything real). `AWS_KEY_NAME`
+      (an EC2 key pair already registered in this region) is optional too — cloud-init's own
+      user-data is this project's actual access mechanism (matches every other backend), the EC2
+      key pair is just an extra, redundant access path if set.
+    - vm_cpu/vm_mem: EC2 sells fixed (vCPU, memory) instance-type SKUs, same "pick the smallest
+      sufficient one from a small table" approach as HetznerBackend.SERVER_TYPES — see
+      AWSBackend.INSTANCE_TYPES. vm_dsk_gb DOES map directly here, unlike Hetzner — EC2 lets the
+      root EBS volume be resized independently at launch (via --block-device-mappings, keyed off
+      the AMI's own real root device name, looked up via `describe-images` rather than assumed).
+    - EC2 has no native "name" field on an instance — this backend uses the standard `Name` tag
+      convention (`aws ec2 describe-instances --filters Name=tag:Name,Values=<vm_name>`) to find a
+      VM by name, exactly how the AWS console/CLI ecosystem itself expects instances to be named.
+    - MAC addresses: EC2 does not let you assign a custom MAC (confirmed against its own API) —
+      same stub stance as HetznerBackend's check_or_generate_mac()/list_used_macs().
+
+    NOT live-tested (no real AWS account available in this session) — CLI flags/JSON output shapes
+    verified against AWS's own current CLI documentation and multiple independently-published
+    examples, 2026-09-06, not guessed.
+    """
+
+    # Smallest-to-largest by (cores, memory_gb) — the standard burstable general-purpose family,
+    # enough to cover this project's typical lab-sized nodes; extend as needed.
+    INSTANCE_TYPES = [
+        ("t3.medium", 2, 4), ("t3.large", 2, 8), ("t3.xlarge", 4, 16), ("t3.2xlarge", 8, 32),
+    ]
+
+    def __init__(self, region, profile=None, access_key=None, secret_key=None, subnet_id=None,
+                 security_group_id=None, key_name=None, vm_img_loc=None, lab_setup_path=None):
+        self.region = region
+        self.profile = profile
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.subnet_id = subnet_id
+        self.security_group_id = security_group_id
+        self.key_name = key_name
+        self.vm_img_loc = vm_img_loc
+        self.lab_setup_path = lab_setup_path
+        self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
+
+    @classmethod
+    def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
+                iso_loc=None, lab_setup_path=None):
+        region = config.get("AWS_REGION")
+        if not region:
+            die("backend 'aws' requires AWS_REGION to be set in /etc/lab_creation.cfg (VM '{}')".format(vm_name))
+        profile = config.get("AWS_PROFILE")
+        access_key = config.get("AWS_ACCESS_KEY_ID")
+        secret_key = config.get("AWS_SECRET_ACCESS_KEY")
+        if not profile and not (access_key and secret_key):
+            die("backend 'aws' requires either AWS_PROFILE, or both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY, in /etc/lab_creation.cfg (VM '{}')".format(vm_name))
+        return cls(region, profile=profile, access_key=access_key, secret_key=secret_key,
+                   subnet_id=config.get("AWS_SUBNET_ID"), security_group_id=config.get("AWS_SECURITY_GROUP_ID"),
+                   key_name=config.get("AWS_KEY_NAME"), vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+
+    def _aws(self, *args, **kwargs):
+        """One `aws` CLI invocation, region/auth applied uniformly. Returns the parsed JSON stdout
+        (or None for a command with no output), raises RuntimeError with the real CLI stderr on a
+        non-zero exit — mirrors HetznerBackend._api()'s own contract so callers' die() messages
+        stay meaningful either way."""
+        env = dict(os.environ)
+        if self.profile:
+            env["AWS_PROFILE"] = self.profile
+        if self.access_key:
+            env["AWS_ACCESS_KEY_ID"] = self.access_key
+        if self.secret_key:
+            env["AWS_SECRET_ACCESS_KEY"] = self.secret_key
+        cmd = ["aws", "--region", self.region, "--output", "json"] + list(args)
+        result = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 universal_newlines=True)
+        if result.returncode != 0:
+            raise RuntimeError("aws CLI {} failed: {}".format(" ".join(args), result.stderr.strip()))
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def _require_cloud_init(self, config_method, vm_name):
+        if config_method != "cloud-init":
+            die("AWSBackend only supports config_method=\"cloud-init\" (got '{}') for VM '{}'".format(
+                config_method or "<empty>", vm_name))
+
+    def _find_instance(self, vm_name):
+        """Returns the first non-terminated instance tagged Name=<vm_name>, or None."""
+        result = self._aws(
+            "ec2", "describe-instances",
+            "--filters", "Name=tag:Name,Values={}".format(vm_name),
+            "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        )
+        for reservation in (result or {}).get("Reservations", []):
+            instances = reservation.get("Instances", [])
+            if instances:
+                return instances[0]
+        return None
+
+    def _pick_instance_type(self, vm_cpu, vm_mem_mb, vm_name):
+        needed_mem_gb = int(vm_mem_mb) / 1024.0
+        for name, cores, mem_gb in self.INSTANCE_TYPES:
+            if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
+                return name
+        die("AWSBackend has no known instance type big enough for VM '{}' ({} vCPU / {} MiB) — "
+            "extend AWSBackend.INSTANCE_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+
+    def vm_exists(self, vm_name):
+        return self._find_instance(vm_name) is not None
+
+    def list_used_macs(self):
+        """EC2 has no customer-assignable MAC-address concept — nothing to check against."""
+        return [], {}
+
+    def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
+        """Resolves/saves a mymac value for consistency with every other backend (see this
+        class's own docstring) — never actually sent to or read from AWS."""
+        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_is_reusable(self, vm_name, mymac, myip):
+        """Same intent as the other backends': True = keep, False = destroy and recreate."""
+        instance = self._find_instance(vm_name)
+        state = (instance or {}).get("State", {}).get("Name")
+        if not instance or state != "running":
+            log("  {}KEEP CHECK{} \"{}{}{}\": not running on EC2 (state: {}) — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, state or "not found"))
+            return False
+
+        try:
+            resolved_ip = socket.gethostbyname(vm_name)
+        except OSError:
+            resolved_ip = None
+        if resolved_ip != myip:
+            log("  {}KEEP CHECK{} \"{}{}{}\": IP mismatch (want \"{}\", DNS gives \"{}\") — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, myip, resolved_ip or "none"))
+            return False
+
+        ssh_test = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(vm_name), "exit 0"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if ssh_test.returncode != 0:
+            log("  {}KEEP CHECK{} \"{}{}{}\": SSH not accessible — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET))
+            return False
+
+        return True
+
+    def reboot_vm(self, vm_name):
+        instance = self._find_instance(vm_name)
+        if not instance:
+            die("EC2 instance '{}' not found — cannot reboot".format(vm_name))
+        try:
+            self._aws("ec2", "reboot-instances", "--instance-ids", instance["InstanceId"])
+        except RuntimeError as e:
+            die(str(e))
+
+    def delete_vm(self, vm_name):
+        log("Deleting VM '{}'".format(vm_name))
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return  # already gone — idempotent, matches every other backend's delete_vm()
+        try:
+            self._aws("ec2", "terminate-instances", "--instance-ids", instance["InstanceId"])
+        except RuntimeError as e:
+            die(str(e))
+
+    def copy_vm_image(self, iso_image, vm_name, vm_dsk_gb, config_method=""):
+        """No-op beyond validation — ISO_IMAGE is a real AMI ID here, not a file to copy anywhere
+        (see this class's own docstring)."""
+        self._require_cloud_init(config_method, vm_name)
+        if not iso_image:
+            die("ISO_IMAGE is required for VM '{}' on the 'aws' backend — set it to a real AMI ID "
+                "(e.g. \"ami-0123456789abcdef0\")".format(vm_name))
+
+    def push_provisioning_files(self, vm_name, config_method="", vm_img_loc=None):
+        """Stashes this VM's already-generated cloud-init user-data for create_vm() to send at
+        launch time — EC2 has no separate "push after boot" step; user-data is a launch parameter
+        read by cloud-init on first boot, same as every other cloud-init cloud (matches
+        HarvesterBackend's/HetznerBackend's own call-order assumption: this always runs before
+        create_vm(), see setup_vm.py's provision_vm())."""
+        self._require_cloud_init(config_method, vm_name)
+        base = Path(self.lab_setup_path) / "cloud-init"
+        userdata_path = base / "{}_user-data".format(vm_name)
+        if not userdata_path.is_file():
+            die("cloud-init user-data not found for '{}' at {}".format(vm_name, userdata_path))
+        self._user_data_by_vm[vm_name] = userdata_path.read_text()
+
+    def create_vm(
+        self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        config_method="", iso_image="", mymac=None, **kwargs
+    ):
+        self._require_cloud_init(config_method, vm_name)
+        instance_type = self._pick_instance_type(vm_cpu, vm_mem, vm_name)
+
+        image_result = self._aws("ec2", "describe-images", "--image-ids", iso_image)
+        images = (image_result or {}).get("Images", [])
+        if not images:
+            die("AMI '{}' not found for VM '{}' — check ISO_IMAGE and AWS_REGION".format(iso_image, vm_name))
+        root_device = images[0].get("RootDeviceName", "/dev/xvda")
+
+        args = [
+            "ec2", "run-instances",
+            "--image-id", iso_image,
+            "--instance-type", instance_type,
+            "--min-count", "1", "--max-count", "1",
+            "--user-data", self._user_data_by_vm.get(vm_name, ""),
+            "--block-device-mappings",
+            json.dumps([{"DeviceName": root_device, "Ebs": {"VolumeSize": int(vm_dsk_gb)}}]),
+            "--tag-specifications",
+            "ResourceType=instance,Tags=[{{Key=Name,Value={}}}]".format(vm_name),
+        ]
+        if self.subnet_id:
+            args += ["--subnet-id", self.subnet_id]
+        if self.security_group_id:
+            args += ["--security-group-ids", self.security_group_id]
+        if self.key_name:
+            args += ["--key-name", self.key_name]
+
+        log("Creating VM '{}' on AWS EC2 (instance_type={})".format(vm_name, instance_type))
+        try:
+            self._aws(*args)
+        except RuntimeError as e:
+            die(str(e))
+
+    def host_resources(self):
+        """
+        Best-effort free-capacity signal for select_kvm_host()'s host-picking logic. EC2 has no
+        "cluster capacity" concept the way libvirt/Harvester do — a real constraint would be this
+        account's own per-region vCPU service quota, not queried here (a real follow-up, not
+        implemented — see HetznerBackend.host_resources()'s identical reasoning). Returns a large
+        constant so an "aws" node is never wrongly treated as out of capacity.
+        """
+        return 9999, 999999, 999999
+
+
 BACKENDS = {
     "libvirt": LibvirtBackend,
     "harvester": HarvesterBackend,
     "hetzner": HetznerBackend,
+    "aws": AWSBackend,
 }
 
 
