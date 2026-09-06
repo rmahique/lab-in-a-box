@@ -27,6 +27,7 @@ keep this move zero-risk; a later task can switch them over.
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -2699,6 +2700,241 @@ class UpCloudBackend(VMBackend):
         return 9999, 999999, 999999
 
 
+class OVHcloudBackend(VMBackend):
+    """
+    Talks to the real OVHcloud API (Public Cloud instances, `{endpoint}/cloud/project/...`)
+    directly via stdlib `urllib.request`. Flagged up front as the least-verified backend in this
+    file: OVHcloud's auth is its own request-signing scheme, not a simple bearer token/Basic Auth
+    like every other raw-REST backend here (Hetzner/Scaleway/UpCloud), and none of it was exercised
+    against a real OVHcloud account this session — see the NOT-live-tested paragraph below for the
+    honest verification status of every piece.
+
+    Auth (all required): `OVH_APPLICATION_KEY` + `OVH_APPLICATION_SECRET` (from an OVH API
+    application, created at https://api.ovh.com/createApp/), `OVH_CONSUMER_KEY` (a consumer key
+    validated for that application, scoped to the needed `/cloud/project/*` routes — OVH's own
+    two-step app+consumer model, genuinely different from every other provider in this file, which
+    only ever needs one credential pair). `OVH_SERVICE_NAME` (the Public Cloud project ID) and
+    `OVH_REGION` (e.g. "GRA7"/"SBG5"/"BHS5") are required too. `OVH_ENDPOINT` is optional, default
+    `https://eu.api.ovh.com/1.0` (OVH's EU API root — override to the `ca`/`us` root for
+    non-EU-registered accounts, per OVH's own multi-endpoint account model).
+
+    Real, documented mismatches, same "operator pre-configures it" stance as every backend above,
+    plus two genuinely new ones specific to OVHcloud:
+    config_method must be "cloud-init"; ISO_IMAGE must be a real OVHcloud Public Cloud imageId
+    (a UUID, region-scoped, looked up via OVH's own `image` API or console — not a qcow2/ISO
+    filename, and NOT a human-readable name the way AWS's AMI-name lookups or Alibaba's ImageId
+    are); vm_dsk_gb is NOT independently settable at create time — bundled with the flavor, same
+    constraint as Hetzner/Scaleway, warns rather than silently under-provisioning; MAC addresses
+    aren't a customer-assignable concept here either.
+    The genuinely new mismatch, unlike every fixed-SKU-table backend above: OVHcloud flavor IDs are
+    real per-region UUIDs, not stable human names — there is no single "cx22"/"t3.medium"-style
+    name that means the same thing across every OVH region, so this backend cannot ship a static
+    name/vCPU/RAM table the way Hetzner/AWS/Alibaba/Scaleway/UpCloud all do. `_pick_flavor()`
+    instead does a real API call (`GET .../flavor?region=<region>`) at create time and picks the
+    smallest flavor whose own `vcpus`/`ram` fields satisfy the request — the sizing logic is
+    correct in shape, but the flavor-listing endpoint's exact response fields were NOT
+    independently re-confirmed live this session (see below).
+
+    NOT live-tested (no real OVHcloud account/project available in this session). The request-
+    signing algorithm itself IS confirmed against OVHcloud's own published API documentation:
+    `X-Ovh-Application`/`X-Ovh-Consumer`/`X-Ovh-Timestamp`/`X-Ovh-Signature` headers, signature =
+    `"$1$" + SHA1_HEX(AppSecret+"+"+ConsumerKey+"+"+METHOD+"+"+URL+"+"+BODY+"+"+TIMESTAMP)`, and
+    the timestamp is pulled from OVH's own unauthenticated `/auth/time` endpoint first (as OVH's
+    own official SDKs do) to avoid local-clock-drift signature failures. What is NOT confirmed:
+    the exact Public Cloud instance-create endpoint shape (`POST
+    /cloud/project/{serviceName}/instance` with `flavorId`/`imageId`/`region`/`userData`) and the
+    flavor-list endpoint's response field names are from general knowledge of OVHcloud's Public
+    Cloud API, not verified against a live call or a freshly-fetched doc page this session. This is
+    the highest-risk backend in this file for exactly that reason — treat it as a documented best
+    effort, not a verified integration, until it's been run against a real account at least once.
+    """
+
+    def __init__(self, application_key, application_secret, consumer_key, service_name, region,
+                 endpoint="https://eu.api.ovh.com/1.0", vm_img_loc=None, lab_setup_path=None):
+        self.application_key = application_key
+        self.application_secret = application_secret
+        self.consumer_key = consumer_key
+        self.service_name = service_name
+        self.region = region
+        self.endpoint = endpoint.rstrip("/")
+        self.vm_img_loc = vm_img_loc
+        self.lab_setup_path = lab_setup_path
+        self._user_data_by_vm = {}
+
+    @classmethod
+    def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
+                iso_loc=None, lab_setup_path=None):
+        application_key = config.get("OVH_APPLICATION_KEY")
+        application_secret = config.get("OVH_APPLICATION_SECRET")
+        consumer_key = config.get("OVH_CONSUMER_KEY")
+        service_name = config.get("OVH_SERVICE_NAME")
+        region = config.get("OVH_REGION")
+        endpoint = config.get("OVH_ENDPOINT") or "https://eu.api.ovh.com/1.0"
+        missing = [k for k, v in (
+            ("OVH_APPLICATION_KEY", application_key), ("OVH_APPLICATION_SECRET", application_secret),
+            ("OVH_CONSUMER_KEY", consumer_key), ("OVH_SERVICE_NAME", service_name), ("OVH_REGION", region),
+        ) if not v]
+        if missing:
+            die("backend 'ovhcloud' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
+                ", ".join(missing), vm_name))
+        return cls(application_key, application_secret, consumer_key, service_name, region,
+                   endpoint=endpoint, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+
+    def _server_timestamp(self):
+        """OVH's own unauthenticated clock-sync endpoint — used to build the signature's
+        timestamp, per OVH's own official SDKs, so a drifted local clock doesn't fail auth."""
+        req = urllib.request.Request("{}/auth/time".format(self.endpoint), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return int(resp.read().decode("utf-8").strip())
+        except (urllib.error.URLError, ValueError):
+            return int(time.time())
+
+    def _sign(self, method, url, body_str, timestamp):
+        to_sign = "+".join([self.application_secret, self.consumer_key, method, url, body_str, str(timestamp)])
+        return "$1$" + hashlib.sha1(to_sign.encode("utf-8")).hexdigest()
+
+    def _api(self, method, path, body=None):
+        url = "{}{}".format(self.endpoint, path)
+        body_str = json.dumps(body) if body is not None else ""
+        timestamp = self._server_timestamp()
+        signature = self._sign(method, url, body_str, timestamp)
+        data = body_str.encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method, headers={
+            "X-Ovh-Application": self.application_key,
+            "X-Ovh-Consumer": self.consumer_key,
+            "X-Ovh-Timestamp": str(timestamp),
+            "X-Ovh-Signature": signature,
+            "Content-Type": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError("OVHcloud API {} {} failed ({}): {}".format(method, path, e.code, detail))
+
+    def _require_cloud_init(self, config_method, vm_name):
+        if config_method != "cloud-init":
+            die("OVHcloudBackend only supports config_method=\"cloud-init\" (got '{}') for VM "
+                "'{}'".format(config_method or "<empty>", vm_name))
+
+    def _find_instance(self, vm_name):
+        result = self._api("GET", "/cloud/project/{}/instance".format(self.service_name))
+        instances = result or []
+        return next((i for i in instances if i.get("name") == vm_name), None)
+
+    def _pick_flavor(self, vm_cpu, vm_mem_mb, vm_name):
+        """No stable name/vCPU/RAM table is possible here — flavorId is a per-region UUID, so this
+        does a real flavor-list call and picks the smallest one satisfying both constraints."""
+        needed_mem_gb = int(vm_mem_mb) / 1024.0
+        flavors = self._api("GET", "/cloud/project/{}/flavor?region={}".format(
+            self.service_name, self.region)) or []
+        candidates = [f for f in flavors if f.get("vcpus", 0) >= int(vm_cpu)
+                      and (f.get("ram", 0) / 1024.0) >= needed_mem_gb]
+        if not candidates:
+            die("OVHcloudBackend found no flavor in region '{}' big enough for VM '{}' ({} vCPU / "
+                "{} MiB)".format(self.region, vm_name, vm_cpu, vm_mem_mb))
+        candidates.sort(key=lambda f: (f.get("vcpus", 0), f.get("ram", 0)))
+        return candidates[0]["id"]
+
+    def vm_exists(self, vm_name):
+        return self._find_instance(vm_name) is not None
+
+    def list_used_macs(self):
+        return [], {}
+
+    def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
+        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_is_reusable(self, vm_name, mymac, myip):
+        instance = self._find_instance(vm_name)
+        status = (instance or {}).get("status")
+        if not instance or status != "ACTIVE":
+            log("  {}KEEP CHECK{} \"{}{}{}\": not ACTIVE on OVHcloud (status: {}) — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, status or "not found"))
+            return False
+
+        try:
+            resolved_ip = socket.gethostbyname(vm_name)
+        except OSError:
+            resolved_ip = None
+        if resolved_ip != myip:
+            log("  {}KEEP CHECK{} \"{}{}{}\": IP mismatch (want \"{}\", DNS gives \"{}\") — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, myip, resolved_ip or "none"))
+            return False
+
+        ssh_test = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(vm_name), "exit 0"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if ssh_test.returncode != 0:
+            log("  {}KEEP CHECK{} \"{}{}{}\": SSH not accessible — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET))
+            return False
+
+        return True
+
+    def reboot_vm(self, vm_name):
+        instance = self._find_instance(vm_name)
+        if not instance:
+            die("OVHcloud instance '{}' not found — cannot reboot".format(vm_name))
+        try:
+            self._api("POST", "/cloud/project/{}/instance/{}/reboot".format(
+                self.service_name, instance["id"]), {"type": "hard"})
+        except RuntimeError as e:
+            die(str(e))
+
+    def delete_vm(self, vm_name):
+        log("Deleting VM '{}'".format(vm_name))
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return
+        try:
+            self._api("DELETE", "/cloud/project/{}/instance/{}".format(self.service_name, instance["id"]))
+        except RuntimeError as e:
+            die(str(e))
+
+    def copy_vm_image(self, iso_image, vm_name, vm_dsk_gb, config_method=""):
+        self._require_cloud_init(config_method, vm_name)
+        if not iso_image:
+            die("ISO_IMAGE is required for VM '{}' on the 'ovhcloud' backend — set it to a real "
+                "OVHcloud Public Cloud imageId (UUID) for region '{}'".format(vm_name, self.region))
+
+    def push_provisioning_files(self, vm_name, config_method="", vm_img_loc=None):
+        self._require_cloud_init(config_method, vm_name)
+        base = Path(self.lab_setup_path) / "cloud-init"
+        userdata_path = base / "{}_user-data".format(vm_name)
+        if not userdata_path.is_file():
+            die("cloud-init user-data not found for '{}' at {}".format(vm_name, userdata_path))
+        self._user_data_by_vm[vm_name] = userdata_path.read_text()
+
+    def create_vm(
+        self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        config_method="", iso_image="", mymac=None, **kwargs
+    ):
+        self._require_cloud_init(config_method, vm_name)
+        flavor_id = self._pick_flavor(vm_cpu, vm_mem, vm_name)
+
+        body = {
+            "name": vm_name,
+            "flavorId": flavor_id,
+            "imageId": iso_image,
+            "region": self.region,
+            "userData": self._user_data_by_vm.get(vm_name, ""),
+        }
+        log("Creating VM '{}' on OVHcloud (flavorId={}, region={})".format(vm_name, flavor_id, self.region))
+        try:
+            self._api("POST", "/cloud/project/{}/instance".format(self.service_name), body)
+        except RuntimeError as e:
+            die(str(e))
+
+    def host_resources(self):
+        return 9999, 999999, 999999
+
+
 BACKENDS = {
     "libvirt": LibvirtBackend,
     "harvester": HarvesterBackend,
@@ -2708,6 +2944,7 @@ BACKENDS = {
     "alibaba": AlibabaBackend,
     "scaleway": ScalewayBackend,
     "upcloud": UpCloudBackend,
+    "ovhcloud": OVHcloudBackend,
 }
 
 
