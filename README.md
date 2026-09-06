@@ -993,6 +993,15 @@ Node-specific configuration for the automation VM. Copied from `/etc/lab_creatio
 | `REMOTE_DNS_SERVERS` | Space-separated list of additional DNS servers to update |
 | `delay_min` | Minutes to wait between provisioning stages (increase on slow hardware) |
 
+### Compute backends
+
+A lab's VMs default to `libvirt` (the KVM hypervisor(s) above). Set `common.backend` (or a per-node `backend`, which overrides it) to target a different one — see the `backend` field's own `enum` for the full current list. Each non-default backend needs its own credentials in `/etc/lab_creation.cfg`:
+
+| Backend | Required `/etc/lab_creation.cfg` keys | Notes |
+|---|---|---|
+| `harvester` | `HARVESTER_KUBECONFIG` (required), `HARVESTER_NAMESPACE` (optional, default `default`), `HARVESTER_NETWORK` (optional, a pre-existing Multus NetworkAttachmentDefinition) | `config_method: cloud-init` only; ISO_IMAGE must already be an imported Harvester VirtualMachineImage |
+| `hetzner` | `HETZNER_TOKEN` (required, a Hetzner Cloud API token scoped to one project), `HETZNER_LOCATION` (optional, e.g. `nbg1`/`fsn1`/`hel1`/`ash`/`hil`) | `config_method: cloud-init` only; ISO_IMAGE must be a real Hetzner image name (e.g. `ubuntu-24.04`) or your own snapshot ID, not a qcow2/ISO filename; VM_CPU/VM_MEM are matched to the smallest Hetzner server_type that satisfies both, and vm_dsk_gb can't exceed that server_type's own bundled disk — see `libs/backends.py`'s `HetznerBackend` class docstring for the current size table and full list of limitations |
+
 ### `/usr/local/lib/lab_creation/`
 
 Installed Python library modules. Updated by running `install_automation_node_scripts.sh` from the repo on the automation VM.

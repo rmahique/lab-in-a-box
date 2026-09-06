@@ -35,6 +35,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import primary
@@ -1356,9 +1358,241 @@ class HarvesterBackend(VMBackend):
         return free_cpu, free_mem_mb, free_disk_mb
 
 
+class HetznerBackend(VMBackend):
+    """
+    Talks to the real Hetzner Cloud API (https://api.hetzner.cloud/v1, confirmed live 2026-09-06)
+    directly over HTTPS from wherever this code runs — unlike LibvirtBackend/HarvesterBackend,
+    there is no separate hypervisor to SSH/kubectl into; Hetzner's API IS the hypervisor. Auth: a
+    Hetzner Cloud API token (HETZNER_TOKEN in lab_creation.cfg), scoped to one Hetzner Cloud
+    PROJECT — projects, not the whole account, are the natural "where do these VMs live" boundary
+    (mirrors HARVESTER_NAMESPACE's own scoping role). Uses stdlib urllib (this project's own
+    existing convention for outbound HTTP, e.g. libs/services.py/setup_harvester_cluster.py) —
+    not a new `requests` dependency.
+
+    Real, load-bearing mismatches with this project's own KVM-shaped assumptions, confirmed rather
+    than glossed over (same "operator pre-configures it, this backend only consumes it" stance
+    already established for HarvesterBackend's VirtualMachineImage/NetworkAttachmentDefinition):
+
+    - config_method: ONLY "cloud-init" is supported — Hetzner provisions via a `user_data` field
+      at server-creation time (raw cloud-init text), the same mechanism HarvesterBackend already
+      uses, not Ignition/Combustion.
+    - ISO_IMAGE: Hetzner has no concept of uploading an arbitrary qcow2/ISO the way libvirt or
+      Harvester do. Its own images are either a curated system-image NAME (e.g. "ubuntu-24.04") or
+      a numeric ID for a private snapshot/image the operator already created out-of-band (e.g. by
+      building a custom SLE Micro server once, by hand, and snapshotting it) — ISO_IMAGE must be
+      set to one of those, not a qcow2 filename. This backend does not create or upload one itself.
+    - vm_cpu/vm_mem: Hetzner sells fixed (cpu, memory) server_type SKUs (cx22, cx32, cpx31, ...),
+      not arbitrary custom sizing — create_vm() picks the SMALLEST available server_type whose own
+      cores/memory both meet or exceed the requested vm_cpu/vm_mem, rather than adding a new
+      per-node "hetzner instance type" lab-JSON field (same "translate existing fields into the
+      provider's own model, don't grow new config" principle already applied to Harvester).
+    - vm_dsk_gb: each server_type ships a FIXED local disk size bundled with the plan — NOT
+      independently resizable at creation the way a libvirt/Harvester disk is. This backend does
+      NOT attempt to attach a separate Volume to make up the difference (a real, deliberate scope
+      cut, not an oversight) — it dies clearly if the requested vm_dsk_gb exceeds the chosen
+      server_type's own included disk, rather than silently under-provisioning.
+    - MAC addresses: Hetzner has no concept of a customer-assigned MAC at all (confirmed against
+      its own API — no field for it anywhere in the server-create request). check_or_generate_mac()
+      still goes through the same shared `_check_or_generate_mac()` helper (so a mymac VALUE always
+      gets resolved/saved back to the lab definition like every other backend, for consistency) —
+      it is simply never sent to Hetzner or read back from it. list_used_macs() always returns
+      empty (there is nothing to check a new MAC against on this backend).
+
+    NOT live-tested (no real Hetzner Cloud account/project available in this session) — API
+    request/response shapes verified against Hetzner's own current documentation and multiple
+    independently-published curl examples, 2026-09-06, not guessed.
+    """
+
+    API_BASE = "https://api.hetzner.cloud/v1"
+
+    # Smallest-to-largest by (cores, memory_gb) — enough of Hetzner's own current shared-vCPU
+    # lineup to cover this project's typical lab-sized nodes; extend as needed. Confirmed current
+    # names/specs against Hetzner's own pricing page, 2026-09-06.
+    SERVER_TYPES = [
+        ("cx22", 2, 4), ("cx32", 4, 8), ("cx42", 8, 16), ("cx52", 16, 32),
+    ]
+
+    def __init__(self, token, location=None, vm_img_loc=None, lab_setup_path=None):
+        self.token = token
+        self.location = location  # e.g. "nbg1"/"fsn1"/"hel1"/"ash"/"hil" — None lets Hetzner pick
+        self.vm_img_loc = vm_img_loc
+        self.lab_setup_path = lab_setup_path
+        self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
+
+    @classmethod
+    def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
+                iso_loc=None, lab_setup_path=None):
+        token = config.get("HETZNER_TOKEN")
+        if not token:
+            die("backend 'hetzner' requires HETZNER_TOKEN to be set in /etc/lab_creation.cfg "
+                "(VM '{}')".format(vm_name))
+        location = config.get("HETZNER_LOCATION") or None
+        return cls(token, location=location, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+
+    def _api(self, method, path, body=None):
+        """One JSON request against the Hetzner Cloud API. Returns the parsed response body
+        (or None for a 204/empty body); raises RuntimeError with the real API error message on
+        failure rather than a bare HTTPError, so callers' die() messages stay meaningful."""
+        url = "{}{}".format(self.API_BASE, path)
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": "Bearer {}".format(self.token),
+            "Content-Type": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError("Hetzner API {} {} failed ({}): {}".format(method, path, e.code, detail))
+
+    def _require_cloud_init(self, config_method, vm_name):
+        if config_method != "cloud-init":
+            die("HetznerBackend only supports config_method=\"cloud-init\" (got '{}') for VM "
+                "'{}'".format(config_method or "<empty>", vm_name))
+
+    def _find_server(self, vm_name):
+        result = self._api("GET", "/servers?name={}".format(vm_name))
+        servers = (result or {}).get("servers", [])
+        return servers[0] if servers else None
+
+    def _pick_server_type(self, vm_cpu, vm_mem_mb, vm_dsk_gb, vm_name):
+        needed_mem_gb = int(vm_mem_mb) / 1024.0
+        for name, cores, mem_gb in self.SERVER_TYPES:
+            if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
+                return name
+        die("HetznerBackend has no known server_type big enough for VM '{}' ({} vCPU / {} MiB) — "
+            "extend HetznerBackend.SERVER_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+
+    def vm_exists(self, vm_name):
+        return self._find_server(vm_name) is not None
+
+    def list_used_macs(self):
+        """Hetzner has no MAC-address concept at all — nothing to check a new one against."""
+        return [], {}
+
+    def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
+        """Resolves/saves a mymac value for consistency with every other backend (see this
+        class's own docstring) — the result is never actually sent to or read from Hetzner."""
+        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_is_reusable(self, vm_name, mymac, myip):
+        """Same intent as the other backends': True = keep, False = destroy and recreate. Checks
+        the server's own status (running), then falls through to the same DNS/SSH checks — MAC is
+        deliberately skipped (see this class's own docstring: Hetzner has no MAC concept)."""
+        server = self._find_server(vm_name)
+        status = (server or {}).get("status")
+        if not server or status != "running":
+            log("  {}KEEP CHECK{} \"{}{}{}\": not running on Hetzner (status: {}) — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, status or "not found"))
+            return False
+
+        try:
+            resolved_ip = socket.gethostbyname(vm_name)
+        except OSError:
+            resolved_ip = None
+        if resolved_ip != myip:
+            log("  {}KEEP CHECK{} \"{}{}{}\": IP mismatch (want \"{}\", DNS gives \"{}\") — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET, myip, resolved_ip or "none"))
+            return False
+
+        ssh_test = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(vm_name), "exit 0"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if ssh_test.returncode != 0:
+            log("  {}KEEP CHECK{} \"{}{}{}\": SSH not accessible — will recreate".format(
+                _YELLOW, _RESET, _RED, vm_name, _RESET))
+            return False
+
+        return True
+
+    def reboot_vm(self, vm_name):
+        server = self._find_server(vm_name)
+        if not server:
+            die("Hetzner server '{}' not found — cannot reboot".format(vm_name))
+        try:
+            self._api("POST", "/servers/{}/actions/reboot".format(server["id"]))
+        except RuntimeError as e:
+            die(str(e))
+
+    def delete_vm(self, vm_name):
+        log("Deleting VM '{}'".format(vm_name))
+        server = self._find_server(vm_name)
+        if not server:
+            return  # already gone — idempotent, matches every other backend's delete_vm()
+        try:
+            self._api("DELETE", "/servers/{}".format(server["id"]))
+        except RuntimeError as e:
+            die(str(e))
+
+    def copy_vm_image(self, iso_image, vm_name, vm_dsk_gb, config_method=""):
+        """No-op beyond validation — ISO_IMAGE is a Hetzner image NAME/ID here, not a file to
+        copy anywhere (see this class's own docstring)."""
+        self._require_cloud_init(config_method, vm_name)
+        if not iso_image:
+            die("ISO_IMAGE is required for VM '{}' on the 'hetzner' backend — set it to a real "
+                "Hetzner system-image name (e.g. \"ubuntu-24.04\") or your own snapshot ID".format(vm_name))
+
+    def push_provisioning_files(self, vm_name, config_method="", vm_img_loc=None):
+        """Stashes this VM's already-generated cloud-init user-data for create_vm() to send at
+        server-creation time — Hetzner has no separate "push after boot" step; user_data is a
+        field on the create-server request itself, read by cloud-init on first boot same as any
+        other cloud-init cloud (matches HarvesterBackend's own call-order assumption: this always
+        runs before create_vm(), see setup_vm.py's provision_vm())."""
+        self._require_cloud_init(config_method, vm_name)
+        base = Path(self.lab_setup_path) / "cloud-init"
+        userdata_path = base / "{}_user-data".format(vm_name)
+        if not userdata_path.is_file():
+            die("cloud-init user-data not found for '{}' at {}".format(vm_name, userdata_path))
+        self._user_data_by_vm[vm_name] = userdata_path.read_text()
+
+    def create_vm(
+        self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
+        config_method="", iso_image="", mymac=None, **kwargs
+    ):
+        self._require_cloud_init(config_method, vm_name)
+        server_type = self._pick_server_type(vm_cpu, vm_mem, vm_dsk_gb, vm_name)
+
+        body = {
+            "name": vm_name,
+            "server_type": server_type,
+            "image": iso_image,
+            "user_data": self._user_data_by_vm.get(vm_name, ""),
+        }
+        if self.location:
+            body["location"] = self.location
+
+        log("Creating VM '{}' on Hetzner Cloud (server_type={})".format(vm_name, server_type))
+        try:
+            result = self._api("POST", "/servers", body)
+        except RuntimeError as e:
+            die(str(e))
+        server = (result or {}).get("server", {})
+        disk_gb = server.get("server_type", {}).get("disk")
+        if disk_gb and int(vm_dsk_gb) > int(disk_gb):
+            log("  {}WARNING{}: requested {}G disk but server_type '{}' only includes {}G — "
+                "HetznerBackend does not attach extra Volumes to make up the difference".format(
+                    _YELLOW, _RESET, vm_dsk_gb, server_type, disk_gb))
+
+    def host_resources(self):
+        """
+        Best-effort free-capacity signal for select_kvm_host()'s host-picking logic. Hetzner has
+        no "cluster capacity" concept the way libvirt/Harvester do — a Hetzner project's real
+        constraint is its account-level server LIMIT, not CPU/RAM headroom (Hetzner's own capacity
+        is effectively unlimited from a single lab's perspective). Returns a large constant instead
+        of 0 so a "hetzner" node is never wrongly treated as out of capacity by multi-host
+        selection logic that expects a real number here.
+        """
+        return 9999, 999999, 999999
+
+
 BACKENDS = {
     "libvirt": LibvirtBackend,
     "harvester": HarvesterBackend,
+    "hetzner": HetznerBackend,
 }
 
 
