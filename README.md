@@ -825,7 +825,7 @@ install_longhorn --schema yaml      # ...or YAML
 
 Addons are referenced by name in the `addons` array of a kcluster or node. The corresponding `install_<name>` script must be on `PATH`.
 
-<sub>Jump to: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Security &amp; compliance</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">Storage &amp; databases</a> · <a href="#addons-cicd">CI/CD &amp; tooling</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">Virtualization &amp; demos</a></sub>
+<sub>Jump to: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Security &amp; compliance</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">Storage &amp; databases</a> · <a href="#addons-cicd">CI/CD &amp; tooling</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">Virtualization</a> · <a href="#addons-demos">Demo applications</a> · <a href="#addons-games">Games</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -930,18 +930,36 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 
 <a id="addons-virt"></a>
 <details open>
-<summary><strong>Virtualization &amp; demos</strong></summary>
+<summary><strong>Virtualization</strong></summary>
 
 | Addon name | Description |
 |---|---|
 | [`harvester`](https://harvesterhci.io/) | SUSE Virtualization (Harvester/KubeVirt) node provisioning |
-| [`wordpress`](https://wordpress.org/) | WordPress + MySQL demo application |
 | [`kiwi`](https://osinside.github.io/kiwi/) | KIWI appliance builder |
+
+</details>
+
+<a id="addons-demos"></a>
+<details open>
+<summary><strong>Demo applications</strong></summary>
+
+| Addon name | Description |
+|---|---|
+| [`wordpress`](https://wordpress.org/) | WordPress + MySQL demo application |
 | [`fluentd`](https://www.fluentd.org/) | Log aggregation |
 | [`mailman`](https://www.list.org/) | GNU Mailman 3 mailing-list management + web interface |
 | [`mediagoblin`](https://www.mediagoblin.org/) | GNU MediaGoblin federated media-publishing platform |
 | [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt, a git-backed blog engine on GNU Artanis |
 | [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic, a musical-knowledge CMS on GNU Artanis |
+
+</details>
+
+<a id="addons-games"></a>
+<details open>
+<summary><strong>Games</strong></summary>
+
+| Addon name | Description |
+|---|---|
 | [`supertux_classic`](https://github.com/Alzter/SuperTux-Classic) | SuperTux Classic, a self-hosted open-source Godot platformer |
 | [`skynet_simulator`](https://github.com/edisgreat/skynet-simulator) | Skynet Simulator, a self-hosted open-source browser puzzle/idle game |
 | [`open_saber`](https://github.com/leandrodreamer/BeepSaber) | Open Saber, a self-hosted open-source rhythm/block-cutting game |
