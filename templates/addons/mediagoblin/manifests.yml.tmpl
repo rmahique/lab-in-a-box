@@ -1,0 +1,72 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${mediagoblin_ns:-mediagoblin}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediagoblin
+  namespace: ${mediagoblin_ns:-mediagoblin}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mediagoblin
+  template:
+    metadata:
+      labels:
+        app: mediagoblin
+    spec:
+      containers:
+      - name: mediagoblin
+        image: mediagoblin/mediagoblin:${mediagoblin_version:-latest}
+        env:
+        - name: ADMIN_USER
+          value: "${mediagoblin_admin_user:-admin}"
+        - name: ADMIN_PASSWORD
+          value: "${mediagoblin_admin_password:-changeme123}"
+        - name: ADMIN_EMAIL
+          value: "${mediagoblin_admin_email:-admin@lab.local}"
+        - name: CELERY_ALWAYS_EAGER
+          value: "true"
+        ports:
+        - containerPort: 6543
+        volumeMounts:
+        - name: data
+          mountPath: /srv
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediagoblin
+  namespace: ${mediagoblin_ns:-mediagoblin}
+spec:
+  ports:
+    - port: 6543
+      name: web
+  selector:
+    app: mediagoblin
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mediagoblin
+  namespace: ${mediagoblin_ns:-mediagoblin}
+spec:
+  rules:
+    - host: ${mediagoblin_shorthn:-mediagoblin}.${clu_name}.${mydomain}
+      http:
+        paths:
+          - backend:
+              service:
+                name: mediagoblin
+                port:
+                  name: web
+            path: /
+            pathType: Prefix
+...

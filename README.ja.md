@@ -12,7 +12,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-containerized%20(podman)-success.svg">
-  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-41-informational.svg">
+  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-61-informational.svg">
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@
 `setup_lab.py` · **JSON/YAML ファイル1つ、コマンド1つ。**
 VM、Kubernetes クラスター（RKE2/K3s）、アドオンを宣言的に記述するだけ。正しい順序ですべてを構築する。
 
-`install_<addon>` · **41種類のアドオンをすぐに利用可能。**
+`install_<addon>` · **61種類のアドオンをすぐに利用可能。**
 Rancher、Longhorn、NeuVector、Harbor、Keycloak、Jenkins、Argo CD、SUSE Multi-Linux Manager/Uyuni（アクティベーションキー、RBAC、Content Lifecycle Management、Ansible 連携など）、セキュリティトレーニング用の脆弱なデモアプリなど。
 
 [`lab-builder`](#web-ui-lab-builder) · **動的な Web UI。**

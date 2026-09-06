@@ -1,0 +1,59 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailman-core
+  namespace: ${mailman_ns:-mailman}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailman-core
+  template:
+    metadata:
+      labels:
+        app: mailman-core
+    spec:
+      containers:
+      - name: mailman-core
+        image: maxking/mailman-core:${mailman_version:-0.5}
+        env:
+        - name: DATABASE_TYPE
+          value: "postgres"
+        - name: DATABASE_CLASS
+          value: "mailman.database.postgresql.PostgreSQLDatabase"
+        - name: DATABASE_URL
+          value: "postgres://mailman:${mailman_db_password}@mailman-db:5432/mailmandb"
+        - name: HYPERKITTY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mailman-secrets
+              key: hyperkitty_api_key
+        - name: SMTP_HOST
+          value: "mailman-core"
+        - name: SMTP_PORT
+          value: "8024"
+        ports:
+        - containerPort: 8001
+        - containerPort: 8024
+        volumeMounts:
+        - name: core-data
+          mountPath: /opt/mailman
+      volumes:
+      - name: core-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailman-core
+  namespace: ${mailman_ns:-mailman}
+spec:
+  ports:
+    - port: 8001
+      name: rest-api
+    - port: 8024
+      name: lmtp
+  selector:
+    app: mailman-core
+...

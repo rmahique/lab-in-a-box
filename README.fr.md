@@ -12,7 +12,7 @@
   <img alt="Licence" src="https://img.shields.io/badge/license-GPLv3-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-containerized%20(podman)-success.svg">
-  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-41-informational.svg">
+  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-61-informational.svg">
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@
 `setup_lab.py` · **Un fichier JSON/YAML, une commande.**
 Décrivez les VM, les clusters Kubernetes (RKE2/K3s) et les add-ons de façon déclarative ; il construit tout dans le bon ordre.
 
-`install_<addon>` · **41 add-ons prêts à l'emploi.**
+`install_<addon>` · **61 add-ons prêts à l'emploi.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (clés d'activation, RBAC, Content Lifecycle Management, intégration Ansible, et plus), des applications de démonstration vulnérables pour la formation à la sécurité, et plus encore.
 
 [`lab-builder`](#web-ui-lab-builder) · **Une interface web dynamique.**

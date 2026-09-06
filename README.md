@@ -12,7 +12,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-containerized%20(podman)-success.svg">
-  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-41-informational.svg">
+  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-61-informational.svg">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 `setup_lab.py` · **One JSON/YAML file, one command.**
 Describe VMs, Kubernetes clusters (RKE2/K3s), and add-ons declaratively; it builds everything in the right order.
 
-`install_<addon>` · **41 ready-made add-ons.**
+`install_<addon>` · **61 ready-made add-ons.**
 Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (activation keys, RBAC, Content Lifecycle Management, Ansible integration, and more), vulnerable demo apps for security training, and more.
 
 [`lab-builder`](#web-ui-lab-builder) · **A dynamic web UI.**
@@ -845,6 +845,8 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 | `coredns` | Cluster DNS |
 | `kucero` | Kubernetes cluster certificate rotation |
 | `fluid` | Data orchestration/caching for cloud-native workloads |
+| `suse_observability` | SUSE Observability (StackState-based metrics/traces/topology) |
+| `agones` | Dedicated game-server hosting/scaling (agones.dev) |
 
 </details>
 
@@ -924,6 +926,10 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 | `qdrant` | Qdrant vector database (RAG/embedding search) |
 | `weaviate` | Weaviate vector database (RAG/embedding search) |
 | `gpu_operator` | NVIDIA GPU Operator (GPU scheduling for AI workloads) |
+| `qwen` | Qwen2.5 model, served via Ollama |
+| `mistral` | Mistral model, served via Ollama |
+| `codellama` | Code Llama model, served via Ollama |
+| `starcoder2` | StarCoder2 model, served via Ollama |
 | `phoebe` | (see `install_phoebe --schema`) |
 
 </details>
@@ -938,6 +944,11 @@ Addons are referenced by name in the `addons` array of a kcluster or node. The c
 | `wordpress` | WordPress + MySQL demo application |
 | `kiwi` | KIWI appliance builder |
 | `fluentd` | Log aggregation |
+| `mailman` | GNU Mailman 3 mailing-list management + web interface |
+| `mediagoblin` | GNU MediaGoblin federated media-publishing platform |
+| `colt` | Colt, a git-backed blog engine on GNU Artanis |
+| `wikimusic` | WikiMusic, a musical-knowledge CMS on GNU Artanis |
+| `games` | A small "arcade" page linking to curated open-source itch.io games |
 
 </details>
 

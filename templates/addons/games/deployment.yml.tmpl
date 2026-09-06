@@ -1,0 +1,30 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: games-arcade
+  namespace: ${games_ns:-games}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: games-arcade
+  template:
+    metadata:
+      labels:
+        app: games-arcade
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: games-arcade-html
+...
