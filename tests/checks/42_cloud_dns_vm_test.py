@@ -25,6 +25,10 @@ def check(desc, cond):
         print("FAIL:", desc)
 
 
+def _cp(rc, stdout="", stderr=""):
+    return subprocess.CompletedProcess([], rc, stdout=stdout, stderr=stderr)
+
+
 # ── CLOUD_BACKEND_NAMES: every registered backend except libvirt/harvester ─
 check("CLOUD_BACKEND_NAMES excludes libvirt", "libvirt" not in backends.CLOUD_BACKEND_NAMES)
 check("CLOUD_BACKEND_NAMES excludes harvester", "harvester" not in backends.CLOUD_BACKEND_NAMES)
@@ -55,9 +59,19 @@ try:
     check("runcmd writes the real zone file path", "/var/lib/named/mydemo.lab.lan" in joined)
     check("runcmd writes the real named.conf.local zone stanza",
           any('zone "mydemo.lab"' in c and "/var/lib/named/mydemo.lab.lan" in c for c in runcmd))
-    check("runcmd creates the bind9.service -> named.service alias symlink (Debian/Ubuntu shim)",
-          any("ln -sf /lib/systemd/system/bind9.service /etc/systemd/system/named.service" in c for c in runcmd))
-    check("runcmd enables and starts named (the aliased unit) at the end",
+    check("runcmd does NOT create a bind9.service -> named.service alias symlink — a real bug "
+          "found live-testing 2026-09-09: Ubuntu's bind9 package already ships a working "
+          "named.service natively, and that symlink actively shadowed it with a broken link",
+          not any("ln -sf" in c and "named.service" in c for c in runcmd))
+    check("runcmd writes an AppArmor local override for /var/lib/named — a real bug found "
+          "live-testing 2026-09-09: Ubuntu's usr.sbin.named profile only allows /var/lib/bind/**, "
+          "so named fails to load the zone with a plain 'permission denied' otherwise",
+          any("/etc/apparmor.d/local/usr.sbin.named" in c and "/var/lib/named/** rw," in c for c in runcmd))
+    check("runcmd reloads the AppArmor profile after writing the override, before starting named",
+          runcmd.index(next(c for c in runcmd if "/etc/apparmor.d/local/usr.sbin.named" in c))
+          < runcmd.index(next(c for c in runcmd if "apparmor_parser -r" in c))
+          < runcmd.index("systemctl enable --now named"))
+    check("runcmd enables and starts named (no alias needed) at the end",
           any(c == "systemctl enable --now named" for c in runcmd))
 
     # Every runcmd entry must actually be a runnable shell command — real, not just
@@ -123,8 +137,14 @@ class _FakeBackendCreate:
 
 create_backend = _FakeBackendCreate()
 with tempfile.TemporaryDirectory() as tempfile_dir:
-    ip = backends.ensure_cloud_dns_vm(
-        create_backend, "hetzner", "ssh-ed25519 AAAAtest test@example", "mydemo.lab", "ubuntu-24.04", tempfile_dir)
+    # ensure_cloud_dns_vm() itself (not the backend) does a real `ssh ... systemctl is-active
+    # named` poll after create_vm() returns — a real bug found live-testing 2026-09-09 needed
+    # this wait (cloud-init's own package install takes real time past when the IP is assigned).
+    # Mocked here the same way every other backend test in this suite mocks subprocess.run.
+    with mock.patch.object(backends.subprocess, "run", return_value=_cp(0)):
+        ip = backends.ensure_cloud_dns_vm(
+            create_backend, "hetzner", "ssh-ed25519 AAAAtest test@example", "mydemo.lab",
+            "ubuntu-24.04", tempfile_dir)
     userdata_file = Path(tempfile_dir) / "cloud-init" / "lab-dns-hetzner_user-data"
     check("ensure_cloud_dns_vm() writes the DNS VM's own cloud-init file to the real expected path",
           userdata_file.is_file())

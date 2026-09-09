@@ -1713,9 +1713,14 @@ class AWSBackend(VMBackend):
     - MAC addresses: EC2 does not let you assign a custom MAC (confirmed against its own API) —
       same stub stance as HetznerBackend's check_or_generate_mac()/list_used_macs().
 
-    NOT live-tested (no real AWS account available in this session) — CLI flags/JSON output shapes
-    verified against AWS's own current CLI documentation and multiple independently-published
-    examples, 2026-09-06, not guessed.
+    LIVE-TESTED 2026-09-09 against a real AWS account (eu-central-1): a real EC2 instance was
+    created, correctly reachable over SSH with cloud-init applied (real hostname, real injected
+    key), and cleanly terminated — see TODO for the full account/session log, including the two
+    real, generally-applicable CLI bugs found and fixed in the process (this project's installed
+    `aws` CLI (2.36.41) rejects the traditional --min-count/--max-count pair outright, replaced
+    with --count; a subnet with MapPublicIpOnLaunch=false, a common real-world default, needs
+    --associate-public-ip-address explicitly or the instance ends up unreachable) — neither was
+    guessed, both confirmed against the real API via --dry-run before being fixed here.
     """
 
     # Smallest-to-largest by (cores, memory_gb) — the standard burstable general-purpose family,
@@ -1914,7 +1919,12 @@ class AWSBackend(VMBackend):
             "ec2", "run-instances",
             "--image-id", iso_image,
             "--instance-type", instance_type,
-            "--min-count", "1", "--max-count", "1",
+            # Real, live-verified 2026-09-09: this project's actual installed `aws` CLI
+            # (2.36.41) rejects the traditional --min-count/--max-count pair outright
+            # ("Unknown options") — its own `run-instances help` SYNOPSIS lists a single
+            # --count instead. Confirmed against the real API via --dry-run before this was
+            # fixed here — not guessed.
+            "--count", "1",
             "--user-data", self._user_data_by_vm.get(vm_name, ""),
             "--block-device-mappings",
             json.dumps([{"DeviceName": root_device, "Ebs": {"VolumeSize": int(vm_dsk_gb)}}]),
@@ -1922,7 +1932,12 @@ class AWSBackend(VMBackend):
             "ResourceType=instance,Tags=[{{Key=Name,Value={}}}]".format(vm_name),
         ]
         if self.subnet_id:
-            args += ["--subnet-id", self.subnet_id]
+            # Real, live-verified 2026-09-09: a subnet with MapPublicIpOnLaunch=false (a common
+            # real-world VPC default, confirmed against this session's own test account) leaves
+            # a new instance with only a private IP — unreachable from automation.mydemo.lab's
+            # own SSH-based access model, which every backend in this project assumes. Explicit
+            # every time a subnet is given, rather than trusting the subnet's own default.
+            args += ["--subnet-id", self.subnet_id, "--associate-public-ip-address"]
         if self.security_group_id:
             args += ["--security-group-ids", self.security_group_id]
         if self.key_name:
@@ -3388,15 +3403,22 @@ def _cloud_dns_vm_user_data(root_ssh_key, mydomain):
     on any listed server, unmodified since it was built for automation.mydemo.lab's own SUSE/BIND
     setup) works against this VM with zero new DNS-propagation code.
 
-    Two real, deliberate compatibility shims, since the actual cloud AMI is very likely Ubuntu/
+    One real, deliberate compatibility shim, since the actual cloud AMI is very likely Ubuntu/
     Debian, not SUSE (matches this project's own Compute-backends docs — ISO_IMAGE for a cloud
-    backend is a real provider AMI/image, operator-supplied, not assumed to be SUSE):
-      - Debian/Ubuntu's bind9 package expects zone files under /etc/bind or /var/cache/bind, not
-        /var/lib/named — /var/lib/named is created explicitly and named.conf.local points its zone
-        there instead, rather than porting DNSService's own hardcoded path.
-      - Debian/Ubuntu's systemd unit is bind9.service, not named.service — a `named.service` alias
-        symlink is created so the existing unmodified `systemctl restart named` calls actually
-        reach it.
+    backend is a real provider AMI/image, operator-supplied, not assumed to be SUSE): Debian/
+    Ubuntu's bind9 package expects zone files under /etc/bind or /var/cache/bind, not
+    /var/lib/named — /var/lib/named is created explicitly and named.conf.local points its zone
+    there instead, rather than porting DNSService's own hardcoded path.
+
+    Real, live-tested 2026-09-09 (see TODO): Ubuntu 24.04's bind9 package already ships a working
+    named.service unit natively at /usr/lib/systemd/system/named.service — enabling/starting/
+    restarting `named` directly Just Works, no bind9.service alias needed. An earlier draft here
+    created one anyway (on the wrong assumption Ubuntu only ships bind9.service) — confirmed live
+    against a real instance that it actively SHADOWED the real unit (/etc/systemd/system/ wins
+    over /usr/lib/systemd/system/ in systemd's own search order) with a symlink to a path that
+    doesn't exist, breaking `systemctl restart named` outright even though `enable --now named`
+    and `is-active` both still looked fine. Removed.
+
     NOT live-tested independently of the AWS live-testing session this was written during — see
     TODO for the current verification status of the whole ensure_cloud_dns_vm() mechanism.
     """
@@ -3421,25 +3443,55 @@ def _cloud_dns_vm_user_data(root_ssh_key, mydomain):
     # `write_files` module — write_files runs in cloud-init's early init stage, BEFORE packages
     # install, so a `bind:bind` chown or a write into /var/lib/named (which doesn't exist yet on
     # a stock Debian/Ubuntu image — see this function's own docstring) would silently fail there.
+    #
+    # Real bug found live-testing 2026-09-09, and just as real as the ordering issue above: an
+    # earlier draft here also created `ln -sf /lib/systemd/system/bind9.service
+    # /etc/systemd/system/named.service`, on the (wrong) assumption that Ubuntu's bind9 package
+    # only ships a bind9.service unit. Confirmed live against a real instance: Ubuntu 24.04's
+    # bind9 package already provides a working named.service natively at
+    # /usr/lib/systemd/system/named.service — that symlink didn't just do nothing, it actively
+    # SHADOWED the real one (/etc/systemd/system/ wins over /usr/lib/systemd/system/ in systemd's
+    # own search order) with a link to a path (/lib/systemd/system/bind9.service) that doesn't
+    # exist at all, breaking `systemctl restart named` outright even though `enable --now named`
+    # and `is-active` both still looked fine (they resolve differently). No such symlink is
+    # needed — enabling/starting/restarting `named` directly Just Works on a real Ubuntu image.
     commands = [
         "mkdir -p /var/lib/named",
         "printf '%s\\n' {args} > /var/lib/named/{d}.lan".format(args=zone_printf_args, d=mydomain),
         "printf '%s\\n' {conf} > /etc/bind/named.conf.local".format(conf="'{}'".format(named_conf_line)),
         "chown -R bind:bind /var/lib/named",
         "chmod 0755 /var/lib/named",
-        "ln -sf /lib/systemd/system/bind9.service /etc/systemd/system/named.service",
-        "systemctl daemon-reload",
+        # Real bug found live-testing 2026-09-09: Ubuntu's own `usr.sbin.named` AppArmor profile
+        # only allows `/var/lib/bind/**` for zone data, not `/var/lib/named/**` (this project's
+        # own existing NAMED_ZONE_DIR convention, chosen to match automation.mydemo.lab's SUSE
+        # setup) — named would fail to load the zone with a plain "permission denied", despite
+        # completely correct standard UNIX ownership/permissions (the two lines just above).
+        # Fixed via Ubuntu's own supported override mechanism (a local/ drop-in, already
+        # #include'd by the shipped profile) rather than disabling confinement.
+        "printf '%s\\n' '/var/lib/named/** rw,' > /etc/apparmor.d/local/usr.sbin.named",
+        "apparmor_parser -r /etc/apparmor.d/usr.sbin.named",
         "systemctl enable --now named",
     ]
     runcmd_block = "\n".join("  - {}".format(yq(cmd)) for cmd in commands)
 
+    # Real bug found live-testing 2026-09-09: a bare top-level `ssh_authorized_keys:` only grants
+    # the distro's own DEFAULT user (Ubuntu's "ubuntu") a key — root SSH stays blocked behind
+    # Ubuntu's stock cloud image's own rejection wrapper ("Please login as the user \"ubuntu\"...").
+    # Every SSH call this project makes (ensure_cloud_dns_vm()'s own later zone-file append via
+    # add_to_dns()'s remote_dns_servers, exactly like every other backend) assumes root access —
+    # matches template_user-data's own explicit `users: [..., {name: root, ...}]` convention,
+    # confirmed working live against the real EC2 test node this same session.
     return (
         "#cloud-config\n"
         "package_update: true\n"
         "packages:\n"
         "  - bind9\n"
-        "ssh_authorized_keys:\n"
-        "  - {key}\n"
+        "users:\n"
+        "  - default\n"
+        "  - name: root\n"
+        "    lock_passwd: false\n"
+        "    ssh_authorized_keys:\n"
+        "      - {key}\n"
         "runcmd:\n"
         "{runcmd_block}\n"
     ).format(key=root_ssh_key.strip(), runcmd_block=runcmd_block)
@@ -3458,11 +3510,10 @@ def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image
 
     Genuinely NOT yet implemented (a known, real gap, not silently glossed over): a freshly
     created cloud node does not automatically point its own DNS resolution (/etc/resolv.conf, or
-    the cloud provider's own VPC-level DHCP option set) at this DNS VM — so today, this VM holds
-    correct, queryable records (reachable from automation.mydemo.lab, which the operator or
-    check_ssh_conn() can reach), but a *second* cloud node in the same lab cannot yet resolve a
-    *first* one by hostname without that additional wiring. Real multi-node cloud clusters need
-    that follow-up before they can rely on hostname resolution between their own nodes.
+    the cloud provider's own VPC-level DHCP option set) at this DNS VM — so a *second* cloud node
+    in the same lab cannot yet resolve a *first* one by hostname without that additional wiring.
+    Real multi-node cloud clusters need that follow-up before they can rely on hostname resolution
+    between their own nodes.
 
     Reuse/creation: looks up the fixed name "lab-dns-<backend_name>" via the backend's own
     vm_exists()/get_ip() (same idempotent-reuse convention as every other node in this project);
@@ -3472,8 +3523,18 @@ def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image
     `iso_loc`/`vm_img_loc` values from the caller only insofar as copy_vm_image() needs them —
     irrelevant for every cloud backend (a no-op validation call, per each one's own docstring).
 
-    NOT live-tested independently — being exercised for the first time as part of AWSBackend's own
-    live test, 2026-09-09; see TODO for the current, honest verification status.
+    LIVE-TESTED 2026-09-09 against a real AWS account, and NOT fully green — see TODO for the
+    complete account. Confirmed solidly working: root SSH access, BIND install/start, the zone
+    file getting the real record written via add_to_dns()'s existing SSH-based
+    remote_dns_servers mechanism completely unmodified, and DNS resolution being correct when
+    queried via the DNS VM's own private IP OR its loopback address. Confirmed BROKEN, and NOT
+    resolved this session despite real effort: querying the SAME zone via the DNS VM's AWS
+    Elastic/Public IP from an external client (automation.mydemo.lab included) returns a
+    synthesized root-zone NXDOMAIN instead of the real answer, even though unrelated recursive
+    queries (e.g. a real google.com lookup) through that exact same public IP work fine — ruled
+    out ISP-level interception, AppArmor, security groups, and stale cache as the cause; not yet
+    root-caused. This means today, this DNS VM's own records are NOT reliably queryable from
+    automation.mydemo.lab over the public IP — a real, currently open problem, not a solved one.
     """
     dns_vm_name = "lab-dns-{}".format(backend_name)
 
@@ -3502,6 +3563,31 @@ def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image
     if not ip:
         die("cloud DNS VM '{}' was created on backend '{}' but create_vm() reported no IP — "
             "cannot continue".format(dns_vm_name, backend_name))
+
+    # Real bug found live-testing 2026-09-09: create_vm() reporting an IP only means the cloud
+    # provider assigned one — cloud-init's own package_update+packages+runcmd sequence (installing
+    # and starting bind9) takes real additional time after that, well past when SSH itself
+    # answers. Without this wait, add_to_dns()'s later SSH-based zone-file append (setup_vm.py's
+    # provision_vm()) would race a DNS VM that isn't running named yet — its own check=False
+    # design (a secondary DNS server being unreachable must not abort provisioning) means that
+    # race was failing completely silently rather than raising anything.
+    log("- Waiting for \"{}{}{}\" to finish installing and starting BIND".format(_RED, dns_vm_name, _RESET))
+    waited = 0
+    while waited < 240:
+        check = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+             "root@{}".format(ip), "systemctl is-active named"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if check.returncode == 0:
+            break
+        time.sleep(5)
+        waited += 5
+    else:
+        die("cloud DNS VM '{}' ({}) never reported 'named' active within 240s — check it "
+            "manually (SSH in and inspect cloud-init's own log, /var/log/cloud-init-output.log)"
+            .format(dns_vm_name, ip))
+
     log("- Cloud DNS VM \"{}{}{}\" ready at {}".format(_RED, dns_vm_name, _RESET, ip))
     return ip
 
