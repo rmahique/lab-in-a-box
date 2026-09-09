@@ -104,8 +104,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on UpCloud ─
 check("list_used_macs() returns empty (UpCloud has no MAC concept)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to UpCloud)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to UpCloud)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_plan(): smallest plan that satisfies both cores and memory ──────
@@ -147,6 +152,22 @@ with mock.patch.object(backends.urllib.request, "urlopen",
     check("vm_exists() returns False when nothing in the list matches", backend.vm_exists("vm1") is False)
 
 
+# ── get_ip(): public access preferred, private fallback, None if unassigned ─
+_with_public = _FakeResponse({"servers": {"server": [{"title": "vm1", "ip_addresses": {"ip_address": [
+    {"access": "private", "address": "10.0.0.9"}, {"access": "public", "address": "203.0.113.51"}]}}]}})
+_private_only = _FakeResponse({"servers": {"server": [{"title": "vm1", "ip_addresses": {"ip_address": [
+    {"access": "private", "address": "10.0.0.9"}]}}]}})
+
+with mock.patch.object(backends.urllib.request, "urlopen", return_value=_with_public):
+    check("get_ip() prefers the public address when both are present", backend.get_ip("vm1") == "203.0.113.51")
+with mock.patch.object(backends.urllib.request, "urlopen", return_value=_private_only):
+    check("get_ip() falls back to the private address when no public one is present",
+          backend.get_ip("vm1") == "10.0.0.9")
+with mock.patch.object(backends.urllib.request, "urlopen",
+                        return_value=_FakeResponse({"servers": {"server": []}})):
+    check("get_ip() returns None when the server doesn't exist", backend.get_ip("vm1") is None)
+
+
 # ── delete_vm(): idempotent when the server is already gone ────────────────
 with mock.patch.object(backends.urllib.request, "urlopen",
                         return_value=_FakeResponse({"servers": {"server": []}})) as m_open:
@@ -162,6 +183,12 @@ captured = {}
 
 
 def _fake_urlopen(req, timeout=30):
+    if req.get_method() == "GET":
+        # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+        # public IP here so the poll succeeds on its first check, not a 180s timeout.
+        return _FakeResponse({"servers": {"server": [
+            {"uuid": "u-1", "title": "vm1",
+             "ip_addresses": {"ip_address": [{"access": "public", "address": "203.0.113.50"}]}}]}})
     captured["body"] = json.loads(req.data.decode("utf-8"))
     captured["headers"] = dict(req.headers)
     captured["url"] = req.full_url
@@ -169,8 +196,10 @@ def _fake_urlopen(req, timeout=30):
 
 
 with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_urlopen):
-    b3.create_vm("vm1", 1, 2048, 40, None, config_method="cloud-init", iso_image="tpl-1")
+    returned_ip = b3.create_vm("vm1", 1, 2048, 40, None, config_method="cloud-init", iso_image="tpl-1")
 
+check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+      "contract)", returned_ip == "203.0.113.50")
 server_body = captured["body"]["server"]
 check("create_vm() sends the real title/hostname", server_body.get("title") == "vm1" and server_body.get("hostname") == "vm1")
 check("create_vm() picks a real plan", server_body.get("plan") == "1xCPU-2GB")

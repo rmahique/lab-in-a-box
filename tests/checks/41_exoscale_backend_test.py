@@ -106,8 +106,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on Exoscale ─
 check("list_used_macs() returns empty (Exoscale has no MAC concept)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to Exoscale)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to Exoscale)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_instance_type(): smallest SKU that satisfies both cores and memory ─
@@ -139,6 +144,18 @@ with mock.patch.object(backends.subprocess, "run", return_value=_list_none):
     check("vm_exists() returns False when nothing in the list matches", backend.vm_exists("vm1") is False)
 
 
+# ── get_ip(): the "public-ip" field, None if unassigned/nonexistent ───────
+_with_ip = _cp(0, stdout=json.dumps([{"id": "i-1", "name": "vm1", "public-ip": "203.0.113.71"}]))
+_no_ip_yet = _cp(0, stdout=json.dumps([{"id": "i-1", "name": "vm1", "public-ip": None}]))
+
+with mock.patch.object(backends.subprocess, "run", return_value=_with_ip):
+    check("get_ip() returns the real public-ip", backend.get_ip("vm1") == "203.0.113.71")
+with mock.patch.object(backends.subprocess, "run", return_value=_no_ip_yet):
+    check("get_ip() returns None when no public-ip is assigned yet", backend.get_ip("vm1") is None)
+with mock.patch.object(backends.subprocess, "run", return_value=_list_none):
+    check("get_ip() returns None when the instance doesn't exist", backend.get_ip("vm1") is None)
+
+
 # ── env vars: the real API key/secret are passed to the subprocess, not the OS env ─
 with mock.patch.object(backends.subprocess, "run", return_value=_list_none) as m_run:
     backend.vm_exists("vm1")
@@ -167,11 +184,17 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 
     def _fake_run(args, **kwargs):
         calls.append(args)
+        if "list" in args:
+            # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+            # public-ip here so the poll succeeds on its first check, not a 180s timeout.
+            return _cp(0, stdout=json.dumps([{"id": "i-1", "name": "vm1", "public-ip": "203.0.113.70"}]))
         return _cp(0, stdout="")
 
     with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
-        b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="tpl-1")
+        returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="tpl-1")
 
+    check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+          "contract)", returned_ip == "203.0.113.70")
     create_call = next(c for c in calls if "create" in c)
     check("create_vm() sends the real template ID", "tpl-1" in create_call)
     check("create_vm() picks a real instance-type", "standard.medium" in create_call)

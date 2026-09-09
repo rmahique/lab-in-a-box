@@ -308,7 +308,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     if not _empty(net_model) and net_model not in ("virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"):
         err("common.VM_NET_MODEL '{}' is invalid — must be one of: virtio, e1000, e1000e, rtl8139, vmxnet3, ne2k_pci".format(net_model))
 
-    from backends import BACKENDS
+    from backends import BACKENDS, CLOUD_BACKEND_NAMES
     common_backend = _jq_or(common.get("backend"))
     if not _empty(common_backend) and common_backend not in BACKENDS:
         err("common.backend '{}' is invalid — must be one of: {}".format(
@@ -342,7 +342,14 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         mymac = _jq_or(node_cfg.get("mymac"))
         kcluster = _jq_or(node_cfg.get("kcluster"))
 
-        if _empty(myip):
+        # A cloud-backend node's real IP is only known once the provider assigns it at create
+        # time — myip is deliberately left empty for one in the JSON (see README), not a missing-
+        # field mistake. Added 2026-09-09 alongside create_vm()'s own real-IP return contract —
+        # see TODO. Every other backend (libvirt/Harvester) keeps requiring it exactly as before.
+        node_backend_eff = _jq_or(node_cfg.get("backend")) or common_backend or _jq_or(config.get("BACKEND")) or "libvirt"
+        is_cloud_node = node_backend_eff in CLOUD_BACKEND_NAMES
+
+        if _empty(myip) and not is_cloud_node:
             err("nodes.{}: 'myip' is required".format(node))
 
         if not _empty(myip):

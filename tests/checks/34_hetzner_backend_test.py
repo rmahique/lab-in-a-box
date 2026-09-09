@@ -109,9 +109,13 @@ check("list_used_macs() returns empty (Hetzner has no MAC concept)",
       backend.list_used_macs() == ([], {}))
 
 fake_definition = {"nodes": {"vm1": {}}}
-mymac, network = backend.check_or_generate_mac("vm1", "", fake_definition)
-check("check_or_generate_mac() still generates SOME mac value (never sends it to Hetzner)",
-      bool(mymac))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
+mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to Hetzner)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_server_type(): smallest SKU that satisfies both cores and memory ─
@@ -140,6 +144,17 @@ with mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeRes
     check("vm_exists() returns False when the API lists no matching server", backend.vm_exists("vm1") is False)
 
 
+# ── get_ip(): public_net.ipv4.ip, None if unassigned/nonexistent ──────────
+with mock.patch.object(backends.urllib.request, "urlopen",
+                        return_value=_FakeResponse({"servers": [{"public_net": {"ipv4": {"ip": "203.0.113.7"}}}]})):
+    check("get_ip() returns the real public IPv4", backend.get_ip("vm1") == "203.0.113.7")
+with mock.patch.object(backends.urllib.request, "urlopen",
+                        return_value=_FakeResponse({"servers": [{"public_net": {"ipv4": None}}]})):
+    check("get_ip() returns None when no IPv4 is assigned yet", backend.get_ip("vm1") is None)
+with mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeResponse({"servers": []})):
+    check("get_ip() returns None when the server doesn't exist", backend.get_ip("vm1") is None)
+
+
 # ── delete_vm(): idempotent when the server is already gone ────────────────
 with mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeResponse({"servers": []})) as m_open:
     backend.delete_vm("vm1")  # must not raise/die
@@ -156,17 +171,23 @@ captured = {}
 def _fake_urlopen(req, timeout=30):
     captured["body"] = json.loads(req.data.decode("utf-8"))
     captured["headers"] = dict(req.headers)
-    return _FakeResponse({"server": {"id": 1, "server_type": {"disk": 40}}})
+    # public_net.ipv4.ip present inline (Hetzner's own real create-response shape) — create_vm()
+    # should use it directly, no get_ip() poll/second request needed.
+    return _FakeResponse({"server": {"id": 1, "server_type": {"disk": 40},
+                                      "public_net": {"ipv4": {"ip": "203.0.113.5"}}}})
 
 
 with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_urlopen):
-    b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="ubuntu-24.04")
+    returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="ubuntu-24.04")
 
 check("create_vm() sends the real image name", captured["body"].get("image") == "ubuntu-24.04")
 check("create_vm() sends the stashed user_data", captured["body"].get("user_data") == "#cloud-config\n")
 check("create_vm() picks a real server_type", captured["body"].get("server_type") == "cx22")
 check("create_vm() sends a Bearer token", captured["headers"].get("Authorization") == "Bearer tok123")
 check("create_vm() omits location when none was configured", "location" not in captured["body"])
+check("create_vm() returns the real IP from the create response's own public_net.ipv4.ip "
+      "(2026-09-09 contract — no poll needed when Hetzner already includes it inline)",
+      returned_ip == "203.0.113.5")
 
 b4 = backends.HetznerBackend("tok123", location="nbg1")
 b4._user_data_by_vm["vm1"] = ""

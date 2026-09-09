@@ -87,8 +87,9 @@ check("provision_vm: config_method='cloud-init' dispatches to prepare_cloud_init
       and "prepare_ignition_combustion" not in order
       and "prepare_virt_customize_for_vm" not in order
       and "prepare_install_iso" not in order)
-check("provision_vm: DNS is registered before the VM is created",
-      order.index("add_to_dns") < order.index("create_vm"))
+check("provision_vm: DNS is registered AFTER the VM is created (2026-09-09 fix — a cloud "
+      "backend's real IP is only known once create_vm() returns; see TODO)",
+      order.index("create_vm") < order.index("add_to_dns"))
 check("provision_vm: the VM is created before the first connectivity wait",
       order.index("create_vm") < order.index("check_ssh_conn"))
 check("provision_vm: rebooted, then waited on again, after the first connectivity check",

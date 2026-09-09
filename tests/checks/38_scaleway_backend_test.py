@@ -104,8 +104,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on Scaleway ─
 check("list_used_macs() returns empty (Scaleway has no MAC concept)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to Scaleway)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to Scaleway)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_server_type(): smallest SKU that satisfies both cores and memory ─
@@ -135,6 +140,17 @@ with mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeRes
     check("vm_exists() returns False when the API lists no matching server", backend.vm_exists("vm1") is False)
 
 
+# ── get_ip(): public_ip.address, None if unassigned/nonexistent ───────────
+with mock.patch.object(backends.urllib.request, "urlopen",
+                        return_value=_FakeResponse({"servers": [{"public_ip": {"address": "203.0.113.41"}}]})):
+    check("get_ip() returns the real public IP", backend.get_ip("vm1") == "203.0.113.41")
+with mock.patch.object(backends.urllib.request, "urlopen",
+                        return_value=_FakeResponse({"servers": [{"public_ip": None}]})):
+    check("get_ip() returns None when no public IP is assigned yet", backend.get_ip("vm1") is None)
+with mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeResponse({"servers": []})):
+    check("get_ip() returns None when the server doesn't exist", backend.get_ip("vm1") is None)
+
+
 # ── delete_vm(): idempotent when the server is already gone ────────────────
 with mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeResponse({"servers": []})) as m_open:
     backend.delete_vm("vm1")  # must not raise/die
@@ -156,12 +172,18 @@ def _fake_urlopen(req, timeout=30):
         return _FakeResponse(None)
     if req.get_method() == "POST" and "/action" in req.full_url:
         return _FakeResponse(None)
+    if req.get_method() == "GET" and "/servers?name=" in req.full_url:
+        # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+        # public_ip here so the poll succeeds on its first check, not a 180s timeout.
+        return _FakeResponse({"servers": [{"id": "s-1", "public_ip": {"address": "203.0.113.40"}}]})
     return _FakeResponse(None)
 
 
 with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_urlopen):
-    b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="img-1")
+    returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="img-1")
 
+check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+      "contract)", returned_ip == "203.0.113.40")
 create_req = next(r for r in requests_seen if r.get_method() == "POST" and r.full_url.endswith("/servers"))
 create_body = json.loads(create_req.data.decode("utf-8"))
 check("create_vm() sends the real image ID", create_body.get("image") == "img-1")

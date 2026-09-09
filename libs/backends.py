@@ -65,6 +65,43 @@ def _read_conflict_confirmation():
         return tty.readline().strip()
 
 
+def _poll_for_ip(fetch_fn, vm_name, timeout=180, interval=5):
+    """
+    Shared polling loop for a cloud backend's create_vm(): repeatedly calls fetch_fn() (a
+    zero-arg closure, typically a bound get_ip(vm_name)) until it returns a real IP, or dies with
+    a clear message once `timeout` seconds have passed. Plain time.sleep() polling, matching this
+    codebase's own established convention (see check_ssh_conn() in lab_creation.py) — no
+    cancellation token needed here, unlike rodeo-cli's unrelated convention some contributors may
+    know from that other project.
+    """
+    waited = 0
+    while waited < timeout:
+        ip = fetch_fn()
+        if ip:
+            return ip
+        time.sleep(interval)
+        waited += interval
+    die("timed out after {}s waiting for '{}' to be assigned a real IP address".format(timeout, vm_name))
+
+
+def _cloud_no_mac(mymac):
+    """
+    Shared check_or_generate_mac() body for every cloud backend (Hetzner/AWS/GCP/Alibaba/
+    Scaleway/UpCloud/OVHcloud/Exoscale). Dropped 2026-09-09, found live-testing: unlike
+    LibvirtBackend/HarvesterBackend, a cloud provider's own DHCP assigns networking — there is no
+    MAC-address concept to check, generate, resolve conflicts on, or persist to the lab
+    definition at all. The previous behaviour (each cloud backend calling the same
+    generate/validate/conflict-prompt/save machinery as LibvirtBackend, via
+    _check_or_generate_mac()) was real, pointless friction: it could even trigger an interactive
+    "regenerate this MAC?" TTY prompt and a definition-file save for a value that is never sent to
+    or read from any cloud provider. This just passes through whatever the JSON already had (or
+    "") — no generation, no conflict-checking, no definition mutation, no save. Returns (mymac,
+    None) — the None matches HarvesterBackend's own "network is libvirt-only, ignored here"
+    contract; no cloud backend's create_vm() reads its own `network` parameter.
+    """
+    return mymac or "", None
+
+
 def _check_or_generate_mac(mac_by_domain, vm_name, mymac, definition, bridge, vm_net_model):
     """
     Shared MAC generate/validate/conflict-resolution logic — every backend's
@@ -162,6 +199,31 @@ class VMBackend(object):
         raise NotImplementedError
 
     def create_vm(self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network, **kwargs):
+        """
+        Return value contract, added 2026-09-09 (found live-testing AWSBackend — see TODO): a
+        cloud backend (one whose real IP is only known after the provider's own DHCP assigns it —
+        Hetzner/AWS/GCP/Alibaba/Scaleway/UpCloud/OVHcloud/Exoscale) returns the real, reachable
+        IP address it just assigned, as a string, once the instance is confirmed running — polling
+        the provider's own API/CLI if the create call's own response doesn't already carry it.
+        LibvirtBackend/HarvesterBackend return None unchanged (the caller already has a correct,
+        static `myip` from the lab JSON for those — nothing to report back). setup_vm.py's
+        provision_vm() uses this return value, when not None, in place of the JSON's own `myip`
+        for DNS registration — see its own comments for why this order matters (a cloud node's
+        DNS entry cannot be written before the node exists and the provider has assigned it a
+        real address, unlike the static-IP libvirt/Harvester case).
+        """
+        raise NotImplementedError
+
+    def get_ip(self, vm_name):
+        """
+        Return the real IP address of an EXISTING instance named vm_name, or None if it doesn't
+        exist or (for LibvirtBackend/HarvesterBackend, which never call this) isn't implemented.
+        Added 2026-09-09 alongside create_vm()'s own return-IP contract above — used by
+        ensure_cloud_dns_vm() (backends.py) to find a previously-created cloud DNS VM's address
+        again on a later run, without recreating it. Only implemented by the cloud backends;
+        LibvirtBackend/HarvesterBackend raise NotImplementedError (they have no reason to be
+        called this way — their nodes' addresses are always the static, already-known `myip`).
+        """
         raise NotImplementedError
 
     def delete_vm(self, vm_name):
@@ -1470,14 +1532,22 @@ class HetznerBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_server(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring) — the
+        public_net.ipv4.ip field is confirmed against Hetzner's own published API docs. Returns
+        None if the server doesn't exist or has no public IPv4 assigned (e.g. an IPv4-less
+        server, or one still initializing)."""
+        server = self._find_server(vm_name)
+        if not server:
+            return None
+        return ((server.get("public_net") or {}).get("ipv4") or {}).get("ip") or None
+
     def list_used_macs(self):
         """Hetzner has no MAC-address concept at all — nothing to check a new one against."""
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        """Resolves/saves a mymac value for consistency with every other backend (see this
-        class's own docstring) — the result is never actually sent to or read from Hetzner."""
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)  # Hetzner assigns its own networking — see _cloud_no_mac()'s docstring
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         """Same intent as the other backends': True = keep, False = destroy and recreate. Checks
@@ -1578,6 +1648,18 @@ class HetznerBackend(VMBackend):
             log("  {}WARNING{}: requested {}G disk but server_type '{}' only includes {}G — "
                 "HetznerBackend does not attach extra Volumes to make up the difference".format(
                     _YELLOW, _RESET, vm_dsk_gb, server_type, disk_gb))
+
+        # Real, documented (NOT independently live-verified — see this class's own top-level
+        # docstring) contract: Hetzner's own create-server response already carries the new
+        # server's public IPv4 inline, unlike AWS's RunInstances (empty until a later poll) — no
+        # separate wait loop needed here. Falls back to a short get_ip() poll if the create
+        # response is ever missing it in practice (e.g. IPv4 still provisioning), rather than
+        # assuming the inline field is unconditionally present.
+        ip = ((server.get("public_net") or {}).get("ipv4") or {}).get("ip") or None
+        if not ip:
+            log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+            ip = _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
+        return ip
 
     def host_resources(self):
         """
@@ -1728,14 +1810,22 @@ class AWSBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """Real, live-verified 2026-09-09: prefers the public IP (reachable from outside the
+        VPC — this project's own SSH-based access model needs that), falls back to the private
+        IP if no public one is assigned (e.g. no AWS_SUBNET_ID with auto-assign-public-IP set).
+        Returns None if the instance doesn't exist yet or has no IP yet (still Pending)."""
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return None
+        return instance.get("PublicIpAddress") or instance.get("PrivateIpAddress") or None
+
     def list_used_macs(self):
         """EC2 has no customer-assignable MAC-address concept — nothing to check against."""
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        """Resolves/saves a mymac value for consistency with every other backend (see this
-        class's own docstring) — never actually sent to or read from AWS."""
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)  # EC2 assigns its own networking — see _cloud_no_mac()'s docstring
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         """Same intent as the other backends': True = keep, False = destroy and recreate."""
@@ -1843,6 +1933,13 @@ class AWSBackend(VMBackend):
             self._aws(*args)
         except RuntimeError as e:
             die(str(e))
+
+        # Real, live-verified 2026-09-09: RunInstances' own response does carry the instance, but
+        # its IP fields are empty at that instant (state is still "pending") — a short poll via
+        # get_ip()/describe-instances is genuinely needed, not just defensive. See create_vm()'s
+        # own return-value contract on VMBackend for why this return value matters.
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
 
     def host_resources(self):
         """
@@ -1969,15 +2066,30 @@ class GCPBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring) — the
+        networkInterfaces[].accessConfigs[].natIP field (the external/public IP) is confirmed
+        against GCE's own documented instance resource shape; falls back to the internal
+        networkIP if no external IP was assigned (e.g. no external-IP access config on the NIC).
+        Returns None if the instance doesn't exist or has no IP yet."""
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return None
+        nics = instance.get("networkInterfaces") or []
+        if not nics:
+            return None
+        access_configs = nics[0].get("accessConfigs") or []
+        if access_configs and access_configs[0].get("natIP"):
+            return access_configs[0]["natIP"]
+        return nics[0].get("networkIP") or None
+
     def list_used_macs(self):
         """GCE has no customer-assignable MAC-address concept on its standard VirtIO NIC —
         nothing to check a new one against."""
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        """Resolves/saves a mymac value for consistency with every other backend (see this
-        class's own docstring) — never actually sent to or read from GCP."""
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)  # GCE assigns its own networking — see _cloud_no_mac()'s docstring
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         """Same intent as the other backends': True = keep, False = destroy and recreate."""
@@ -2070,6 +2182,13 @@ class GCPBackend(VMBackend):
             self._gcloud(*args)
         except RuntimeError as e:
             die(str(e))
+
+        # GCE's own `instances create` is synchronous (the instance is RUNNING with a real IP by
+        # the time the command returns) — a short poll via get_ip() is still used, rather than
+        # trusting that unconditionally, matching AWSBackend's own defensive stance. NOT
+        # independently live-verified (see this class's own top-level docstring).
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
 
     def host_resources(self):
         """
@@ -2193,14 +2312,27 @@ class AlibabaBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring) — the
+        PublicIpAddress.IpAddress list (confirmed against Alibaba Cloud's own documented
+        DescribeInstances response shape) is preferred; falls back to the VPC private IP
+        (VpcAttributes.PrivateIpAddress.IpAddress) if no public IP was assigned. Returns None if
+        the instance doesn't exist or has no IP yet."""
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return None
+        public_ips = (instance.get("PublicIpAddress") or {}).get("IpAddress") or []
+        if public_ips:
+            return public_ips[0]
+        private_ips = ((instance.get("VpcAttributes") or {}).get("PrivateIpAddress") or {}).get("IpAddress") or []
+        return private_ips[0] if private_ips else None
+
     def list_used_macs(self):
         """ECS has no customer-assignable MAC-address concept — nothing to check against."""
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        """Resolves/saves a mymac value for consistency with every other backend (see this
-        class's own docstring) — never actually sent to or read from Alibaba Cloud."""
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)  # ECS assigns its own networking — see _cloud_no_mac()'s docstring
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         """Same intent as the other backends': True = keep, False = destroy and recreate."""
@@ -2295,6 +2427,12 @@ class AlibabaBackend(VMBackend):
             )
         except RuntimeError as e:
             die(str(e))
+
+        # RunInstances' own response is just an InstanceIdSets list, no IP — a get_ip() poll (via
+        # a fresh DescribeInstances) is genuinely needed here, not just defensive. NOT
+        # independently live-verified (see this class's own top-level docstring).
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
 
     def host_resources(self):
         """
@@ -2400,11 +2538,21 @@ class ScalewayBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_server(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring) — the
+        public_ip.address field is Scaleway's own long-documented server-resource shape. Returns
+        None if the server doesn't exist or has no public IP assigned yet (e.g. still booting, or
+        a private-network-only server)."""
+        server = self._find_server(vm_name)
+        if not server:
+            return None
+        return (server.get("public_ip") or {}).get("address") or None
+
     def list_used_macs(self):
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         server = self._find_server(vm_name)
@@ -2511,6 +2659,12 @@ class ScalewayBackend(VMBackend):
         except RuntimeError as e:
             die(str(e))
 
+        # A public IP is generally not yet assigned/reported until the poweron actually
+        # completes — a get_ip() poll is genuinely needed here, not just defensive. NOT
+        # independently live-verified (see this class's own top-level docstring).
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
+
     def host_resources(self):
         return 9999, 999999, 999999
 
@@ -2610,11 +2764,27 @@ class UpCloudBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_server(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring) — the
+        server resource's ip_addresses.ip_address list, filtered for access="public", is
+        UpCloud's own documented shape; falls back to the first "private" address if no public
+        one is present (e.g. a server on a private-network-only plan). Returns None if the
+        server doesn't exist or has no IP addresses reported yet."""
+        server = self._find_server(vm_name)
+        if not server:
+            return None
+        addrs = ((server.get("ip_addresses") or {}).get("ip_address")) or []
+        public = next((a["address"] for a in addrs if a.get("access") == "public" and a.get("address")), None)
+        if public:
+            return public
+        private = next((a["address"] for a in addrs if a.get("address")), None)
+        return private
+
     def list_used_macs(self):
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         server = self._find_server(vm_name)
@@ -2708,6 +2878,13 @@ class UpCloudBackend(VMBackend):
             self._api("POST", "/server", body)
         except RuntimeError as e:
             die(str(e))
+
+        # UpCloud's own create-server response does carry the assigned IP addresses inline in
+        # practice, but a get_ip() poll is used regardless rather than parsing that response
+        # shape separately — matches AWSBackend's own defensive stance, and this class's own
+        # top-level docstring already flags UpCloud specifics as its weakest-verified area.
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
 
     def host_resources(self):
         return 9999, 999999, 999999
@@ -2855,11 +3032,28 @@ class OVHcloudBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring, which
+        already flags this whole backend as the least-verified in the file) — the instance
+        resource's ipAddresses list, each entry shaped {"ip":..., "type": "public"/"private",
+        "version": 4}, is OVHcloud's own documented Public Cloud instance shape; prefers an IPv4
+        public address, falls back to any private one. Returns None if the instance doesn't
+        exist or has no IP yet."""
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return None
+        addrs = instance.get("ipAddresses") or []
+        public = next((a["ip"] for a in addrs if a.get("type") == "public" and a.get("version") == 4), None)
+        if public:
+            return public
+        private = next((a["ip"] for a in addrs if a.get("ip")), None)
+        return private
+
     def list_used_macs(self):
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         instance = self._find_instance(vm_name)
@@ -2943,6 +3137,12 @@ class OVHcloudBackend(VMBackend):
             self._api("POST", "/cloud/project/{}/instance".format(self.service_name), body)
         except RuntimeError as e:
             die(str(e))
+
+        # An instance's own ipAddresses are not populated until well after BUILDING completes —
+        # a get_ip() poll is genuinely needed. NOT independently live-verified (see this class's
+        # own top-level docstring, already the least-verified backend in this file).
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
 
     def host_resources(self):
         return 9999, 999999, 999999
@@ -3047,11 +3247,21 @@ class ExoscaleBackend(VMBackend):
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
 
+    def get_ip(self, vm_name):
+        """NOT independently live-verified (see this class's own top-level docstring) — the
+        instance-list entry's own "public-ip" field is `exo`'s own current CLI JSON output
+        convention. Returns None if the instance doesn't exist or has no public IP yet (e.g. a
+        private-network-only instance, or still starting)."""
+        instance = self._find_instance(vm_name)
+        if not instance:
+            return None
+        return instance.get("public-ip") or None
+
     def list_used_macs(self):
         return [], {}
 
     def check_or_generate_mac(self, vm_name, mymac, definition, bridge="br0", vm_net_model="virtio"):
-        return _check_or_generate_mac({}, vm_name, mymac, definition, bridge, vm_net_model)
+        return _cloud_no_mac(mymac)
 
     def vm_is_reusable(self, vm_name, mymac, myip):
         instance = self._find_instance(vm_name)
@@ -3138,6 +3348,13 @@ class ExoscaleBackend(VMBackend):
         except RuntimeError as e:
             die(str(e))
 
+        # `exo compute instance create` is synchronous but a get_ip() poll is used regardless
+        # rather than parsing its own create-command output separately — matches AWSBackend's
+        # own defensive stance. NOT independently live-verified (see this class's own top-level
+        # docstring).
+        log("Waiting for '{}' to be assigned a real IP address".format(vm_name))
+        return _poll_for_ip(lambda: self.get_ip(vm_name), vm_name)
+
     def host_resources(self):
         return 9999, 999999, 999999
 
@@ -3154,6 +3371,139 @@ BACKENDS = {
     "ovhcloud": OVHcloudBackend,
     "exoscale": ExoscaleBackend,
 }
+
+
+# Every non-libvirt, non-Harvester backend: dynamic-IP, no-MAC-concept cloud providers. Used to
+# decide whether a node needs the cloud-DNS-VM treatment in setup_vm.py's provision_vm().
+CLOUD_BACKEND_NAMES = frozenset(BACKENDS) - {"libvirt", "harvester"}
+
+
+def _cloud_dns_vm_user_data(root_ssh_key, mydomain):
+    """
+    Minimal cloud-init for the cloud DNS VM created by ensure_cloud_dns_vm() below. Installs BIND
+    and configures it to serve `mydomain` from the SAME on-disk path/convention this project's
+    existing DNSService (libs/services.py) already assumes for automation.mydemo.lab
+    (NAMED_ZONE_DIR = /var/lib/named, `systemctl restart named`) — so add_to_dns()'s existing
+    remote_dns_servers mechanism (already SSH-appending a line to a zone file and restarting named
+    on any listed server, unmodified since it was built for automation.mydemo.lab's own SUSE/BIND
+    setup) works against this VM with zero new DNS-propagation code.
+
+    Two real, deliberate compatibility shims, since the actual cloud AMI is very likely Ubuntu/
+    Debian, not SUSE (matches this project's own Compute-backends docs — ISO_IMAGE for a cloud
+    backend is a real provider AMI/image, operator-supplied, not assumed to be SUSE):
+      - Debian/Ubuntu's bind9 package expects zone files under /etc/bind or /var/cache/bind, not
+        /var/lib/named — /var/lib/named is created explicitly and named.conf.local points its zone
+        there instead, rather than porting DNSService's own hardcoded path.
+      - Debian/Ubuntu's systemd unit is bind9.service, not named.service — a `named.service` alias
+        symlink is created so the existing unmodified `systemctl restart named` calls actually
+        reach it.
+    NOT live-tested independently of the AWS live-testing session this was written during — see
+    TODO for the current verification status of the whole ensure_cloud_dns_vm() mechanism.
+    """
+    def yq(s):
+        """YAML single-quoted scalar: wrap in '...', doubling any literal ' per YAML's own
+        escaping rule (YAML single-quoted strings don't support backslash escapes at all)."""
+        return "'" + s.replace("'", "''") + "'"
+
+    zone_lines = [
+        "$TTL 300",
+        "@ IN SOA ns.{d}. admin.{d}. ( 1 3600 900 604800 300 )".format(d=mydomain),
+        "@ IN NS ns.{d}.".format(d=mydomain),
+        "ns IN A 127.0.0.1",
+    ]
+    zone_printf_args = " ".join("'{}'".format(line) for line in zone_lines)
+    named_conf_line = (
+        'zone "{d}" {{ type master; file "/var/lib/named/{d}.lan"; allow-update {{ none; }}; }};'
+    ).format(d=mydomain)
+
+    # Deliberately one shell command per list item, run entirely via `runcmd` (which cloud-init
+    # runs LAST, after `packages` has actually installed bind9) rather than cloud-config's
+    # `write_files` module — write_files runs in cloud-init's early init stage, BEFORE packages
+    # install, so a `bind:bind` chown or a write into /var/lib/named (which doesn't exist yet on
+    # a stock Debian/Ubuntu image — see this function's own docstring) would silently fail there.
+    commands = [
+        "mkdir -p /var/lib/named",
+        "printf '%s\\n' {args} > /var/lib/named/{d}.lan".format(args=zone_printf_args, d=mydomain),
+        "printf '%s\\n' {conf} > /etc/bind/named.conf.local".format(conf="'{}'".format(named_conf_line)),
+        "chown -R bind:bind /var/lib/named",
+        "chmod 0755 /var/lib/named",
+        "ln -sf /lib/systemd/system/bind9.service /etc/systemd/system/named.service",
+        "systemctl daemon-reload",
+        "systemctl enable --now named",
+    ]
+    runcmd_block = "\n".join("  - {}".format(yq(cmd)) for cmd in commands)
+
+    return (
+        "#cloud-config\n"
+        "package_update: true\n"
+        "packages:\n"
+        "  - bind9\n"
+        "ssh_authorized_keys:\n"
+        "  - {key}\n"
+        "runcmd:\n"
+        "{runcmd_block}\n"
+    ).format(key=root_ssh_key.strip(), runcmd_block=runcmd_block)
+
+
+def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image, lab_setup_path):
+    """
+    Idempotently ensures a small, cheap DNS-serving VM exists for this cloud backend (one per
+    backend — e.g. "lab-dns-aws" — reused across every lab/run that uses that same backend, not
+    per-lab), and returns its real IP. Added 2026-09-09, alongside create_vm()'s own real-IP
+    return contract, after a user request: cloud nodes generally cannot reach
+    automation.mydemo.lab's own BIND server at all (it sits behind the home-lab's own NAT/router,
+    not internet-reachable) — a real multi-node cloud cluster needs its OWN DNS server, living
+    inside that same cloud network, for its nodes to resolve each other. See setup_vm.py's
+    provision_vm() for how this plugs into add_to_dns()'s existing remote_dns_servers mechanism.
+
+    Genuinely NOT yet implemented (a known, real gap, not silently glossed over): a freshly
+    created cloud node does not automatically point its own DNS resolution (/etc/resolv.conf, or
+    the cloud provider's own VPC-level DHCP option set) at this DNS VM — so today, this VM holds
+    correct, queryable records (reachable from automation.mydemo.lab, which the operator or
+    check_ssh_conn() can reach), but a *second* cloud node in the same lab cannot yet resolve a
+    *first* one by hostname without that additional wiring. Real multi-node cloud clusters need
+    that follow-up before they can rely on hostname resolution between their own nodes.
+
+    Reuse/creation: looks up the fixed name "lab-dns-<backend_name>" via the backend's own
+    vm_exists()/get_ip() (same idempotent-reuse convention as every other node in this project);
+    creates it via the SAME backend's own create_vm() otherwise, using the smallest instance/plan
+    size available (1 vCPU / 512 MiB is intentionally tiny — BIND's own footprint is minimal) and
+    the SAME ISO_IMAGE the calling lab already configured (no new required config key). Uses
+    `iso_loc`/`vm_img_loc` values from the caller only insofar as copy_vm_image() needs them —
+    irrelevant for every cloud backend (a no-op validation call, per each one's own docstring).
+
+    NOT live-tested independently — being exercised for the first time as part of AWSBackend's own
+    live test, 2026-09-09; see TODO for the current, honest verification status.
+    """
+    dns_vm_name = "lab-dns-{}".format(backend_name)
+
+    if backend.vm_exists(dns_vm_name):
+        ip = backend.get_ip(dns_vm_name)
+        if ip:
+            log("- Reusing existing cloud DNS VM \"{}{}{}\" ({})".format(_RED, dns_vm_name, _RESET, ip))
+            return ip
+        die("cloud DNS VM '{}' exists on backend '{}' but reported no IP — check it manually "
+            "before retrying".format(dns_vm_name, backend_name))
+
+    log("- No cloud DNS VM found for backend \"{}{}{}\" — creating \"{}{}{}\"".format(
+        _RED, backend_name, _RESET, _RED, dns_vm_name, _RESET))
+
+    base = Path(lab_setup_path) / "cloud-init"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "{}_user-data".format(dns_vm_name)).write_text(
+        _cloud_dns_vm_user_data(root_ssh_key, mydomain))
+
+    backend.copy_vm_image(iso_image, dns_vm_name, 8, config_method="cloud-init")
+    backend.push_provisioning_files(dns_vm_name, config_method="cloud-init")
+    ip = backend.create_vm(
+        dns_vm_name, 1, 512, 8, None,
+        config_method="cloud-init", iso_image=iso_image, mymac=None,
+    )
+    if not ip:
+        die("cloud DNS VM '{}' was created on backend '{}' but create_vm() reported no IP — "
+            "cannot continue".format(dns_vm_name, backend_name))
+    log("- Cloud DNS VM \"{}{}{}\" ready at {}".format(_RED, dns_vm_name, _RESET, ip))
+    return ip
 
 
 def get_backend(definition, config, vm_name, for_existing=False, vm_img_loc=None,

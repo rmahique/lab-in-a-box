@@ -127,10 +127,13 @@ def provision_vm(definition, config, defaults, vm_name):
 
     backend.push_provisioning_files(vm_name, config_method=config_method, vm_img_loc=vm_img_loc)
 
-    add_to_dns(vm_name, env.get("myip", ""), env.get("mydomain", ""), env.get("mynet_reverse", ""),
-               remote_dns_servers=env.get("REMOTE_DNS_SERVERS", "").split() or None)
-
-    backend.create_vm(
+    # DNS registration moved to AFTER create_vm(), 2026-09-09 (found live-testing AWSBackend — see
+    # TODO): a cloud backend's real IP is only known once the provider assigns it, not from the
+    # lab JSON's own (for a cloud node, deliberately empty — see README) `myip` field the way
+    # libvirt/Harvester's is. create_vm()'s return value (see VMBackend.create_vm()'s own
+    # docstring) reports that real IP for cloud backends; libvirt/Harvester return None and env's
+    # already-known static myip is used unchanged, exactly as before this change.
+    created_ip = backend.create_vm(
         vm_name,
         env.get("VM_CPU", ""), env.get("VM_MEM", ""), env.get("VM_DSK", ""),
         network,
@@ -148,6 +151,30 @@ def provision_vm(definition, config, defaults, vm_name):
         mymac=mymac,
         vm_machine=env.get("VM_MACHINE", ""),
     )
+    if created_ip:
+        env["myip"] = created_ip
+
+    common_cfg = definition.get("common", {}) or {}
+    backend_name = node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
+
+    remote_dns_servers = env.get("REMOTE_DNS_SERVERS", "").split()
+    if backend_name in backends.CLOUD_BACKEND_NAMES:
+        # A cloud node generally can't reach automation.mydemo.lab's own BIND (behind the home
+        # lab's NAT) — a real multi-node cloud cluster needs a DNS server living inside that same
+        # cloud network to resolve its own nodes. See ensure_cloud_dns_vm()'s own docstring for
+        # exactly what this does and does not yet cover (nodes don't yet point their own
+        # resolution at it — a known, separately tracked follow-up, not silently glossed over).
+        dns_vm_ip = backends.ensure_cloud_dns_vm(
+            backend, backend_name, Path("/root/.ssh/id_rsa.pub").read_text().strip(),
+            env.get("mydomain", ""), env.get("ISO_IMAGE", ""), lab_setup_path,
+        )
+        remote_dns_servers.append(dns_vm_ip)
+
+    if env.get("myip"):
+        add_to_dns(vm_name, env["myip"], env.get("mydomain", ""), env.get("mynet_reverse", ""),
+                   remote_dns_servers=remote_dns_servers or None)
+    else:
+        warn("- No myip known for \"{}\" — backend never reported one — skipping DNS registration".format(vm_name))
 
     clean_ssh_keys(vm_name, env.get("myip", ""))
 

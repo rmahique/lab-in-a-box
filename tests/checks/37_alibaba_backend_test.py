@@ -100,8 +100,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on ECS ─────
 check("list_used_macs() returns empty (ECS has no MAC concept this backend uses)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to Alibaba Cloud)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to Alibaba Cloud)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_instance_type(): smallest SKU that satisfies both cores and memory ─
@@ -134,6 +139,22 @@ with mock.patch.object(backends.subprocess, "run", return_value=_describe_none):
     check("vm_exists() returns False when DescribeInstances lists nothing", backend.vm_exists("vm1") is False)
 
 
+# ── get_ip(): PublicIpAddress preferred, VPC PrivateIpAddress fallback ─────
+_with_public_ip = _cp(0, stdout=json.dumps({"Instances": {"Instance": [
+    {"InstanceId": "i-1", "PublicIpAddress": {"IpAddress": ["203.0.113.31"]}}]}}))
+_private_only_ip = _cp(0, stdout=json.dumps({"Instances": {"Instance": [
+    {"InstanceId": "i-1", "PublicIpAddress": {"IpAddress": []},
+     "VpcAttributes": {"PrivateIpAddress": {"IpAddress": ["10.0.0.8"]}}}]}}))
+
+with mock.patch.object(backends.subprocess, "run", return_value=_with_public_ip):
+    check("get_ip() prefers the public IP when assigned", backend.get_ip("vm1") == "203.0.113.31")
+with mock.patch.object(backends.subprocess, "run", return_value=_private_only_ip):
+    check("get_ip() falls back to the VPC private IP when no public one is assigned",
+          backend.get_ip("vm1") == "10.0.0.8")
+with mock.patch.object(backends.subprocess, "run", return_value=_describe_none):
+    check("get_ip() returns None when the instance doesn't exist", backend.get_ip("vm1") is None)
+
+
 # ── delete_vm(): idempotent when the instance is already gone ─────────────
 with mock.patch.object(backends.subprocess, "run", return_value=_describe_none) as m_run:
     backend.delete_vm("vm1")  # must not raise/die
@@ -149,12 +170,19 @@ calls = []
 
 def _fake_run(args, **kwargs):
     calls.append(args)
+    if "DescribeInstances" in args:
+        # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+        # PublicIpAddress here so the poll succeeds on its first check, not a 180s timeout.
+        return _cp(0, stdout=json.dumps({"Instances": {"Instance": [
+            {"InstanceId": "i-new", "PublicIpAddress": {"IpAddress": ["203.0.113.30"]}}]}}))
     return _cp(0, stdout="")
 
 
 with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
-    b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="m-0123456789")
+    returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="m-0123456789")
 
+check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+      "contract)", returned_ip == "203.0.113.30")
 run_call = next(c for c in calls if "RunInstances" in c)
 check("create_vm() sends the real ImageId", "m-0123456789" in run_call)
 check("create_vm() picks a real InstanceType", "ecs.g6.large" in run_call)

@@ -160,8 +160,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on OVHcloud ─
 check("list_used_macs() returns empty (OVHcloud has no MAC concept)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to OVHcloud)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to OVHcloud)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_flavor(): no static table — a real flavor-list call, smallest match ─
@@ -212,13 +217,23 @@ with mock.patch.object(backend, "_api", return_value=[]) as m_api:
 b3 = backends.OVHcloudBackend("appkey", "appsecret", "consumerkey", "proj-1", "GRA7")
 b3._user_data_by_vm["vm1"] = "#cloud-config\n"
 
+def _fake_api(method, path, body=None):
+    if method == "POST":
+        return {"id": "i-1"}
+    # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+    # public IPv4 here so the poll succeeds on its first check, not a 180s timeout.
+    return [{"id": "i-1", "name": "vm1", "ipAddresses": [{"ip": "203.0.113.60", "type": "public", "version": 4}]}]
+
+
 with mock.patch.object(b3, "_pick_flavor", return_value="flavor-medium") as m_pick:
-    with mock.patch.object(b3, "_api", return_value={"id": "i-1"}) as m_api:
-        b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="img-uuid")
+    with mock.patch.object(b3, "_api", side_effect=_fake_api) as m_api:
+        returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="img-uuid")
+    check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+          "contract)", returned_ip == "203.0.113.60")
     check("create_vm() sizes via _pick_flavor(), not a static table", m_pick.called)
-    create_call = m_api.call_args
+    create_call = next(c for c in m_api.call_args_list if c[0][0] == "POST")
     check("create_vm() POSTs to the real instance-create endpoint",
-          create_call[0][0] == "POST" and "proj-1/instance" in create_call[0][1])
+          "proj-1/instance" in create_call[0][1])
     body = create_call[0][2]
     check("create_vm() sends the real imageId", body.get("imageId") == "img-uuid")
     check("create_vm() sends the picked flavorId", body.get("flavorId") == "flavor-medium")

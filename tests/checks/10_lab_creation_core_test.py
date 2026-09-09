@@ -463,6 +463,36 @@ check("validate_lab_definition: common.backend=harvester (no per-node override) 
       lc.validate_lab_definition(harvester_via_common, single_host_cfg, "/iso", "/lab") is True)
 
 
+# ── a cloud-backend node's myip is deliberately empty — not a missing-field error ──
+# Added 2026-09-09 alongside create_vm()'s own real-IP return contract (see TODO): a cloud
+# node's real IP is only known once the provider assigns it at create time, so myip is left
+# empty in the JSON by design, not a mistake. libvirt/Harvester nodes are unaffected — they still
+# require myip exactly as before (the "baseline" tests above already cover that).
+lc.subprocess.run = img_check_ok
+cloud_no_myip = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"backend": "aws", "config_method": "virt_customize"}},
+})
+check("validate_lab_definition: an aws-backend node with no myip at all still passes preflight",
+      lc.validate_lab_definition(cloud_no_myip, single_host_cfg, "/iso", "/lab") is True)
+
+lc.subprocess.run = img_check_ok
+cloud_no_myip_via_common = _lab_def({
+    "common": dict(base_common, backend="hetzner"),
+    "nodes": {"vm1": {"config_method": "virt_customize"}},
+})
+check("validate_lab_definition: common.backend=hetzner (no per-node override) also skips the "
+      "myip requirement", lc.validate_lab_definition(cloud_no_myip_via_common, single_host_cfg, "/iso", "/lab") is True)
+
+lc.subprocess.run = img_check_ok
+libvirt_no_myip = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"config_method": "virt_customize"}},
+})
+check("validate_lab_definition: a plain libvirt node with no myip still fails (baseline, unaffected)",
+      lc.validate_lab_definition(libvirt_no_myip, single_host_cfg, "/iso", "/lab") is False)
+
+
 # ── common.ISO_IMAGE only required when a node lacks its own override ───────
 # Regression test for a real bug reported live 2026-09-01: a lab where every
 # node pins its own ISO_IMAGE never needs a common default at all, but

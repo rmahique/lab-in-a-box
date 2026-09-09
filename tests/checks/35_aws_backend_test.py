@@ -131,8 +131,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on EC2 ─────
 check("list_used_macs() returns empty (EC2 has no MAC concept this backend uses)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to AWS)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to AWS)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── _pick_instance_type(): smallest SKU that satisfies both cores and memory ─
@@ -164,6 +169,25 @@ with mock.patch.object(backends.subprocess, "run", return_value=_describe_none):
     check("vm_exists() returns False when describe-instances lists nothing", backend.vm_exists("vm1") is False)
 
 
+# ── get_ip(): prefers PublicIpAddress, falls back to PrivateIpAddress, None if unassigned ──
+_with_public = _cp(0, stdout=json.dumps({"Reservations": [{"Instances": [
+    {"InstanceId": "i-1", "PublicIpAddress": "203.0.113.10", "PrivateIpAddress": "10.0.0.5"}]}]}))
+_private_only = _cp(0, stdout=json.dumps({"Reservations": [{"Instances": [
+    {"InstanceId": "i-1", "PrivateIpAddress": "10.0.0.5"}]}]}))
+_no_ip_yet = _cp(0, stdout=json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-1"}]}]}))
+
+with mock.patch.object(backends.subprocess, "run", return_value=_with_public):
+    check("get_ip() prefers the public IP when both are assigned", backend.get_ip("vm1") == "203.0.113.10")
+with mock.patch.object(backends.subprocess, "run", return_value=_private_only):
+    check("get_ip() falls back to the private IP when no public one is assigned",
+          backend.get_ip("vm1") == "10.0.0.5")
+with mock.patch.object(backends.subprocess, "run", return_value=_no_ip_yet):
+    check("get_ip() returns None while the instance has no IP yet (still Pending)",
+          backend.get_ip("vm1") is None)
+with mock.patch.object(backends.subprocess, "run", return_value=_describe_none):
+    check("get_ip() returns None when the instance doesn't exist at all", backend.get_ip("vm1") is None)
+
+
 # ── delete_vm(): idempotent when the instance is already gone ─────────────
 with mock.patch.object(backends.subprocess, "run", return_value=_describe_none) as m_run:
     backend.delete_vm("vm1")  # must not raise/die
@@ -181,11 +205,22 @@ def _fake_run(args, **kwargs):
     calls.append(args)
     if "describe-images" in args:
         return _cp(0, stdout=json.dumps({"Images": [{"RootDeviceName": "/dev/sda1"}]}))
-    return _cp(0, stdout=json.dumps({"Instances": [{"InstanceId": "i-new"}]}))
+    if "describe-instances" in args:
+        # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+        # PublicIpAddress here so the poll succeeds on its first check, not a 180s timeout.
+        return _cp(0, stdout=json.dumps(
+            {"Reservations": [{"Instances": [{"InstanceId": "i-new", "PublicIpAddress": "203.0.113.10"}]}]}))
+    if "run-instances" in args:
+        return _cp(0, stdout=json.dumps({"Instances": [{"InstanceId": "i-new"}]}))
+    return _cp(0, stdout="")
 
 
 with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
-    b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="ami-0123456789abcdef0")
+    returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init",
+                                iso_image="ami-0123456789abcdef0")
+
+check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+      "contract — see VMBackend.create_vm()'s own docstring)", returned_ip == "203.0.113.10")
 
 run_instances_call = next(c for c in calls if "run-instances" in c)
 check("create_vm() looks up the AMI's real root device name before building block-device-mappings",

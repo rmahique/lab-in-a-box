@@ -52,10 +52,36 @@ def destroy_vm(definition, config, defaults, vm_name):
     env.update(config)
     env.update(load_vm_vars(definition, vm_name))
 
-    del_from_dns(
-        vm_name, env.get("myip", ""), env.get("mydomain", ""), env.get("mynet_reverse", ""),
-        remote_dns_servers=env.get("REMOTE_DNS_SERVERS", "").split() or None,
-    )
+    # A cloud node's lab JSON deliberately has no myip (see README) — its real IP is only ever
+    # known live, from the backend itself. Must be resolved HERE, before delete_vm() below removes
+    # the instance and makes get_ip() unable to find it — otherwise del_from_dns() would try to
+    # remove a record built from an empty IP, matching nothing, leaving the real entry (registered
+    # with the real IP at create time) permanently orphaned in both the local zone and the cloud
+    # DNS VM. Found alongside create_vm()'s own real-IP return contract, 2026-09-09 — see TODO.
+    common_cfg = definition.get("common", {}) or {}
+    backend_name = node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
+    myip = env.get("myip", "")
+    remote_dns_servers = env.get("REMOTE_DNS_SERVERS", "").split()
+    if backend_name in backends.CLOUD_BACKEND_NAMES:
+        if not myip:
+            myip = backend.get_ip(vm_name) or ""
+        # Best-effort: the DNS VM itself (see ensure_cloud_dns_vm()) is a shared, persistent
+        # resource, never created here — only looked up, and skipped if it doesn't exist (nothing
+        # to clean an entry off of).
+        dns_vm_name = "lab-dns-{}".format(backend_name)
+        if backend.vm_exists(dns_vm_name):
+            dns_vm_ip = backend.get_ip(dns_vm_name)
+            if dns_vm_ip:
+                remote_dns_servers.append(dns_vm_ip)
+
+    if myip:
+        del_from_dns(
+            vm_name, myip, env.get("mydomain", ""), env.get("mynet_reverse", ""),
+            remote_dns_servers=remote_dns_servers or None,
+        )
+    else:
+        warn("- No myip known for \"{}\" — skipping DNS cleanup".format(vm_name))
+
     backend.delete_vm(vm_name)
     print('#\t\tVM "{}" destroyed\n'.format(vm_name))
 

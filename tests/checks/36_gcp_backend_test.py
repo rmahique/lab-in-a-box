@@ -125,8 +125,13 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 # ── list_used_macs() / check_or_generate_mac(): no MAC concept on GCE ─────
 check("list_used_macs() returns empty (GCE has no MAC concept this backend uses)",
       backend.list_used_macs() == ([], {}))
+# _cloud_no_mac(): dropped 2026-09-09 — no MAC concept, no generation, pure passthrough
 mymac, network = backend.check_or_generate_mac("vm1", "", {"nodes": {"vm1": {}}})
-check("check_or_generate_mac() still generates SOME mac value (never sends it to GCP)", bool(mymac))
+check("check_or_generate_mac() does NOT generate a MAC when none was given (nothing to generate for)",
+      mymac == "" and network is None)
+mymac, network = backend.check_or_generate_mac("vm1", "aa:bb:cc:dd:ee:ff", {"nodes": {"vm1": {}}})
+check("check_or_generate_mac() passes an existing mymac through unchanged (never sent to GCP)",
+      mymac == "aa:bb:cc:dd:ee:ff" and network is None)
 
 
 # ── vm_exists() / _find_instance(): instances list --filter=name=<vm> ─────
@@ -138,6 +143,25 @@ with mock.patch.object(backends.subprocess, "run",
 
 with mock.patch.object(backends.subprocess, "run", return_value=_cp(0, stdout=json.dumps([]))):
     check("vm_exists() returns False when gcloud lists nothing", backend.vm_exists("vm1") is False)
+
+
+# ── get_ip(): natIP preferred, networkIP fallback, None if unassigned/nonexistent ──
+_with_nat = _cp(0, stdout=json.dumps([{"name": "vm1", "networkInterfaces": [
+    {"accessConfigs": [{"natIP": "203.0.113.21"}], "networkIP": "10.0.0.7"}]}]))
+_internal_only = _cp(0, stdout=json.dumps([{"name": "vm1", "networkInterfaces": [
+    {"accessConfigs": [], "networkIP": "10.0.0.7"}]}]))
+_no_nics = _cp(0, stdout=json.dumps([{"name": "vm1", "networkInterfaces": []}]))
+
+with mock.patch.object(backends.subprocess, "run", return_value=_with_nat):
+    check("get_ip() prefers the external natIP when assigned", backend.get_ip("vm1") == "203.0.113.21")
+with mock.patch.object(backends.subprocess, "run", return_value=_internal_only):
+    check("get_ip() falls back to the internal networkIP when no accessConfig is present",
+          backend.get_ip("vm1") == "10.0.0.7")
+with mock.patch.object(backends.subprocess, "run", return_value=_no_nics):
+    check("get_ip() returns None when the instance has no network interfaces yet",
+          backend.get_ip("vm1") is None)
+with mock.patch.object(backends.subprocess, "run", return_value=_cp(0, stdout=json.dumps([]))):
+    check("get_ip() returns None when the instance doesn't exist", backend.get_ip("vm1") is None)
 
 
 # ── delete_vm(): idempotent when the instance is already gone ─────────────
@@ -158,11 +182,20 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
 
     def _fake_run(args, **kwargs):
         calls.append(args)
+        if "list" in args:
+            # Serves get_ip()'s post-create poll (create_vm() calls it via _poll_for_ip) — a real
+            # natIP here so the poll succeeds on its first check, not a 180s timeout.
+            return _cp(0, stdout=json.dumps([{
+                "name": "vm1",
+                "networkInterfaces": [{"accessConfigs": [{"natIP": "203.0.113.20"}], "networkIP": "10.0.0.6"}],
+            }]))
         return _cp(0, stdout="")
 
     with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
-        b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="debian-12")
+        returned_ip = b3.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="debian-12")
 
+    check("create_vm() returns the real IP once the instance is confirmed running (2026-09-09 "
+          "contract)", returned_ip == "203.0.113.20")
     create_call = next(c for c in calls if "create" in c)
     check("create_vm() builds a genuine custom machine type from vm_cpu/vm_mem",
           "e2-custom-2-4096" in create_call)
