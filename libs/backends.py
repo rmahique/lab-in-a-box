@@ -1601,7 +1601,11 @@ class AWSBackend(VMBackend):
     already-documented way most operators already have credentials configured for. Auth: either
     `AWS_PROFILE` (a named profile from `~/.aws/config`) or `AWS_ACCESS_KEY_ID`+
     `AWS_SECRET_ACCESS_KEY` (passed as env vars to the `aws` subprocess only, never written to
-    disk) — both in `/etc/lab_creation.cfg`. `AWS_REGION` is required either way.
+    disk) — both in `/etc/lab_creation.cfg`. `AWS_REGION` is required either way. `AWS_SESSION_TOKEN`
+    is optional and required in practice for any temporary/STS-issued credential (an `AWS_ACCESS_KEY_ID`
+    starting with `ASIA` rather than `AKIA` — SSO/IAM-Identity-Center or an assumed role) — a real,
+    confirmed-live gap, found and fixed 2026-09-09: `AWS_ACCESS_KEY_ID`+`AWS_SECRET_ACCESS_KEY` alone
+    are meaningless for that credential type without their paired session token.
 
     Real, documented mismatches with this project's KVM-shaped assumptions (same stance as
     HetznerBackend/HarvesterBackend — operator pre-configures the cloud-native prerequisite,
@@ -1638,12 +1642,13 @@ class AWSBackend(VMBackend):
         ("t3.medium", 2, 4), ("t3.large", 2, 8), ("t3.xlarge", 4, 16), ("t3.2xlarge", 8, 32),
     ]
 
-    def __init__(self, region, profile=None, access_key=None, secret_key=None, subnet_id=None,
-                 security_group_id=None, key_name=None, vm_img_loc=None, lab_setup_path=None):
+    def __init__(self, region, profile=None, access_key=None, secret_key=None, session_token=None,
+                 subnet_id=None, security_group_id=None, key_name=None, vm_img_loc=None, lab_setup_path=None):
         self.region = region
         self.profile = profile
         self.access_key = access_key
         self.secret_key = secret_key
+        self.session_token = session_token
         self.subnet_id = subnet_id
         self.security_group_id = security_group_id
         self.key_name = key_name
@@ -1660,10 +1665,16 @@ class AWSBackend(VMBackend):
         profile = config.get("AWS_PROFILE")
         access_key = config.get("AWS_ACCESS_KEY_ID")
         secret_key = config.get("AWS_SECRET_ACCESS_KEY")
+        session_token = config.get("AWS_SESSION_TOKEN")
         if not profile and not (access_key and secret_key):
             die("backend 'aws' requires either AWS_PROFILE, or both AWS_ACCESS_KEY_ID and "
                 "AWS_SECRET_ACCESS_KEY, in /etc/lab_creation.cfg (VM '{}')".format(vm_name))
+        if access_key and access_key.startswith("ASIA") and not session_token:
+            die("backend 'aws': AWS_ACCESS_KEY_ID '{}' is a temporary/STS credential (starts with "
+                "'ASIA') but no AWS_SESSION_TOKEN is set in /etc/lab_creation.cfg — it will be "
+                "rejected without its paired session token (VM '{}')".format(access_key, vm_name))
         return cls(region, profile=profile, access_key=access_key, secret_key=secret_key,
+                   session_token=session_token,
                    subnet_id=config.get("AWS_SUBNET_ID"), security_group_id=config.get("AWS_SECURITY_GROUP_ID"),
                    key_name=config.get("AWS_KEY_NAME"), vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
@@ -1679,6 +1690,8 @@ class AWSBackend(VMBackend):
             env["AWS_ACCESS_KEY_ID"] = self.access_key
         if self.secret_key:
             env["AWS_SECRET_ACCESS_KEY"] = self.secret_key
+        if self.session_token:
+            env["AWS_SESSION_TOKEN"] = self.session_token
         cmd = ["aws", "--region", self.region, "--output", "json"] + list(args)
         result = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  universal_newlines=True)

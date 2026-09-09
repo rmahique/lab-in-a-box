@@ -60,6 +60,27 @@ resolved = backends.AWSBackend.resolve(
     False)
 check("resolve() accepts an access/secret key pair without a profile", resolved.access_key == "AKIA...")
 
+# ── resolve(): a temporary/STS ("ASIA...") access key requires AWS_SESSION_TOKEN ──
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        backends.AWSBackend.resolve(
+            {}, "vm1",
+            {"AWS_REGION": "eu-central-1", "AWS_ACCESS_KEY_ID": "ASIA...", "AWS_SECRET_ACCESS_KEY": "secret"},
+            False)
+    except SystemExit:
+        pass
+check("resolve() dies on an ASIA-prefixed key with no AWS_SESSION_TOKEN",
+      any("AWS_SESSION_TOKEN" in m for m in died))
+
+resolved = backends.AWSBackend.resolve(
+    {}, "vm1",
+    {"AWS_REGION": "eu-central-1", "AWS_ACCESS_KEY_ID": "ASIA...", "AWS_SECRET_ACCESS_KEY": "secret",
+     "AWS_SESSION_TOKEN": "tok123"},
+    False)
+check("resolve() accepts an ASIA-prefixed key when AWS_SESSION_TOKEN is also set",
+      resolved.session_token == "tok123")
+
 resolved = backends.AWSBackend.resolve(
     {}, "vm1",
     {"AWS_REGION": "eu-central-1", "AWS_PROFILE": "lab", "AWS_SUBNET_ID": "subnet-1",
@@ -188,6 +209,29 @@ with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
 run_instances_call = next(c for c in calls if "run-instances" in c)
 check("create_vm() includes subnet/security-group/key-name when configured",
       "subnet-1" in run_instances_call and "sg-1" in run_instances_call and "labkey" in run_instances_call)
+
+
+# ── _aws(): AWS_SESSION_TOKEN is passed through the subprocess env when set ─
+b5 = backends.AWSBackend("eu-central-1", access_key="ASIA...", secret_key="secret", session_token="tok123")
+seen_env = {}
+
+
+def _fake_run_capture_env(args, env=None, **kwargs):
+    seen_env.update(env or {})
+    return _cp(0, stdout=json.dumps({"Reservations": []}))
+
+
+with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run_capture_env):
+    b5.vm_exists("vm1")
+check("_aws() passes AWS_SESSION_TOKEN through to the subprocess env when set",
+      seen_env.get("AWS_SESSION_TOKEN") == "tok123")
+
+b6 = backends.AWSBackend("eu-central-1", access_key="AKIA...", secret_key="secret")
+seen_env = {}
+with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run_capture_env):
+    b6.vm_exists("vm1")
+check("_aws() omits AWS_SESSION_TOKEN entirely for a long-lived key pair (none configured)",
+      "AWS_SESSION_TOKEN" not in seen_env)
 
 
 # ── host_resources(): a large constant, not a real capacity query ─────────
