@@ -1378,8 +1378,18 @@ def prepare_cloud_init(vm_name, lab_setup_path, variables):
     render_vars["ROOT_SSH_KEY"] = Path("/root/.ssh/id_rsa.pub").read_text().strip()
     render_vars["network_renderer"] = render_vars.get("network_renderer") or "NetworkManager"
     dhcp = not (render_vars.get("myip") or "").strip()
+    # A cloud backend leaves BOTH myip and mymac empty (see _cloud_no_mac()'s own docstring in
+    # backends.py) — template_network-config-dhcp matches its NIC by `macaddress: "${mymac}"`,
+    # which would render an empty match and likely configure no interface at all. Found and fixed
+    # 2026-09-09, live-testing AWSBackend, before it ever reached a real instance: a name-glob-
+    # based sibling template is used instead whenever mymac is ALSO empty — the USB-delivery lab-
+    # host VM (myip empty, mymac known) still gets the original mac-matched template unchanged.
+    no_mac = not (render_vars.get("mymac") or "").strip()
     for kind in ("user-data", "network-config", "meta-data"):
-        tmpl_name = "network-config-dhcp" if (kind == "network-config" and dhcp) else kind
+        if kind == "network-config" and dhcp:
+            tmpl_name = "network-config-dhcp-nomac" if no_mac else "network-config-dhcp"
+        else:
+            tmpl_name = kind
         tmpl = base / "template_{}".format(tmpl_name)
         out  = base / "{}_{}".format(vm_name, kind)
         out.write_text(process_template(str(tmpl), render_vars))

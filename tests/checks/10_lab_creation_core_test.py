@@ -739,7 +739,7 @@ def _render_network_config(variables):
     with tempfile.TemporaryDirectory() as tmp:
         ci_dir = Path(tmp) / "cloud-init"
         ci_dir.mkdir()
-        for kind in ("user-data", "network-config", "network-config-dhcp", "meta-data"):
+        for kind in ("user-data", "network-config", "network-config-dhcp", "network-config-dhcp-nomac", "meta-data"):
             src = _REPO / "templates" / "cloud-init.template_{}".format(kind)
             (ci_dir / "template_{}".format(kind)).write_text(src.read_text())
         lc.prepare_cloud_init("vm1.mydemo.lab", tmp, variables)
@@ -783,6 +783,27 @@ check("prepare_cloud_init: omitted myip (not just empty-string) also selects DHC
 check("prepare_cloud_init: a real static myip still gets the static template, unchanged",
       "dhcp4: false" in _render_network_config(dict(_base_vars))
       and "addresses:" in _render_network_config(dict(_base_vars)))
+
+# Real bug found live-testing AWSBackend, 2026-09-09 (see TODO), caught BEFORE it reached a real
+# cloud instance: a cloud backend leaves BOTH myip and mymac empty (see backends.py's
+# _cloud_no_mac()) — the original DHCP template matches its NIC by `macaddress: "${mymac}"`,
+# which renders an empty match when mymac is also empty and likely configures no interface at
+# all. The USB-delivery lab-host VM (myip empty, mymac real) must keep getting the ORIGINAL
+# mac-matched template unchanged — only "both empty" switches to the new name-glob template.
+cloud_vars = dict(_base_vars)
+cloud_vars["myip"] = ""
+cloud_vars["mymac"] = ""
+rendered = _render_network_config(cloud_vars)
+check("prepare_cloud_init: empty myip AND empty mymac (a cloud backend node) selects the "
+      "name-glob DHCP template, not an empty macaddress match",
+      "dhcp4: true" in rendered and "macaddress" not in rendered and 'name: "e*"' in rendered)
+
+usb_host_vars = dict(_base_vars)
+usb_host_vars["myip"] = ""
+rendered = _render_network_config(usb_host_vars)
+check("prepare_cloud_init: empty myip with a real mymac (the USB-delivery lab-host VM's own "
+      "case) still gets the original macaddress-matched DHCP template, unaffected",
+      "dhcp4: true" in rendered and 'macaddress: "52:54:00:aa:bb:cc"' in rendered)
 
 # Regression test for a real bug reported live 2026-09-02: setup_vm.py (the
 # only real caller) never puts "_vm_name" in the variables dict it passes —

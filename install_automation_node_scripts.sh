@@ -123,7 +123,7 @@ do
   cp $i /srv/www/htdocs/lab_creation/salt/
 done
 
-for i in combustion.template ignition.template cloud-init.template_meta-data cloud-init.template_network-config cloud-init.template_network-config-dhcp cloud-init.template_user-data \
+for i in combustion.template ignition.template cloud-init.template_meta-data cloud-init.template_network-config cloud-init.template_network-config-dhcp cloud-init.template_network-config-dhcp-nomac cloud-init.template_user-data \
           install_iso.template_autoyast install_iso.template_kickstart install_iso.template_preseed install_iso.template_autoinstall
 do
   cp templates/${i} /srv/www/htdocs/lab_creation/${i//./\/}
