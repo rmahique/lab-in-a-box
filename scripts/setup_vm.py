@@ -150,6 +150,12 @@ def provision_vm(definition, config, defaults, vm_name):
         vcluster=env.get("vcluster", ""),
         mymac=mymac,
         vm_machine=env.get("VM_MACHINE", ""),
+        # cloud_instance_type: an explicit per-node/common lab-JSON override for a cloud
+        # backend's instance type/server type/plan/flavor — added 2026-09-10 per explicit user
+        # request that no provider's sizing catalog be a hardcoded ceiling. Ignored by
+        # libvirt/Harvester (absorbed by their own **kwargs, same as every other cloud-only
+        # kwarg here). See README's Compute backends table.
+        cloud_instance_type=env.get("cloud_instance_type", ""),
     )
     if created_ip:
         env["myip"] = created_ip

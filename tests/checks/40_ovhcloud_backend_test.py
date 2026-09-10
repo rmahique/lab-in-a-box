@@ -241,6 +241,24 @@ with mock.patch.object(b3, "_pick_flavor", return_value="flavor-medium") as m_pi
     check("create_vm() sends the stashed userData", body.get("userData") == "#cloud-config\n")
 
 
+# ── cloud_instance_type: explicit override skips the live _pick_flavor() API call entirely ──
+# added 2026-09-10 per explicit user request — OVHcloud has no static sizing table to override
+# via config (flavors come from a real live API call — see _pick_flavor()'s own docstring), so
+# cloud_instance_type is the only override mechanism for this backend, and it must also avoid the
+# extra live API round-trip _pick_flavor() would otherwise make. See README's Compute backends table.
+b5 = backends.OVHcloudBackend("appkey", "appsecret", "consumerkey", "proj-1", "GRA7")
+b5._user_data_by_vm["vm1"] = ""
+with mock.patch.object(b5, "_pick_flavor", return_value="flavor-medium") as m_pick2:
+    with mock.patch.object(b5, "_api", side_effect=_fake_api) as m_api2:
+        b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="img-uuid",
+                      cloud_instance_type="flavor-huge")
+    check("create_vm() skips _pick_flavor() entirely when cloud_instance_type is given",
+          not m_pick2.called)
+    create_call = next(c for c in m_api2.call_args_list if c[0][0] == "POST")
+    check("create_vm() uses cloud_instance_type verbatim as the flavorId",
+          create_call[0][2].get("flavorId") == "flavor-huge")
+
+
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",
       backend.host_resources() == (9999, 999999, 999999))

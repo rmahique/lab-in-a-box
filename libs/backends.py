@@ -65,6 +65,45 @@ def _read_conflict_confirmation():
         return tty.readline().strip()
 
 
+def _parse_sku_table(raw, config_key):
+    """
+    Parses an optional config-file override for a cloud backend's own fixed (name, cores, mem_gb)
+    sizing table — added 2026-09-10, per explicit user request: none of these tables (Hetzner's
+    SERVER_TYPES, AWS's INSTANCE_TYPES, etc.) should be a hardcoded ceiling a user can't extend or
+    replace without editing this file. Format: "name:cores:mem_gb,name:cores:mem_gb,..." — e.g.
+    "t3.medium:2:4,t3.large:2:8". Returns None if `raw` is empty/unset (caller keeps its own
+    built-in default table unchanged); returns the parsed list of (name, cores, mem_gb) tuples
+    otherwise, replacing the built-in table entirely — this is a full override, not a merge, so a
+    user who only wants to ADD one entry must repeat the ones they still want.
+
+    Dies with a clear, specific message (naming the real config key and the exact malformed
+    entry) on any parse error, rather than silently falling back to the built-in table or
+    crashing later with a confusing KeyError/ValueError deep inside _pick_*().
+    """
+    if not raw:
+        return None
+    table = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(":")
+        if len(parts) != 3:
+            die("{} entry '{}' is invalid — expected \"name:cores:mem_gb\" (e.g. "
+                "\"t3.medium:2:4\")".format(config_key, entry))
+        name, cores_s, mem_s = parts
+        try:
+            cores = int(cores_s)
+            mem_gb = float(mem_s)
+        except ValueError:
+            die("{} entry '{}' has a non-numeric cores/mem_gb field — expected "
+                "\"name:cores:mem_gb\" (e.g. \"t3.medium:2:4\")".format(config_key, entry))
+        table.append((name, cores, mem_gb))
+    if not table:
+        die("{} is set but contains no valid entries".format(config_key))
+    return table
+
+
 def _poll_for_ip(fetch_fn, vm_name, timeout=180, interval=5):
     """
     Shared polling loop for a cloud backend's create_vm(): repeatedly calls fetch_fn() (a
@@ -585,6 +624,10 @@ class LibvirtBackend(VMBackend):
         vm_machine="",  # "" (default, unchanged) lets virt-install pick its own
                          # machine type (currently q35) — see below for why this
                          # ever needs overriding
+        cloud_instance_type="",  # unused here — a cloud-backend-only override (see setup_vm.py's
+                                  # own call site); accepted and ignored so setup_vm.py can pass
+                                  # it unconditionally without needing to know which backend it's
+                                  # talking to.
     ):
         """
         Create a VM on a KVM hypervisor via virt-install, covering all 6
@@ -1471,14 +1514,17 @@ class HetznerBackend(VMBackend):
 
     # Smallest-to-largest by (cores, memory_gb) — enough of Hetzner's own current shared-vCPU
     # lineup to cover this project's typical lab-sized nodes; extend as needed. Confirmed current
-    # names/specs against Hetzner's own pricing page, 2026-09-06.
+    # names/specs against Hetzner's own pricing page, 2026-09-06. This built-in table is used only
+    # when HETZNER_SERVER_TYPES isn't set — see resolve()'s own docstring note and README's
+    # Compute backends table for the override + the real URL to Hetzner's own current lineup.
     SERVER_TYPES = [
         ("cx22", 2, 4), ("cx32", 4, 8), ("cx42", 8, 16), ("cx52", 16, 32),
     ]
 
-    def __init__(self, token, location=None, vm_img_loc=None, lab_setup_path=None):
+    def __init__(self, token, location=None, server_types=None, vm_img_loc=None, lab_setup_path=None):
         self.token = token
         self.location = location  # e.g. "nbg1"/"fsn1"/"hel1"/"ash"/"hil" — None lets Hetzner pick
+        self.server_types = server_types  # HETZNER_SERVER_TYPES override, or None -> SERVER_TYPES
         self.vm_img_loc = vm_img_loc
         self.lab_setup_path = lab_setup_path
         self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
@@ -1491,7 +1537,13 @@ class HetznerBackend(VMBackend):
             die("backend 'hetzner' requires HETZNER_TOKEN to be set in /etc/lab_creation.cfg "
                 "(VM '{}')".format(vm_name))
         location = config.get("HETZNER_LOCATION") or None
-        return cls(token, location=location, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+        # HETZNER_SERVER_TYPES: optional full override of the built-in SERVER_TYPES table — added
+        # 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+        # ceiling. "name:cores:mem_gb,...", e.g. "cx22:2:4,cx32:4:8". See _parse_sku_table()'s own
+        # docstring for the exact format and README for where to find Hetzner's current lineup.
+        server_types = _parse_sku_table(config.get("HETZNER_SERVER_TYPES"), "HETZNER_SERVER_TYPES")
+        return cls(token, location=location, server_types=server_types,
+                   vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
     def _api(self, method, path, body=None):
         """One JSON request against the Hetzner Cloud API. Returns the parsed response body
@@ -1523,11 +1575,13 @@ class HetznerBackend(VMBackend):
 
     def _pick_server_type(self, vm_cpu, vm_mem_mb, vm_dsk_gb, vm_name):
         needed_mem_gb = int(vm_mem_mb) / 1024.0
-        for name, cores, mem_gb in self.SERVER_TYPES:
+        table = self.server_types or self.SERVER_TYPES
+        for name, cores, mem_gb in table:
             if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
                 return name
         die("HetznerBackend has no known server_type big enough for VM '{}' ({} vCPU / {} MiB) — "
-            "extend HetznerBackend.SERVER_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+            "extend HetznerBackend.SERVER_TYPES or set HETZNER_SERVER_TYPES in "
+            "/etc/lab_creation.cfg".format(vm_name, vm_cpu, vm_mem_mb))
 
     def vm_exists(self, vm_name):
         return self._find_server(vm_name) is not None
@@ -1623,10 +1677,14 @@ class HetznerBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        server_type = self._pick_server_type(vm_cpu, vm_mem, vm_dsk_gb, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_server_type() entirely and uses the given
+        # Hetzner server_type name verbatim, e.g. for a type not in the built-in table or a
+        # HETZNER_SERVER_TYPES override the operator didn't want to set globally.
+        server_type = cloud_instance_type or self._pick_server_type(vm_cpu, vm_mem, vm_dsk_gb, vm_name)
 
         body = {
             "name": vm_name,
@@ -1724,13 +1782,16 @@ class AWSBackend(VMBackend):
     """
 
     # Smallest-to-largest by (cores, memory_gb) — the standard burstable general-purpose family,
-    # enough to cover this project's typical lab-sized nodes; extend as needed.
+    # enough to cover this project's typical lab-sized nodes; extend as needed. Used only when
+    # AWS_INSTANCE_TYPES isn't set — see resolve() and README's Compute backends table for the
+    # override and the real URL to AWS's own current EC2 instance-type catalog.
     INSTANCE_TYPES = [
         ("t3.medium", 2, 4), ("t3.large", 2, 8), ("t3.xlarge", 4, 16), ("t3.2xlarge", 8, 32),
     ]
 
     def __init__(self, region, profile=None, access_key=None, secret_key=None, session_token=None,
-                 subnet_id=None, security_group_id=None, key_name=None, vm_img_loc=None, lab_setup_path=None):
+                 subnet_id=None, security_group_id=None, key_name=None, instance_types=None,
+                 vm_img_loc=None, lab_setup_path=None):
         self.region = region
         self.profile = profile
         self.access_key = access_key
@@ -1739,6 +1800,7 @@ class AWSBackend(VMBackend):
         self.subnet_id = subnet_id
         self.security_group_id = security_group_id
         self.key_name = key_name
+        self.instance_types = instance_types  # AWS_INSTANCE_TYPES override, or None -> INSTANCE_TYPES
         self.vm_img_loc = vm_img_loc
         self.lab_setup_path = lab_setup_path
         self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
@@ -1760,8 +1822,14 @@ class AWSBackend(VMBackend):
             die("backend 'aws': AWS_ACCESS_KEY_ID '{}' is a temporary/STS credential (starts with "
                 "'ASIA') but no AWS_SESSION_TOKEN is set in /etc/lab_creation.cfg — it will be "
                 "rejected without its paired session token (VM '{}')".format(access_key, vm_name))
+        # AWS_INSTANCE_TYPES: optional full override of the built-in INSTANCE_TYPES table — added
+        # 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+        # ceiling. "name:cores:mem_gb,...", e.g. "t3.medium:2:4,t3.large:2:8". See
+        # _parse_sku_table()'s own docstring for the exact format and README for where to find
+        # AWS's current EC2 instance-type catalog.
+        instance_types = _parse_sku_table(config.get("AWS_INSTANCE_TYPES"), "AWS_INSTANCE_TYPES")
         return cls(region, profile=profile, access_key=access_key, secret_key=secret_key,
-                   session_token=session_token,
+                   session_token=session_token, instance_types=instance_types,
                    subnet_id=config.get("AWS_SUBNET_ID"), security_group_id=config.get("AWS_SECURITY_GROUP_ID"),
                    key_name=config.get("AWS_KEY_NAME"), vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
@@ -1806,11 +1874,13 @@ class AWSBackend(VMBackend):
 
     def _pick_instance_type(self, vm_cpu, vm_mem_mb, vm_name):
         needed_mem_gb = int(vm_mem_mb) / 1024.0
-        for name, cores, mem_gb in self.INSTANCE_TYPES:
+        table = self.instance_types or self.INSTANCE_TYPES
+        for name, cores, mem_gb in table:
             if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
                 return name
         die("AWSBackend has no known instance type big enough for VM '{}' ({} vCPU / {} MiB) — "
-            "extend AWSBackend.INSTANCE_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+            "extend AWSBackend.INSTANCE_TYPES or set AWS_INSTANCE_TYPES in "
+            "/etc/lab_creation.cfg".format(vm_name, vm_cpu, vm_mem_mb))
 
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
@@ -1904,10 +1974,13 @@ class AWSBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        instance_type = self._pick_instance_type(vm_cpu, vm_mem, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_instance_type() entirely and uses the given
+        # EC2 instance type name verbatim.
+        instance_type = cloud_instance_type or self._pick_instance_type(vm_cpu, vm_mem, vm_name)
 
         image_result = self._aws("ec2", "describe-images", "--image-ids", iso_image)
         images = (image_result or {}).get("Images", [])
@@ -2170,11 +2243,18 @@ class GCPBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        cpu, mem_mb = self._normalize_custom_shape(vm_cpu, vm_mem)
-        machine_type = "e2-custom-{}-{}".format(cpu, mem_mb)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — used as the real GCE machine-type string verbatim (e.g. a
+        # real predefined type like "n2-standard-4", or a custom one already shaped correctly),
+        # skipping _normalize_custom_shape()'s own e2-custom-<cpu>-<mem> building entirely.
+        if cloud_instance_type:
+            machine_type = cloud_instance_type
+        else:
+            cpu, mem_mb = self._normalize_custom_shape(vm_cpu, vm_mem)
+            machine_type = "e2-custom-{}-{}".format(cpu, mem_mb)
         userdata_path = Path(self.lab_setup_path) / "cloud-init" / "{}_user-data".format(vm_name)
 
         args = [
@@ -2257,18 +2337,21 @@ class AlibabaBackend(VMBackend):
     """
 
     # Smallest-to-largest by (cores, memory_gb) — enough of Alibaba's own current general-purpose
-    # lineup to cover this project's typical lab-sized nodes; extend as needed.
+    # lineup to cover this project's typical lab-sized nodes; extend as needed. Used only when
+    # ALIBABA_INSTANCE_TYPES isn't set — see resolve() and README's Compute backends table for
+    # the override and the real URL to Alibaba's own current ECS instance-family catalog.
     INSTANCE_TYPES = [
         ("ecs.g6.large", 2, 8), ("ecs.g6.xlarge", 4, 16), ("ecs.g6.2xlarge", 8, 32),
     ]
 
     def __init__(self, access_key_id, access_key_secret, region, security_group_id, vswitch_id,
-                 vm_img_loc=None, lab_setup_path=None):
+                 instance_types=None, vm_img_loc=None, lab_setup_path=None):
         self.access_key_id = access_key_id
         self.access_key_secret = access_key_secret
         self.region = region
         self.security_group_id = security_group_id
         self.vswitch_id = vswitch_id
+        self.instance_types = instance_types  # ALIBABA_INSTANCE_TYPES override, or None -> INSTANCE_TYPES
         self.vm_img_loc = vm_img_loc
         self.lab_setup_path = lab_setup_path
         self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
@@ -2289,8 +2372,14 @@ class AlibabaBackend(VMBackend):
         if missing:
             die("backend 'alibaba' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
                 ", ".join(missing), vm_name))
+        # ALIBABA_INSTANCE_TYPES: optional full override of the built-in INSTANCE_TYPES table —
+        # added 2026-09-10 per explicit user request that no provider's sizing catalog be a
+        # hardcoded ceiling. "name:cores:mem_gb,...", e.g. "ecs.g6.large:2:8". See
+        # _parse_sku_table()'s own docstring for the exact format and README for where to find
+        # Alibaba's current ECS instance-family catalog.
+        instance_types = _parse_sku_table(config.get("ALIBABA_INSTANCE_TYPES"), "ALIBABA_INSTANCE_TYPES")
         return cls(access_key_id, access_key_secret, region, security_group_id, vswitch_id,
-                   vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+                   instance_types=instance_types, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
     def _aliyun(self, *args, **kwargs):
         """One `aliyun` CLI invocation, region/auth applied uniformly. Returns the parsed JSON
@@ -2318,11 +2407,13 @@ class AlibabaBackend(VMBackend):
 
     def _pick_instance_type(self, vm_cpu, vm_mem_mb, vm_name):
         needed_mem_gb = int(vm_mem_mb) / 1024.0
-        for name, cores, mem_gb in self.INSTANCE_TYPES:
+        table = self.instance_types or self.INSTANCE_TYPES
+        for name, cores, mem_gb in table:
             if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
                 return name
         die("AlibabaBackend has no known InstanceType big enough for VM '{}' ({} vCPU / {} MiB) — "
-            "extend AlibabaBackend.INSTANCE_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+            "extend AlibabaBackend.INSTANCE_TYPES or set ALIBABA_INSTANCE_TYPES in "
+            "/etc/lab_creation.cfg".format(vm_name, vm_cpu, vm_mem_mb))
 
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
@@ -2422,10 +2513,13 @@ class AlibabaBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        instance_type = self._pick_instance_type(vm_cpu, vm_mem, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_instance_type() entirely and uses the given
+        # Alibaba Cloud InstanceType name verbatim.
+        instance_type = cloud_instance_type or self._pick_instance_type(vm_cpu, vm_mem, vm_name)
         user_data = self._user_data_by_vm.get(vm_name, "")
 
         log("Creating VM '{}' on Alibaba Cloud ECS (InstanceType={})".format(vm_name, instance_type))
@@ -2490,14 +2584,17 @@ class ScalewayBackend(VMBackend):
 
     API_BASE = "https://api.scaleway.com/instance/v2alpha1"
 
+    # Used only when SCALEWAY_SERVER_TYPES isn't set — see resolve() and README's Compute
+    # backends table for the override and the real URL to Scaleway's own current lineup.
     SERVER_TYPES = [
         ("DEV1-S", 2, 2), ("DEV1-M", 3, 4), ("DEV1-L", 4, 8), ("GP1-S", 8, 32),
     ]
 
-    def __init__(self, secret_key, project_id, zone, vm_img_loc=None, lab_setup_path=None):
+    def __init__(self, secret_key, project_id, zone, server_types=None, vm_img_loc=None, lab_setup_path=None):
         self.secret_key = secret_key
         self.project_id = project_id
         self.zone = zone
+        self.server_types = server_types  # SCALEWAY_SERVER_TYPES override, or None -> SERVER_TYPES
         self.vm_img_loc = vm_img_loc
         self.lab_setup_path = lab_setup_path
         self._user_data_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
@@ -2513,7 +2610,14 @@ class ScalewayBackend(VMBackend):
         if missing:
             die("backend 'scaleway' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
                 ", ".join(missing), vm_name))
-        return cls(secret_key, project_id, zone, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+        # SCALEWAY_SERVER_TYPES: optional full override of the built-in SERVER_TYPES table —
+        # added 2026-09-10 per explicit user request that no provider's sizing catalog be a
+        # hardcoded ceiling. "name:cores:mem_gb,...", e.g. "DEV1-S:2:2,DEV1-M:3:4". See
+        # _parse_sku_table()'s own docstring for the exact format and README for where to find
+        # Scaleway's current commercial-type lineup.
+        server_types = _parse_sku_table(config.get("SCALEWAY_SERVER_TYPES"), "SCALEWAY_SERVER_TYPES")
+        return cls(secret_key, project_id, zone, server_types=server_types,
+                   vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
     def _api(self, method, path, body=None):
         """One JSON request against the Scaleway Instance API. Same contract as
@@ -2544,11 +2648,13 @@ class ScalewayBackend(VMBackend):
 
     def _pick_server_type(self, vm_cpu, vm_mem_mb, vm_name):
         needed_mem_gb = int(vm_mem_mb) / 1024.0
-        for name, cores, mem_gb in self.SERVER_TYPES:
+        table = self.server_types or self.SERVER_TYPES
+        for name, cores, mem_gb in table:
             if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
                 return name
         die("ScalewayBackend has no known server_type big enough for VM '{}' ({} vCPU / {} MiB) — "
-            "extend ScalewayBackend.SERVER_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+            "extend ScalewayBackend.SERVER_TYPES or set SCALEWAY_SERVER_TYPES in "
+            "/etc/lab_creation.cfg".format(vm_name, vm_cpu, vm_mem_mb))
 
     def vm_exists(self, vm_name):
         return self._find_server(vm_name) is not None
@@ -2633,10 +2739,13 @@ class ScalewayBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        server_type = self._pick_server_type(vm_cpu, vm_mem, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_server_type() entirely and uses the given
+        # Scaleway commercial_type name verbatim.
+        server_type = cloud_instance_type or self._pick_server_type(vm_cpu, vm_mem, vm_name)
 
         body = {
             "name": vm_name,
@@ -2716,14 +2825,17 @@ class UpCloudBackend(VMBackend):
 
     API_BASE = "https://api.upcloud.com/1.3"
 
+    # Used only when UPCLOUD_PLANS isn't set — see resolve() and README's Compute backends table
+    # for the override and the real URL to UpCloud's own current plan lineup.
     PLANS = [
         ("1xCPU-2GB", 1, 2), ("2xCPU-4GB", 2, 4), ("4xCPU-8GB", 4, 8), ("6xCPU-16GB", 6, 16),
     ]
 
-    def __init__(self, username, password, zone, vm_img_loc=None, lab_setup_path=None):
+    def __init__(self, username, password, zone, plans=None, vm_img_loc=None, lab_setup_path=None):
         self.username = username
         self.password = password
         self.zone = zone
+        self.plans = plans  # UPCLOUD_PLANS override, or None -> PLANS
         self.vm_img_loc = vm_img_loc
         self.lab_setup_path = lab_setup_path
         self._user_data_by_vm = {}
@@ -2739,7 +2851,12 @@ class UpCloudBackend(VMBackend):
         if missing:
             die("backend 'upcloud' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
                 ", ".join(missing), vm_name))
-        return cls(username, password, zone, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+        # UPCLOUD_PLANS: optional full override of the built-in PLANS table — added 2026-09-10
+        # per explicit user request that no provider's sizing catalog be a hardcoded ceiling.
+        # "name:cores:mem_gb,...", e.g. "1xCPU-2GB:1:2,2xCPU-4GB:2:4". See _parse_sku_table()'s
+        # own docstring for the exact format and README for where to find UpCloud's current plans.
+        plans = _parse_sku_table(config.get("UPCLOUD_PLANS"), "UPCLOUD_PLANS")
+        return cls(username, password, zone, plans=plans, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
     def _api(self, method, path, body=None):
         url = "{}{}".format(self.API_BASE, path)
@@ -2770,11 +2887,13 @@ class UpCloudBackend(VMBackend):
 
     def _pick_plan(self, vm_cpu, vm_mem_mb, vm_name):
         needed_mem_gb = int(vm_mem_mb) / 1024.0
-        for name, cores, mem_gb in self.PLANS:
+        table = self.plans or self.PLANS
+        for name, cores, mem_gb in table:
             if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
                 return name
         die("UpCloudBackend has no known plan big enough for VM '{}' ({} vCPU / {} MiB) — extend "
-            "UpCloudBackend.PLANS".format(vm_name, vm_cpu, vm_mem_mb))
+            "UpCloudBackend.PLANS or set UPCLOUD_PLANS in /etc/lab_creation.cfg".format(
+                vm_name, vm_cpu, vm_mem_mb))
 
     def vm_exists(self, vm_name):
         return self._find_server(vm_name) is not None
@@ -2865,10 +2984,13 @@ class UpCloudBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        plan = self._pick_plan(vm_cpu, vm_mem, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_plan() entirely and uses the given UpCloud
+        # plan name verbatim.
+        plan = cloud_instance_type or self._pick_plan(vm_cpu, vm_mem, vm_name)
 
         body = {
             "server": {
@@ -3135,10 +3257,14 @@ class OVHcloudBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        flavor_id = self._pick_flavor(vm_cpu, vm_mem, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_flavor()'s own live API call entirely and
+        # uses the given OVHcloud flavorId (a real per-region UUID — see this class's own
+        # docstring for why there's no stable name here) verbatim.
+        flavor_id = cloud_instance_type or self._pick_flavor(vm_cpu, vm_mem, vm_name)
 
         body = {
             "name": vm_name,
@@ -3201,16 +3327,19 @@ class ExoscaleBackend(VMBackend):
     """
 
     # Smallest-to-largest by (cores, memory_gb) — Exoscale's own "standard" family naming; NOT
-    # independently re-confirmed live this session, see this class's own docstring.
+    # independently re-confirmed live this session, see this class's own docstring. Used only
+    # when EXOSCALE_INSTANCE_TYPES isn't set — see resolve() and README's Compute backends table
+    # for the override and the real URL to check Exoscale's current instance-type catalog.
     INSTANCE_TYPES = [
         ("standard.tiny", 1, 1), ("standard.small", 1, 2), ("standard.medium", 2, 4),
         ("standard.large", 4, 8), ("standard.extra-large", 4, 16),
     ]
 
-    def __init__(self, api_key, api_secret, zone, vm_img_loc=None, lab_setup_path=None):
+    def __init__(self, api_key, api_secret, zone, instance_types=None, vm_img_loc=None, lab_setup_path=None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.zone = zone
+        self.instance_types = instance_types  # EXOSCALE_INSTANCE_TYPES override, or None -> INSTANCE_TYPES
         self.vm_img_loc = vm_img_loc
         self.lab_setup_path = lab_setup_path
         self._userdata_path_by_vm = {}  # populated by push_provisioning_files(), read by create_vm()
@@ -3226,7 +3355,14 @@ class ExoscaleBackend(VMBackend):
         if missing:
             die("backend 'exoscale' requires {} to be set in /etc/lab_creation.cfg (VM '{}')".format(
                 ", ".join(missing), vm_name))
-        return cls(api_key, api_secret, zone, vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
+        # EXOSCALE_INSTANCE_TYPES: optional full override of the built-in INSTANCE_TYPES table —
+        # added 2026-09-10 per explicit user request that no provider's sizing catalog be a
+        # hardcoded ceiling. "name:cores:mem_gb,...", e.g. "standard.tiny:1:1,standard.small:1:2".
+        # See _parse_sku_table()'s own docstring for the exact format and README for where to
+        # find Exoscale's current instance-type catalog.
+        instance_types = _parse_sku_table(config.get("EXOSCALE_INSTANCE_TYPES"), "EXOSCALE_INSTANCE_TYPES")
+        return cls(api_key, api_secret, zone, instance_types=instance_types,
+                   vm_img_loc=vm_img_loc, lab_setup_path=lab_setup_path)
 
     def _exo(self, *args, **kwargs):
         """One `exo` CLI invocation, zone/auth applied uniformly. Returns the parsed JSON stdout
@@ -3253,11 +3389,13 @@ class ExoscaleBackend(VMBackend):
 
     def _pick_instance_type(self, vm_cpu, vm_mem_mb, vm_name):
         needed_mem_gb = int(vm_mem_mb) / 1024.0
-        for name, cores, mem_gb in self.INSTANCE_TYPES:
+        table = self.instance_types or self.INSTANCE_TYPES
+        for name, cores, mem_gb in table:
             if cores >= int(vm_cpu) and mem_gb >= needed_mem_gb:
                 return name
         die("ExoscaleBackend has no known instance-type big enough for VM '{}' ({} vCPU / {} MiB) "
-            "— extend ExoscaleBackend.INSTANCE_TYPES".format(vm_name, vm_cpu, vm_mem_mb))
+            "— extend ExoscaleBackend.INSTANCE_TYPES or set EXOSCALE_INSTANCE_TYPES in "
+            "/etc/lab_creation.cfg".format(vm_name, vm_cpu, vm_mem_mb))
 
     def vm_exists(self, vm_name):
         return self._find_instance(vm_name) is not None
@@ -3343,10 +3481,13 @@ class ExoscaleBackend(VMBackend):
 
     def create_vm(
         self, vm_name, vm_cpu, vm_mem, vm_dsk_gb, network,
-        config_method="", iso_image="", mymac=None, **kwargs
+        config_method="", iso_image="", mymac=None, cloud_instance_type="", **kwargs
     ):
         self._require_cloud_init(config_method, vm_name)
-        instance_type = self._pick_instance_type(vm_cpu, vm_mem, vm_name)
+        # cloud_instance_type: an explicit per-node/common lab-JSON override — added 2026-09-10
+        # per explicit user request — bypasses _pick_instance_type() entirely and uses the given
+        # Exoscale instance-type name verbatim.
+        instance_type = cloud_instance_type or self._pick_instance_type(vm_cpu, vm_mem, vm_name)
         userdata_path = self._userdata_path_by_vm.get(vm_name)
 
         log("Creating VM '{}' on Exoscale (instance-type={})".format(vm_name, instance_type))

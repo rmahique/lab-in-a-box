@@ -26,6 +26,7 @@ def check(desc, cond):
 
 
 order = []
+create_vm_kwargs = {}
 
 
 def _rec(name, ret=None):
@@ -50,6 +51,7 @@ class _FakeBackend:
 
     def create_vm(self, *a, **kw):
         order.append("create_vm")
+        create_vm_kwargs.update(kw)
 
     def reboot_vm(self, *a, **kw):
         order.append("reboot_vm")
@@ -68,7 +70,7 @@ setup_vm.backends.get_backend = lambda *a, **kw: _FakeBackend()
 setup_vm.load_vm_vars = lambda definition, vm_name: {
     "myip": "192.168.1.50", "mymac": "", "mydomain": "mydemo.lab",
     "config_method": "cloud-init", "VM_CPU": "2", "VM_MEM": "4096", "VM_DSK": "40",
-    "ISO_IMAGE": "img.qcow2",
+    "ISO_IMAGE": "img.qcow2", "cloud_instance_type": "m5.2xlarge",
 }
 setup_vm.prepare_cloud_init = _rec("prepare_cloud_init")
 setup_vm.prepare_ignition_combustion = _rec("prepare_ignition_combustion")
@@ -96,6 +98,9 @@ check("provision_vm: rebooted, then waited on again, after the first connectivit
       order.count("check_ssh_conn") == 2 and order.index("reboot_vm") == order.index("check_ssh_conn") + 1)
 check("provision_vm: stale SSH host keys cleaned before the connectivity wait",
       order.index("clean_ssh_keys") < order.index("check_ssh_conn"))
+check("provision_vm: cloud_instance_type is threaded from env through to backend.create_vm() "
+      "(added 2026-09-10 — see README's Compute backends table)",
+      create_vm_kwargs.get("cloud_instance_type") == "m5.2xlarge")
 
 
 # ── An "existing" node must never be provisioned ────────────────────────────

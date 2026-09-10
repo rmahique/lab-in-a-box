@@ -212,6 +212,41 @@ check("create_vm() sends the real HTTP Basic Auth header",
       captured["headers"].get("Authorization") == expected_auth)
 
 
+# ── cloud_instance_type: explicit override bypasses _pick_plan() entirely ─────
+# added 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+# ceiling — see _parse_sku_table()'s own docstring and README's Compute backends table.
+b5 = backends.UpCloudBackend("labuser", "labpass", "fi-hel1")
+b5._user_data_by_vm["vm1"] = ""
+captured = {}
+with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_urlopen):
+    # cpu/mem here would normally pick "1xCPU-2GB" — cloud_instance_type must win regardless.
+    b5.create_vm("vm1", 1, 2048, 40, None, config_method="cloud-init", iso_image="tpl-1",
+                  cloud_instance_type="8xCPU-32GB")
+check("create_vm() uses cloud_instance_type verbatim, bypassing _pick_plan()",
+      captured["body"]["server"].get("plan") == "8xCPU-32GB")
+
+
+# ── UPCLOUD_PLANS: resolve() parses the config override into plans ────────────
+_cfg = dict(_FULL_CONFIG, UPCLOUD_PLANS="tiny:1:2,huge:16:64")
+resolved = backends.UpCloudBackend.resolve({}, "vm1", _cfg, False)
+check("resolve() parses UPCLOUD_PLANS into resolved.plans",
+      resolved.plans == [("tiny", 1, 2.0), ("huge", 16, 64.0)])
+
+# ── _pick_plan(): an overridden table actually replaces PLANS, not merges ─────
+b6 = backends.UpCloudBackend("labuser", "labpass", "fi-hel1",
+                              plans=[("tiny", 1, 2.0), ("huge", 16, 64.0)])
+check("_pick_plan() picks from the overridden table when plans is set",
+      b6._pick_plan(1, 2048, "vm1") == "tiny")
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        b6._pick_plan(32, 4096, "vm1")  # too big for this override's max (16 cores)
+    except SystemExit:
+        pass
+check("_pick_plan() does NOT fall back to the built-in PLANS once overridden "
+      "(full replacement, not a merge)", any("UPCLOUD_PLANS" in m for m in died))
+
+
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",
       backend.host_resources() == (9999, 999999, 999999))

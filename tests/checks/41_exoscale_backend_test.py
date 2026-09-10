@@ -204,6 +204,42 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
           "--cloud-init" in create_call and str(userdata_file) in create_call)
     check("create_vm() uses the real vm_name as the instance name", "vm1" in create_call)
 
+    # ── cloud_instance_type: explicit override bypasses _pick_instance_type() entirely ──
+    # added 2026-09-10 per explicit user request that no provider's sizing catalog be a
+    # hardcoded ceiling — see _parse_sku_table()'s own docstring and README's Compute backends
+    # table.
+    b5 = backends.ExoscaleBackend("exokey", "exosecret", "ch-gva-2", lab_setup_path=tempfile_dir)
+    b5.push_provisioning_files("vm1", config_method="cloud-init")
+    calls = []
+    with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
+        # cpu/mem here would normally pick "standard.medium" — cloud_instance_type must win.
+        b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="tpl-1",
+                      cloud_instance_type="standard.huge")
+    create_call = next(c for c in calls if "create" in c)
+    check("create_vm() uses cloud_instance_type verbatim, bypassing _pick_instance_type()",
+          "standard.huge" in create_call and "standard.medium" not in create_call)
+
+
+# ── EXOSCALE_INSTANCE_TYPES: resolve() parses the config override into instance_types ──
+_cfg = dict(_FULL_CONFIG, EXOSCALE_INSTANCE_TYPES="tiny:1:2,huge:16:64")
+resolved = backends.ExoscaleBackend.resolve({}, "vm1", _cfg, False)
+check("resolve() parses EXOSCALE_INSTANCE_TYPES into resolved.instance_types",
+      resolved.instance_types == [("tiny", 1, 2.0), ("huge", 16, 64.0)])
+
+# ── _pick_instance_type(): an overridden table actually replaces INSTANCE_TYPES, not merges ──
+b6 = backends.ExoscaleBackend("exokey", "exosecret", "ch-gva-2",
+                               instance_types=[("tiny", 1, 2.0), ("huge", 16, 64.0)])
+check("_pick_instance_type() picks from the overridden table when instance_types is set",
+      b6._pick_instance_type(1, 2048, "vm1") == "tiny")
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        b6._pick_instance_type(32, 4096, "vm1")  # too big for this override's max (16 cores)
+    except SystemExit:
+        pass
+check("_pick_instance_type() does NOT fall back to the built-in INSTANCE_TYPES once overridden "
+      "(full replacement, not a merge)", any("EXOSCALE_INSTANCE_TYPES" in m for m in died))
+
 
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",

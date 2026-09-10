@@ -226,6 +226,11 @@ run_instances_call = next(c for c in calls if "run-instances" in c)
 check("create_vm() looks up the AMI's real root device name before building block-device-mappings",
       any("describe-images" in c for c in calls))
 check("create_vm() picks a real instance type", "t3.medium" in run_instances_call)
+check("create_vm() uses --count, NOT the old --min-count/--max-count pair (real bug found "
+      "live-testing 2026-09-09 — this project's own installed aws CLI rejects the old pair "
+      "outright, see TODO)",
+      "--count" in run_instances_call and "1" in run_instances_call
+      and "--min-count" not in run_instances_call and "--max-count" not in run_instances_call)
 check("create_vm() uses the real root device name from describe-images, not a hardcoded default",
       json.loads(run_instances_call[run_instances_call.index("--block-device-mappings") + 1])[0]["DeviceName"]
       == "/dev/sda1")
@@ -234,6 +239,9 @@ check("create_vm() tags the instance with a real Name tag",
       any("Key=Name,Value=vm1" in a for a in run_instances_call))
 check("create_vm() omits subnet/security-group/key-name flags when none were configured",
       "--subnet-id" not in run_instances_call and "--key-name" not in run_instances_call)
+check("create_vm() omits --associate-public-ip-address too when no subnet is configured "
+      "(it's only meaningful alongside an explicit subnet)",
+      "--associate-public-ip-address" not in run_instances_call)
 
 b4 = backends.AWSBackend("eu-central-1", profile="lab", subnet_id="subnet-1",
                           security_group_id="sg-1", key_name="labkey")
@@ -244,6 +252,48 @@ with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
 run_instances_call = next(c for c in calls if "run-instances" in c)
 check("create_vm() includes subnet/security-group/key-name when configured",
       "subnet-1" in run_instances_call and "sg-1" in run_instances_call and "labkey" in run_instances_call)
+check("create_vm() explicitly requests a public IP whenever a subnet is configured (real bug "
+      "found live-testing 2026-09-09: a subnet with MapPublicIpOnLaunch=false, a common "
+      "real-world default, otherwise leaves the instance unreachable — see TODO)",
+      "--associate-public-ip-address" in run_instances_call)
+
+
+# ── cloud_instance_type: explicit override bypasses _pick_instance_type() entirely ──
+# added 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+# ceiling — see _parse_sku_table()'s own docstring and README's Compute backends table.
+b5 = backends.AWSBackend("eu-central-1", profile="lab")
+b5._user_data_by_vm["vm1"] = ""
+calls = []
+with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
+    # cpu/mem here would normally pick "t3.medium" — cloud_instance_type must win regardless.
+    b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init",
+                  iso_image="ami-0123456789abcdef0", cloud_instance_type="m5.2xlarge")
+run_instances_call = next(c for c in calls if "run-instances" in c)
+check("create_vm() uses cloud_instance_type verbatim, bypassing _pick_instance_type()",
+      "m5.2xlarge" in run_instances_call and "t3.medium" not in run_instances_call)
+
+
+# ── AWS_INSTANCE_TYPES: resolve() parses the config override into instance_types ──
+resolved = backends.AWSBackend.resolve(
+    {}, "vm1", {"AWS_REGION": "eu-central-1", "AWS_PROFILE": "lab",
+                "AWS_INSTANCE_TYPES": "tiny:1:2,huge:16:64"}, False)
+check("resolve() parses AWS_INSTANCE_TYPES into resolved.instance_types",
+      resolved.instance_types == [("tiny", 1, 2.0), ("huge", 16, 64.0)])
+
+# ── _pick_instance_type(): an overridden table actually replaces INSTANCE_TYPES, not merges ──
+b6 = backends.AWSBackend("eu-central-1", instance_types=[("tiny", 1, 2.0), ("huge", 16, 64.0)])
+check("_pick_instance_type() picks from the overridden table when instance_types is set",
+      b6._pick_instance_type(1, 2048, "vm1") == "tiny")
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        # 32 vCPU fits plenty of entries in the real built-in INSTANCE_TYPES table, but NOT in
+        # this override (max 16 cores) — a full replacement, not a merge.
+        b6._pick_instance_type(32, 4096, "vm1")
+    except SystemExit:
+        pass
+check("_pick_instance_type() does NOT fall back to the built-in INSTANCE_TYPES once overridden "
+      "(full replacement, not a merge)", any("AWS_INSTANCE_TYPES" in m for m in died))
 
 
 # ── _aws(): AWS_SESSION_TOKEN is passed through the subprocess env when set ─

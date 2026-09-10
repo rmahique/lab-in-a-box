@@ -217,6 +217,20 @@ with tempfile.TemporaryDirectory() as tempfile_dir:
     check("create_vm() includes image-project/network/subnet when configured",
           "debian-cloud" in create_call and "labnet" in create_call and "labsub" in create_call)
 
+    # ── cloud_instance_type: explicit override skips the custom-shape building entirely ──
+    # added 2026-09-10 per explicit user request — GCP has no static sizing table to override via
+    # config (its custom machine types are built live from vm_cpu/vm_mem), so cloud_instance_type
+    # is the only override mechanism for this backend. See README's Compute backends table.
+    b5 = backends.GCPBackend("labproj", "us-central1-a", lab_setup_path=tempfile_dir)
+    calls = []
+    with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
+        # cpu/mem here would normally build "e2-custom-2-4096" — cloud_instance_type must win.
+        b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="debian-12",
+                      cloud_instance_type="n2-standard-8")
+    create_call = next(c for c in calls if "create" in c)
+    check("create_vm() uses cloud_instance_type verbatim, skipping the custom-shape build",
+          "n2-standard-8" in create_call and "e2-custom-2-4096" not in create_call)
+
 
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",

@@ -194,6 +194,42 @@ check("create_vm() sends the already Base64-encoded UserData as-is",
       "ZW5jb2RlZA==" in run_call)
 
 
+# ── cloud_instance_type: explicit override bypasses _pick_instance_type() entirely ──
+# added 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+# ceiling — see _parse_sku_table()'s own docstring and README's Compute backends table.
+b5 = backends.AlibabaBackend("keyid", "keysecret", "cn-hangzhou", "sg-1", "vsw-1")
+b5._user_data_by_vm["vm1"] = ""
+calls = []
+with mock.patch.object(backends.subprocess, "run", side_effect=_fake_run):
+    # cpu/mem here would normally pick "ecs.g6.large" — cloud_instance_type must win regardless.
+    b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="m-0123456789",
+                  cloud_instance_type="ecs.g6.4xlarge")
+run_call = next(c for c in calls if "RunInstances" in c)
+check("create_vm() uses cloud_instance_type verbatim, bypassing _pick_instance_type()",
+      "ecs.g6.4xlarge" in run_call and "ecs.g6.large" not in run_call)
+
+
+# ── ALIBABA_INSTANCE_TYPES: resolve() parses the config override into instance_types ──
+_cfg = dict(_FULL_CONFIG, ALIBABA_INSTANCE_TYPES="tiny:1:2,huge:16:64")
+resolved = backends.AlibabaBackend.resolve({}, "vm1", _cfg, False)
+check("resolve() parses ALIBABA_INSTANCE_TYPES into resolved.instance_types",
+      resolved.instance_types == [("tiny", 1, 2.0), ("huge", 16, 64.0)])
+
+# ── _pick_instance_type(): an overridden table actually replaces INSTANCE_TYPES, not merges ──
+b6 = backends.AlibabaBackend("keyid", "keysecret", "cn-hangzhou", "sg-1", "vsw-1",
+                              instance_types=[("tiny", 1, 2.0), ("huge", 16, 64.0)])
+check("_pick_instance_type() picks from the overridden table when instance_types is set",
+      b6._pick_instance_type(1, 2048, "vm1") == "tiny")
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        b6._pick_instance_type(32, 4096, "vm1")  # too big for this override's max (16 cores)
+    except SystemExit:
+        pass
+check("_pick_instance_type() does NOT fall back to the built-in INSTANCE_TYPES once overridden "
+      "(full replacement, not a merge)", any("ALIBABA_INSTANCE_TYPES" in m for m in died))
+
+
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",
       backend.host_resources() == (9999, 999999, 999999))

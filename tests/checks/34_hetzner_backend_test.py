@@ -196,6 +196,43 @@ with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_url
 check("create_vm() sends location when one was configured", captured["body"].get("location") == "nbg1")
 
 
+# ── cloud_instance_type: explicit override bypasses _pick_server_type() entirely ──
+# added 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+# ceiling — see _parse_sku_table()'s own docstring and README's Compute backends table.
+b5 = backends.HetznerBackend("tok123")
+b5._user_data_by_vm["vm1"] = ""
+with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_urlopen):
+    # cpu/mem here would normally pick "cx22" — cloud_instance_type must win regardless.
+    b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="ubuntu-24.04",
+                  cloud_instance_type="cpx51")
+check("create_vm() uses cloud_instance_type verbatim, bypassing _pick_server_type()",
+      captured["body"].get("server_type") == "cpx51")
+
+
+# ── HETZNER_SERVER_TYPES: resolve() parses the config override into server_types ──
+resolved = backends.HetznerBackend.resolve(
+    {}, "vm1", {"HETZNER_TOKEN": "tok123", "HETZNER_SERVER_TYPES": "tiny:1:2,huge:16:64"}, False)
+check("resolve() parses HETZNER_SERVER_TYPES into resolved.server_types",
+      resolved.server_types == [("tiny", 1, 2.0), ("huge", 16, 64.0)])
+
+# ── _pick_server_type(): an overridden table actually replaces SERVER_TYPES, not merges ──
+b6 = backends.HetznerBackend("tok123", server_types=[("tiny", 1, 2.0), ("huge", 16, 64.0)])
+picked = b6._pick_server_type(1, 2048, 20, "vm1")
+check("_pick_server_type() picks from the overridden table when server_types is set",
+      picked == "tiny")
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        # 32 vCPU fits plenty of entries in the real built-in SERVER_TYPES table, but NOT in
+        # this override (max 16 cores) — a full replacement, not a merge, so this must fail to
+        # find a fit rather than silently falling back to the built-in table.
+        b6._pick_server_type(32, 4096, 20, "vm1")
+    except SystemExit:
+        pass
+check("_pick_server_type() does NOT fall back to the built-in SERVER_TYPES once overridden "
+      "(full replacement, not a merge)", any("HETZNER_SERVER_TYPES" in m for m in died))
+
+
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",
       backend.host_resources() == (9999, 999999, 999999))

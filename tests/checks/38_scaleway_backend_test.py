@@ -208,6 +208,43 @@ if poweron_req is not None:
           json.loads(poweron_req.data.decode("utf-8")).get("action") == "poweron")
 
 
+# ── cloud_instance_type: explicit override bypasses _pick_server_type() entirely ──
+# added 2026-09-10 per explicit user request that no provider's sizing catalog be a hardcoded
+# ceiling — see _parse_sku_table()'s own docstring and README's Compute backends table.
+b5 = backends.ScalewayBackend("secretkey", "proj-1", "fr-par-1")
+b5._user_data_by_vm["vm1"] = ""
+requests_seen = []
+with mock.patch.object(backends.urllib.request, "urlopen", side_effect=_fake_urlopen):
+    # cpu/mem here would normally pick "DEV1-M" — cloud_instance_type must win regardless.
+    b5.create_vm("vm1", 2, 4096, 40, None, config_method="cloud-init", iso_image="img-1",
+                  cloud_instance_type="GP1-XL")
+create_req = next(r for r in requests_seen if r.get_method() == "POST" and r.full_url.endswith("/servers"))
+create_body = json.loads(create_req.data.decode("utf-8"))
+check("create_vm() uses cloud_instance_type verbatim, bypassing _pick_server_type()",
+      create_body.get("commercial_type") == "GP1-XL")
+
+
+# ── SCALEWAY_SERVER_TYPES: resolve() parses the config override into server_types ──
+_cfg = dict(_FULL_CONFIG, SCALEWAY_SERVER_TYPES="tiny:1:2,huge:16:64")
+resolved = backends.ScalewayBackend.resolve({}, "vm1", _cfg, False)
+check("resolve() parses SCALEWAY_SERVER_TYPES into resolved.server_types",
+      resolved.server_types == [("tiny", 1, 2.0), ("huge", 16, 64.0)])
+
+# ── _pick_server_type(): an overridden table actually replaces SERVER_TYPES, not merges ──
+b6 = backends.ScalewayBackend("secretkey", "proj-1", "fr-par-1",
+                               server_types=[("tiny", 1, 2.0), ("huge", 16, 64.0)])
+check("_pick_server_type() picks from the overridden table when server_types is set",
+      b6._pick_server_type(1, 2048, "vm1") == "tiny")
+died = []
+with mock.patch.object(backends, "die", side_effect=lambda msg: died.append(msg) or (_ for _ in ()).throw(SystemExit)):
+    try:
+        b6._pick_server_type(32, 4096, "vm1")  # too big for this override's max (16 cores)
+    except SystemExit:
+        pass
+check("_pick_server_type() does NOT fall back to the built-in SERVER_TYPES once overridden "
+      "(full replacement, not a merge)", any("SCALEWAY_SERVER_TYPES" in m for m in died))
+
+
 # ── host_resources(): a large constant, not a real capacity query ─────────
 check("host_resources() returns a (cpu, mem_mb, disk_mb) tuple that never reads as 'no capacity'",
       backend.host_resources() == (9999, 999999, 999999))
