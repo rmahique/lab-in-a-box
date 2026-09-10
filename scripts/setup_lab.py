@@ -106,7 +106,8 @@ def validate_addon_configs(definition, json_file):
     for addon in addon_names:
         installer = shutil.which("install_{}".format(addon))
         if not installer:
-            issues.append("  [ERROR] addon '{}': install_{} not found on PATH".format(addon, addon))
+            issues.append("  {}[ERROR]{} addon '{}': install_{} not found on PATH".format(
+                lc._RED, lc._RESET, addon, addon))
             continue
         r = subprocess.run([installer, "--validate", json_file],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)

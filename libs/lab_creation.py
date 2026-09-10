@@ -34,6 +34,7 @@ from pathlib import Path
 
 _RED    = "\033[1;91m"
 _YELLOW = "\033[1;33m"
+_ORANGE = "\033[1;38;5;208m"  # 256-colour orange; falls back to bold text on 16-colour terminals
 _GREEN  = "\033[1;92m"
 _WHITE  = "\033[1;97m"
 _RESET  = "\033[0m"
@@ -259,11 +260,11 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     counts = {"errors": 0, "warnings": 0}
 
     def err(msg):
-        issues.append("  [ERROR] {}".format(msg))
+        issues.append("  {}[ERROR]{} {}".format(_RED, _RESET, msg))
         counts["errors"] += 1
 
     def warn(msg):
-        issues.append("  [WARN]  {}".format(msg))
+        issues.append("  {}[WARN]{}  {}".format(_ORANGE, _RESET, msg))
         counts["warnings"] += 1
 
     if target_node:
