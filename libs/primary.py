@@ -205,6 +205,80 @@ def load_shell_vars(path):
     return _parse_shell_vars(p.read_text())
 
 
+_CLOUD_ACCOUNT_DIRS = ["/etc/lab_creation/cloud", "lab_creation-cloud"]
+_CLOUD_ACCOUNT_EXTS = [".cfg", ".yaml", ".yml", ".json"]
+
+
+def cloud_account_path(name):
+    """First existing file for cloud account `name` — <dir>/<name>.<ext> across
+    _CLOUD_ACCOUNT_DIRS x _CLOUD_ACCOUNT_EXTS, or None."""
+    for d in _CLOUD_ACCOUNT_DIRS:
+        for ext in _CLOUD_ACCOUNT_EXTS:
+            p = Path(d) / "{}{}".format(name, ext)
+            if p.exists():
+                return p
+    return None
+
+
+def try_load_cloud_account(name):
+    """
+    Non-dying load of a per-account cloud config file: returns (data, error)
+    where exactly one is None. `data`, when present, is a flat dict with the
+    provider normalised to the key "CLOUDTYPE". Used by the preflight, which
+    folds any error into its own issue list rather than aborting.
+
+    Multiple cloud accounts, the same way KVM_HOSTS gives multiple hypervisors
+    (see backends.resolve_cloud_account()). Looks for
+    /etc/lab_creation/cloud/<name>.{cfg,yaml,yml,json} (dev fallback
+    ./lab_creation-cloud/<name>.*). A .cfg is parsed as shell KEY=value, exactly
+    like lab_creation.cfg; .yaml/.json as their respective formats. The file
+    carries a `cloudtype` (aws/gcp/hetzner/…) plus the same connection keys that
+    provider's backend already reads from lab_creation.cfg (AWS_REGION, etc.).
+    """
+    p = cloud_account_path(name)
+    if p is None:
+        return None, ("cloud account '{}' not found — looked for <name>.{{{}}} in: {}".format(
+            name, ",".join(e.lstrip(".") for e in _CLOUD_ACCOUNT_EXTS),
+            ", ".join(_CLOUD_ACCOUNT_DIRS)))
+
+    text = p.read_text()
+    try:
+        if p.suffix.lower() == ".json":
+            data = json.loads(text)
+        elif p.suffix.lower() in (".yaml", ".yml"):
+            import yaml
+            data = yaml.safe_load(text)
+        else:
+            data = _parse_shell_vars(text)
+    except ImportError:
+        return None, "cloud account '{}' ({}) needs PyYAML to parse — pip install pyyaml".format(name, p)
+    except Exception as e:  # json.JSONDecodeError, yaml.YAMLError, …
+        return None, "cloud account '{}' ({}) failed to parse as {}: {}".format(
+            name, p, p.suffix.lstrip(".") or "config", e)
+
+    if not isinstance(data, dict):
+        return None, "cloud account '{}' ({}) must be a mapping of key: value".format(name, p)
+
+    # Normalise the provider key: accept cloudtype / CLOUDTYPE / cloud_type.
+    cloudtype = ""
+    for k in list(data.keys()):
+        if k.lower() in ("cloudtype", "cloud_type"):
+            cloudtype = str(data.pop(k) or "").strip()
+    if not cloudtype:
+        return None, "cloud account '{}' ({}) has no 'cloudtype' — set it to aws, gcp, hetzner, …".format(name, p)
+    data["CLOUDTYPE"] = cloudtype
+    return data, None
+
+
+def load_cloud_account(name):
+    """Dying wrapper over try_load_cloud_account() — used by get_backend()/
+    effective_backend_name(), where a bad account reference is fatal."""
+    data, error = try_load_cloud_account(name)
+    if error:
+        _die(error)
+    return data
+
+
 def _load_shell_vars_file(search_paths, name):
     for candidate in search_paths:
         p = Path(candidate)

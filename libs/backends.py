@@ -225,6 +225,12 @@ def _parse_k8s_memory(value):
 class VMBackend(object):
     """Interface every compute backend implements."""
 
+    # Name of the cloud account (see resolve_cloud_account()) this instance was
+    # built for, or "" for the single default account / a non-cloud backend.
+    # Set by get_backend() after resolve(); read by ensure_cloud_dns_vm() so the
+    # per-account DNS VM gets a per-account name.
+    account = ""
+
     @classmethod
     def resolve(cls, definition, vm_name, config, for_existing, vm_img_loc=None,
                 iso_loc=None, lab_setup_path=None):
@@ -3656,8 +3662,12 @@ def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image
     Real multi-node cloud clusters need that follow-up before they can rely on hostname resolution
     between their own nodes.
 
-    Reuse/creation: looks up the fixed name "lab-dns-<backend_name>" via the backend's own
-    vm_exists()/get_ip() (same idempotent-reuse convention as every other node in this project);
+    With multiple cloud accounts (backend.account set — see resolve_cloud_account()) each account
+    is its own isolated cloud network, so the DNS VM is per-account: "lab-dns-<backend>-<account>".
+    The unnamed / "default" account keeps the plain "lab-dns-<backend>" name, unchanged.
+
+    Reuse/creation: looks up the fixed name "lab-dns-<backend_name>[-<account>]" via the backend's
+    own vm_exists()/get_ip() (same idempotent-reuse convention as every other node in this project);
     creates it via the SAME backend's own create_vm() otherwise, using the smallest instance/plan
     size available (1 vCPU / 512 MiB is intentionally tiny — BIND's own footprint is minimal) and
     the SAME ISO_IMAGE the calling lab already configured (no new required config key). Uses
@@ -3677,7 +3687,11 @@ def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image
     root-caused. This means today, this DNS VM's own records are NOT reliably queryable from
     automation.mydemo.lab over the public IP — a real, currently open problem, not a solved one.
     """
-    dns_vm_name = "lab-dns-{}".format(backend_name)
+    acct = getattr(backend, "account", "") or ""
+    if acct in ("", "default"):
+        dns_vm_name = "lab-dns-{}".format(backend_name)
+    else:
+        dns_vm_name = "lab-dns-{}-{}".format(backend_name, acct)
 
     if backend.vm_exists(dns_vm_name):
         ip = backend.get_ip(dns_vm_name)
@@ -3733,12 +3747,54 @@ def ensure_cloud_dns_vm(backend, backend_name, root_ssh_key, mydomain, iso_image
     return ip
 
 
+def resolve_cloud_account(definition, config, vm_name):
+    """
+    Multiple cloud accounts, the same way KVM_HOSTS gives multiple hypervisors.
+
+    An account is a file /etc/lab_creation/cloud/<name>.{cfg,yaml,json} carrying a
+    `cloudtype` (aws/gcp/…) plus that provider's usual connection keys (AWS_REGION,
+    etc.) — see primary.load_cloud_account(). A node (or common) picks one with a
+    "cloud_account": "<name>" field, exactly like "kvm_host": "<host>".
+
+    Returns (account_name, effective_config, cloudtype):
+      - no cloud_account set anywhere -> ("", config, None): today's behaviour,
+        keys read straight from lab_creation.cfg.
+      - set -> (name, config-with-the-account-file's-keys-layered-on-top, cloudtype).
+    Dies (via primary) if the named account file is missing or has no cloudtype.
+    """
+    node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
+    common_cfg = definition.get("common", {}) or {}
+    account = node_cfg.get("cloud_account") or common_cfg.get("cloud_account") or ""
+    if not account:
+        return "", config, None
+    acct = primary.load_cloud_account(account)
+    cloudtype = acct.get("CLOUDTYPE", "")
+    merged = dict(config)
+    merged.update(acct)
+    return account, merged, cloudtype
+
+
+def effective_backend_name(definition, config, vm_name):
+    """The backend name that actually applies to `vm_name`, honouring a
+    cloud_account's cloudtype (which wins, making the `backend` field optional)
+    before falling back to nodes[x].backend / common.backend / config["BACKEND"]
+    / "libvirt". Used by setup_vm.py / destroy_vm.py for their CLOUD_BACKEND_NAMES
+    gate. Dies if a referenced cloud_account file is missing/invalid."""
+    node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
+    common_cfg = definition.get("common", {}) or {}
+    account = node_cfg.get("cloud_account") or common_cfg.get("cloud_account") or ""
+    if account:
+        return primary.load_cloud_account(account).get("CLOUDTYPE", "")
+    return node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
+
+
 def get_backend(definition, config, vm_name, for_existing=False, vm_img_loc=None,
                  iso_loc=None, lab_setup_path=None):
     """
     Resolve which backend a VM should use and return a ready instance,
     hiding host/cluster selection and connection-detail construction from
-    the caller. Backend selection: optional nodes[vm_name].backend, else
+    the caller. Backend selection: a cloud_account's cloudtype (see
+    resolve_cloud_account()) wins; else nodes[vm_name].backend, else
     common.backend, else config["BACKEND"], else "libvirt". Unknown name
     dies listing the known backends. The actual target-resolution work
     (which KVM host, which Harvester cluster) is delegated to the chosen
@@ -3747,12 +3803,22 @@ def get_backend(definition, config, vm_name, for_existing=False, vm_img_loc=None
     """
     node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
     common_cfg = definition.get("common", {}) or {}
-    backend_name = node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
+
+    account, eff_config, cloudtype = resolve_cloud_account(definition, config, vm_name)
+    explicit_backend = node_cfg.get("backend") or common_cfg.get("backend")
+    if account and explicit_backend and explicit_backend != cloudtype:
+        die("VM '{}': cloud_account '{}' is cloudtype '{}', but backend is set to '{}' — remove "
+            "the backend field or make the two agree".format(
+                vm_name, account, cloudtype, explicit_backend))
+
+    backend_name = cloudtype or explicit_backend or eff_config.get("BACKEND") or "libvirt"
 
     backend_cls = BACKENDS.get(backend_name)
     if backend_cls is None:
         die("Unknown backend '{}' for VM '{}' — supported backends: {}".format(
             backend_name, vm_name, ", ".join(sorted(BACKENDS))))
 
-    return backend_cls.resolve(definition, vm_name, config, for_existing,
+    inst = backend_cls.resolve(definition, vm_name, eff_config, for_existing,
                                 vm_img_loc=vm_img_loc, iso_loc=iso_loc, lab_setup_path=lab_setup_path)
+    inst.account = account
+    return inst

@@ -997,6 +997,24 @@ Node-specific configuration for the automation VM. Copied from `/etc/lab_creatio
 
 A lab's VMs default to `libvirt` (the KVM hypervisor(s) above). Set `common.backend` (or a per-node `backend`, which overrides it) to target a different one — see the `backend` field's own `enum` for the full current list. Each non-default backend needs its own credentials in `/etc/lab_creation.cfg`:
 
+**Multiple cloud accounts — the same way `KVM_HOSTS` gives you multiple hypervisors, added 2026-09-10:** put each cloud account in its own file, `/etc/lab_creation/cloud/<name>.cfg` (or `.yaml`/`.json` — the extension picks the parser; a `.cfg` is the same `KEY=value` format as `lab_creation.cfg`). Each file declares `cloudtype` (`aws`/`gcp`/`hetzner`/…) plus that provider's usual connection keys — the exact same keys the backend already reads from `lab_creation.cfg` (`AWS_REGION`, `AWS_PROFILE`, `AWS_SUBNET_ID`, …). A node (or `common`) then selects one with `"cloud_account": "<name>"`, exactly like `"kvm_host": "<host>"`:
+
+```jsonc
+// /etc/lab_creation/cloud/aws-sandbox.cfg
+//   CLOUDTYPE=aws
+//   AWS_REGION=eu-central-1
+//   AWS_PROFILE=sandbox-sso
+//   AWS_SUBNET_ID=subnet-0abc…
+// /etc/lab_creation/cloud/aws-prod.cfg      (CLOUDTYPE=aws, different account/region/subnet)
+
+"nodes": {
+  "jupiter.mydemo.lab": { "cloud_account": "aws-sandbox" },
+  "saturn.mydemo.lab":  { "cloud_account": "aws-prod" }
+}
+```
+
+When `cloud_account` is set, its `cloudtype` **is** the backend (so the `backend` field becomes optional; if you set both and they disagree, preflight errors), and the account file's keys are layered over `lab_creation.cfg` for that node only. Omit `cloud_account` everywhere for today's single-account behaviour, unchanged. Each account is an isolated network, so the [Cloud DNS VM](#compute-backends) below becomes per-account (`lab-dns-aws-sandbox`, `lab-dns-aws-prod`, …); the unnamed default account keeps the plain `lab-dns-<backend>` name.
+
 **Cloud backends (Hetzner/AWS/GCP/Alibaba/Scaleway/UpCloud/OVHcloud/Exoscale) and `myip`:** leave a cloud-backend node's `myip` empty in the lab JSON — the real IP is only known once the provider assigns it at create time, not something you can decide in advance the way a static libvirt/Harvester IP works. `setup_vm.py` picks up the real IP from `create_vm()`'s own return value and registers it in DNS *after* the node actually exists, not before (a real bug found live-testing AWSBackend, 2026-09-06 — see TODO). `mymac` is similarly meaningless for a cloud backend — leave it unset; it's ignored rather than generated/conflict-checked.
 
 **Cloud DNS VM:** the first time any lab node uses a given cloud backend, `setup_vm.py` also provisions (or reuses, if one already exists) a small, cheap DNS-serving VM inside that same cloud network — `lab-dns-<backend>`, e.g. `lab-dns-aws` — running BIND. This exists because cloud nodes generally cannot reach `automation.mydemo.lab`'s own BIND server at all (it sits behind the home lab's own NAT/router, not internet-reachable); a real multi-node cloud cluster needs its own DNS server living inside that same cloud network for its nodes to resolve each other. Every cloud node's DNS entry is registered in *both* this DNS VM and the central `automation.mydemo.lab` zone. **Two known gaps, live-tested 2026-09-09, neither closed:** (1) a freshly created cloud node does not yet automatically point its own resolution at this DNS VM, so a second cloud node in the same lab can't yet resolve a first one by hostname without further wiring; (2) querying this DNS VM's own zone via its AWS Elastic/Public IP from an external client (including automation.mydemo.lab itself) currently returns a bogus root-zone NXDOMAIN instead of the real answer — confirmed the write path (SSH-based zone registration) is solid and that querying via the VM's private IP or loopback works correctly, but the public-IP query path itself is not yet root-caused. See `libs/backends.py`'s `ensure_cloud_dns_vm()` docstring and TODO for the full investigation.

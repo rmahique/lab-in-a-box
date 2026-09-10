@@ -58,8 +58,8 @@ def destroy_vm(definition, config, defaults, vm_name):
     # remove a record built from an empty IP, matching nothing, leaving the real entry (registered
     # with the real IP at create time) permanently orphaned in both the local zone and the cloud
     # DNS VM. Found alongside create_vm()'s own real-IP return contract, 2026-09-09 — see TODO.
-    common_cfg = definition.get("common", {}) or {}
-    backend_name = node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
+    # Honours a per-node/common "cloud_account" (its cloudtype), same as get_backend().
+    backend_name = backends.effective_backend_name(definition, config, vm_name)
     myip = env.get("myip", "")
     remote_dns_servers = env.get("REMOTE_DNS_SERVERS", "").split()
     if backend_name in backends.CLOUD_BACKEND_NAMES:
@@ -67,8 +67,10 @@ def destroy_vm(definition, config, defaults, vm_name):
             myip = backend.get_ip(vm_name) or ""
         # Best-effort: the DNS VM itself (see ensure_cloud_dns_vm()) is a shared, persistent
         # resource, never created here — only looked up, and skipped if it doesn't exist (nothing
-        # to clean an entry off of).
-        dns_vm_name = "lab-dns-{}".format(backend_name)
+        # to clean an entry off of). Per-account name when this node uses a named cloud_account.
+        _acct = getattr(backend, "account", "") or ""
+        dns_vm_name = ("lab-dns-{}".format(backend_name) if _acct in ("", "default")
+                       else "lab-dns-{}-{}".format(backend_name, _acct))
         if backend.vm_exists(dns_vm_name):
             dns_vm_ip = backend.get_ip(dns_vm_name)
             if dns_vm_ip:

@@ -17,6 +17,8 @@ Typical usage:
 # License: GPLv3
 
 import base64
+import json
+import math
 import os
 import random
 import re
@@ -49,14 +51,54 @@ def log(msg, level=None):
 
 
 def warn(msg):
-    """Print a yellow warning to stderr."""
-    print("{}WARNING:{} {}".format(_YELLOW, _RESET, msg), file=sys.stderr)
+    """Print an orange warning to stderr."""
+    print("{}WARNING:{} {}".format(_ORANGE, _RESET, msg), file=sys.stderr)
+
+
+def error(msg):
+    """Print a red error to stderr WITHOUT exiting — for a failure that is real
+    (not a warning) but that the caller has deliberately chosen to continue past,
+    e.g. one node failing in a multi-node setup_lab run. Use die() when the whole
+    process must stop."""
+    print("{}ERROR:{} {}".format(_RED, _RESET, msg), file=sys.stderr)
 
 
 def die(msg):
     """Print a red error and exit (mirrors fail_with_error)."""
     print("{}ERROR:{} {}".format(_RED, _RESET, msg), file=sys.stderr)
     raise SystemExit(1)
+
+
+_DEBUG = False
+
+_NOISY_RE = re.compile(
+    r"(?i)\b(warn|warning|error|errno|fail|failed|denied|refused|"
+    r"not found|no such|cannot|unable|traceback|fatal)\b")
+
+
+def set_debug(on):
+    """Turn debug output on/off (default off). When OFF, ssh_run() runs remote
+    commands quietly and only prints their output if the command fails or the
+    output looks like it contains a warning/error. When ON, every remote command
+    streams its output live."""
+    global _DEBUG
+    _DEBUG = bool(on)
+
+
+def debug_enabled():
+    return _DEBUG
+
+
+def debug(msg):
+    """Print a debug line, only when debug is enabled."""
+    if _DEBUG:
+        print("{}DEBUG:{} {}".format(_WHITE, _RESET, msg))
+
+
+def _looks_noisy(text):
+    """True if `text` looks like it carries a warning or error worth showing
+    even in non-debug mode."""
+    return bool(text) and bool(_NOISY_RE.search(text))
 
 
 # ── Lab definition preflight validation ───────────────────────────────────────
@@ -204,7 +246,8 @@ def _supported_config_methods(iso_image):
     return None
 
 
-def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None, vm_img_loc=None):
+def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None,
+                            vm_img_loc=None, issues_out=None):
     """
     Preflight-validate an already-loaded lab definition. Mirrors
     validate_lab_definition (bash), generalized to resolve a KVM host per
@@ -310,10 +353,30 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         err("common.VM_NET_MODEL '{}' is invalid — must be one of: virtio, e1000, e1000e, rtl8139, vmxnet3, ne2k_pci".format(net_model))
 
     from backends import BACKENDS, CLOUD_BACKEND_NAMES
+    from primary import try_load_cloud_account
     common_backend = _jq_or(common.get("backend"))
     if not _empty(common_backend) and common_backend not in BACKENDS:
         err("common.backend '{}' is invalid — must be one of: {}".format(
             common_backend, ", ".join(sorted(BACKENDS))))
+
+    # cloud_account (common or per-node): multiple cloud accounts, like KVM_HOSTS
+    # for hypervisors. Validated per node below; the effective cloudtype is cached
+    # here so section 6's libvirt-vs-cloud split can reuse it.
+    node_account_cloudtype = {}
+
+    def _account_cloudtype_for(node):
+        """The cloudtype a node's cloud_account resolves to, or None. Errors are
+        reported once, in the per-node loop below — this only returns the type."""
+        if node in node_account_cloudtype:
+            return node_account_cloudtype[node]
+        acct_name = _jq_or((nodes.get(node) or {}).get("cloud_account")) or _jq_or(common.get("cloud_account"))
+        ct = None
+        if not _empty(acct_name):
+            data, _e = try_load_cloud_account(acct_name)
+            if data:
+                ct = data.get("CLOUDTYPE") or None
+        node_account_cloudtype[node] = ct
+        return ct
 
     # ── 3. Per-node checks ─────────────────────────────────────────────────────
     seen_ips = set()
@@ -347,7 +410,28 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         # time — myip is deliberately left empty for one in the JSON (see README), not a missing-
         # field mistake. Added 2026-09-09 alongside create_vm()'s own real-IP return contract —
         # see TODO. Every other backend (libvirt/Harvester) keeps requiring it exactly as before.
-        node_backend_eff = _jq_or(node_cfg.get("backend")) or common_backend or _jq_or(config.get("BACKEND")) or "libvirt"
+        # cloud_account: validate the referenced account file, and let its
+        # cloudtype stand in for the `backend` field (which becomes optional).
+        cloud_account = _jq_or(node_cfg.get("cloud_account")) or _jq_or(common.get("cloud_account"))
+        account_cloudtype = None
+        if not _empty(cloud_account):
+            acct_data, acct_err = try_load_cloud_account(cloud_account)
+            if acct_err:
+                err("nodes.{}: {}".format(node, acct_err))
+            else:
+                account_cloudtype = acct_data.get("CLOUDTYPE") or ""
+                if account_cloudtype not in CLOUD_BACKEND_NAMES:
+                    err("nodes.{}: cloud_account '{}' has cloudtype '{}' — must be one of: {}".format(
+                        node, cloud_account, account_cloudtype, ", ".join(sorted(CLOUD_BACKEND_NAMES))))
+                explicit_backend = _jq_or(node_cfg.get("backend")) or common_backend
+                if not _empty(explicit_backend) and explicit_backend != account_cloudtype:
+                    err("nodes.{}: cloud_account '{}' is cloudtype '{}' but backend is set to '{}' "
+                        "— remove the backend field or make them agree".format(
+                            node, cloud_account, account_cloudtype, explicit_backend))
+        node_account_cloudtype[node] = account_cloudtype or None
+
+        node_backend_eff = (account_cloudtype or _jq_or(node_cfg.get("backend")) or common_backend
+                            or _jq_or(config.get("BACKEND")) or "libvirt")
         is_cloud_node = node_backend_eff in CLOUD_BACKEND_NAMES
 
         if _empty(myip) and not is_cloud_node:
@@ -592,11 +676,13 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
 
     def _uses_libvirt(node):
         # ISO_IMAGE existence only means anything against a libvirt
-        # hypervisor's own ISO_LOC — non-libvirt backends (e.g. Harvester)
-        # resolve images by name inside their own cluster instead and never
-        # touch this path at all. Confirmed live (2026-08-29): without this,
-        # a Harvester-backed node failed preflight over an ISO_IMAGE that
-        # was never supposed to exist on any KVM hypervisor's filesystem.
+        # hypervisor's own ISO_LOC — non-libvirt backends (e.g. Harvester,
+        # any cloud) resolve images by name in their own environment instead
+        # and never touch this path at all. Confirmed live (2026-08-29):
+        # without this, a Harvester-backed node failed preflight over an
+        # ISO_IMAGE that was never supposed to exist on any KVM hypervisor.
+        if _account_cloudtype_for(node):
+            return False  # a cloud_account always means a cloud backend
         node_backend = _jq_or((nodes.get(node) or {}).get("backend")) or _jq_or(common.get("backend"))
         return _empty(node_backend) or node_backend == "libvirt"
 
@@ -613,6 +699,50 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
             node_iso = _jq_or((nodes.get(node) or {}).get("ISO_IMAGE"))
             if not _empty(node_iso):
                 check_image_on_hv(node_iso, "nodes.{}.ISO_IMAGE".format(node), node_host)
+
+    # ── 6b. Hypervisor: VM_DSK must not be smaller than the source image ──────
+    # `qemu-img resize` (run at copy time by every non-install_iso config_method)
+    # fails outright if asked to shrink an image below its own virtual size —
+    # reported live as "qemu-img: Use the --shrink option to perform a shrink
+    # operation." / a hard provisioning error for a node with a too-small VM_DSK.
+    # Rather than let that surface mid-run, detect it here: bump the node's
+    # VM_DSK up to the image's real virtual size (in memory only — the on-disk
+    # lab file is untouched) and record a warning so the summary shows it.
+    def check_min_disk_for_node(node):
+        node_cfg = nodes.get(node) or {}
+        img = _jq_or(node_cfg.get("ISO_IMAGE")) or iso
+        host, _ = resolved_host_for(node)
+        if _empty(img) or _empty(iso_loc) or not host or not hv_reachable(host):
+            return
+        try:
+            req_gib = int(str(node_cfg.get("VM_DSK", common.get("VM_DSK", "")) or "").strip())
+        except (TypeError, ValueError):
+            return  # missing/invalid VM_DSK is already an [ERROR] from section 2
+        info = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=5", "-q", "root@{}".format(host),
+             "qemu-img info --output=json '{}/{}'".format(iso_loc, img)],
+            capture_output=True, text=True,
+        )
+        if info.returncode != 0:
+            return  # can't introspect it (no qemu-img, odd format) — best-effort only
+        try:
+            vsize = int(json.loads(info.stdout).get("virtual-size", 0))
+        except (ValueError, TypeError, AttributeError):
+            return
+        if vsize <= 0:
+            return
+        img_gib = int(math.ceil(vsize / (1024 ** 3)))
+        if req_gib < img_gib:
+            warn("nodes.{}.VM_DSK is {} GiB but its source image '{}' is {} GiB — "
+                 "raising VM_DSK to {} GiB (a smaller disk would fail at qemu-img resize)".format(
+                     node, req_gib, img, img_gib, img_gib))
+            if isinstance(nodes.get(node), dict):
+                nodes[node]["VM_DSK"] = str(img_gib)
+
+    if not _empty(iso_loc):
+        for node in libvirt_nodes_to_check:
+            check_min_disk_for_node(node)
 
     # ── 7. Local: provisioning templates ──────────────────────────────────────
     # Only check the config methods actually used in this definition
@@ -652,6 +782,11 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     # ── Report ─────────────────────────────────────────────────────────────────
     if issues:
         print("\n".join(issues))
+
+    # Hand the raw issue lines back to a caller that wants to re-surface them
+    # later (setup_lab.py folds these into its end-of-run summary).
+    if issues_out is not None:
+        issues_out.extend(issues)
 
     if counts["errors"] > 0:
         print("{}✗ Preflight FAILED{} — {} error(s), {} warning(s). Fix the above before proceeding.".format(
@@ -739,13 +874,23 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="roo
         subprocess.CompletedProcess
     """
     args = _SSH_BASE + ["{}@{}".format(user, hostname), cmd]
+
+    # Quiet-by-default: when the caller isn't explicitly capturing and debug is
+    # off, capture the output internally and only print it if the command fails
+    # or looks like it emitted a warning/error. debug on -> stream live, as before.
+    # A caller that passes capture=True is unaffected (it reads .stdout itself).
+    quiet = (not capture) and (not _DEBUG)
     result = subprocess.run(
         args,
         universal_newlines=True,
         input=input_text,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
+        stdout=subprocess.PIPE if (capture or quiet) else None,
+        stderr=subprocess.STDOUT if quiet else (subprocess.PIPE if capture else None),
     )
+    if quiet:
+        out = (result.stdout or "").rstrip()
+        if out and (result.returncode != 0 or _looks_noisy(out)):
+            print(out)
     if check and result.returncode != 0:
         raise RuntimeError(
             "SSH command failed (rc={}) on {}:\n  {}".format(

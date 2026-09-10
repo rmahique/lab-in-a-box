@@ -160,8 +160,9 @@ def provision_vm(definition, config, defaults, vm_name):
     if created_ip:
         env["myip"] = created_ip
 
-    common_cfg = definition.get("common", {}) or {}
-    backend_name = node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
+    # Honours a per-node/common "cloud_account" (its cloudtype), same as get_backend() above —
+    # so a multi-account cloud lab still routes through the cloud-DNS-VM path below.
+    backend_name = backends.effective_backend_name(definition, config, vm_name)
 
     remote_dns_servers = env.get("REMOTE_DNS_SERVERS", "").split()
     if backend_name in backends.CLOUD_BACKEND_NAMES:
