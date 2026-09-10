@@ -362,11 +362,17 @@ def phase_create_vms(definition, config, defaults, json_file, keep):
         try:
             destroy_vm(definition, config, defaults, vm_name)
         except SystemExit:
+            # destroy_vm() called die() — a refusal ("existing" node) or a
+            # nothing-to-do no-op on a first run. Not an error, don't record it.
             pass
         except RuntimeError as e:
+            # A genuine command/API failure in the pre-recreate destroy (e.g.
+            # expired cloud credentials) — real enough to flag as an ERROR and
+            # fail the run's exit code, even though the remaining nodes still
+            # get their turn.
             msg = "destroy before recreate failed for '{}' (continuing): {}".format(vm_name, e)
-            lc.warn(msg)
-            _report.add_warning(msg)
+            lc.error(msg)
+            _report.add_error(msg)
 
         # A single node's boot-wait timing out (check_ssh_conn's own die(),
         # inside provision_vm()) must not abort the whole multi-node deploy —
