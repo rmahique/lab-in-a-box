@@ -13,7 +13,7 @@ Usage:
     destroy_lab.py <lab.json>
 """
 
-__version__ = "__LABVERSION__"
+__version__ = "6be996d"
 
 import sys
 from pathlib import Path

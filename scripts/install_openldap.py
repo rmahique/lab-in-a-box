@@ -9,7 +9,7 @@
 #   openldap_name    : [OPTIONAL] Deployment and service name          (default: openldap)
 #   openldap_version : [OPTIONAL] Helm chart version                   (empty = latest)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "openldap",

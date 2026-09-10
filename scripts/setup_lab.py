@@ -19,7 +19,7 @@ Usage:
     setup_lab.py [--keep] <lab.json>
 """
 
-__version__ = "__LABVERSION__"
+__version__ = "fdfe335"
 _SCHEMA_VERSION = "1.0"
 
 import os

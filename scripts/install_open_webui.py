@@ -39,7 +39,7 @@
 # openaiApiKeys/ingress.host — and the in-cluster Ollama Service DNS name were pre-verified against
 # open-webui/helm-charts' own README before this live test, not guessed.)
 
-__version__ = "__LABVERSION__"
+__version__ = "0259515"
 
 PLUGIN = {
     "name": "open_webui",

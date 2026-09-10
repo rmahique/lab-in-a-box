@@ -12,7 +12,7 @@
 #   complianceascode_repo_url: [OPTIONAL] Helm repo URL
 #                              (default: https://openshift.github.io/compliance-operator)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "complianceascode",

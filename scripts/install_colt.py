@@ -23,7 +23,7 @@
 #
 # NOT live-tested (no cluster, and no built Colt image, available in this session).
 
-__version__ = "__LABVERSION__"
+__version__ = "5fc5f69"
 
 PLUGIN = {
     "name": "colt",

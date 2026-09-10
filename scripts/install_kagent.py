@@ -13,7 +13,7 @@
 # NOTE: kagent is a new CNCF project. The Helm chart URL may change as the project
 # matures. Check https://github.com/kagent-ai/kagent for the latest install instructions.
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "kagent",

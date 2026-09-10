@@ -27,7 +27,7 @@
 # for /srv — ephemeral/quick-demo, matches install_mailman.py's own same tradeoff and caveat about
 # this project's RKE2 clusters having no default StorageClass.
 
-__version__ = "__LABVERSION__"
+__version__ = "5fc5f69"
 
 PLUGIN = {
     "name": "mediagoblin",

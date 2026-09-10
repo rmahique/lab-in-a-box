@@ -26,7 +26,7 @@
 # by inspecting the pod's own filesystem), the pod reached Running in under 30s, and the real
 # Traefik ingress served a genuine HTTP 200 with <title>Open Saber</title>.
 
-__version__ = "__LABVERSION__"
+__version__ = "87e323b"
 
 PLUGIN = {
     "name": "open_saber",

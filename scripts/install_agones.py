@@ -20,7 +20,7 @@
 # and the ordinary-node fallback behavior verified against agones.dev's own install docs and the
 # chart's own README, 2026-09-05.
 
-__version__ = "__LABVERSION__"
+__version__ = "5fc5f69"
 
 PLUGIN = {
     "name": "agones",

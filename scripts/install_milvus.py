@@ -21,7 +21,7 @@
 # zilliztech/milvus-helm's own README/values.yaml, 2026-09-05 (the older milvus-io.github.io/milvus-helm
 # repo is archived — confirmed not to use it).
 
-__version__ = "__LABVERSION__"
+__version__ = "3d35d1a"
 
 PLUGIN = {
     "name": "milvus",

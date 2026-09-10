@@ -33,7 +33,7 @@
 # instead, same as every other proxy addon here) verified against docs.litellm.ai/docs/providers/moonshot
 # and ollama.com's own kimi-k3 listing, 2026-09-05.
 
-__version__ = "__LABVERSION__"
+__version__ = "3d35d1a"
 
 PLUGIN = {
     "name": "kimi",

@@ -9,7 +9,7 @@
 #   kubewarden_rel      : [OPTIONAL] Helm repo alias (default: kubewarden)
 #   kubewarden_repo_url : [OPTIONAL] Helm repo URL (default: https://charts.kubewarden.io)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "kubewarden",

@@ -65,7 +65,7 @@
 # this project's separate "ollama"/"open_webui"/"milvus" addons already install from their community
 # upstream charts — don't run both against the same cluster/namespace at once.
 
-__version__ = "__LABVERSION__"
+__version__ = "0259515"
 
 PLUGIN = {
     "name": "suse_ai",

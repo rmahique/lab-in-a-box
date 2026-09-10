@@ -8,7 +8,7 @@
 #   nv_testing_ns   : [OPTIONAL] Kubernetes namespace                  (default: demo)
 #   nv_testing_name : [OPTIONAL] Service name and ingress hostname     (default: nv-testing)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "nv_testing",

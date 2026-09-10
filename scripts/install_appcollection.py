@@ -16,7 +16,7 @@
 # installs one specific chart from it. To install multiple charts, call this script
 # multiple times with different appcollection_chart values or use 'helm install' directly.
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "appcollection",

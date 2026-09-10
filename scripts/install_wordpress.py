@@ -10,7 +10,7 @@
 #   wordpress_shorthn : [OPTIONAL] Short hostname for ingress          (default: wordpress)
 #   wordpress_version : [OPTIONAL] Helm chart version                  (empty = latest)
 
-__version__ = "__LABVERSION__"
+__version__ = "a45abd4"
 
 PLUGIN = {
     "name": "wordpress",

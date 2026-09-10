@@ -16,7 +16,7 @@
 # This script deploys LiteLLM as an OpenAI-compatible proxy for Google Gemini.
 # The proxy exposes the same API as OpenAI so any OpenAI SDK can reach Gemini models.
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "gemini",

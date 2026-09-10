@@ -27,7 +27,7 @@
 # sizing.profile enum, and the license values-key path (global.suseObservability.license) verified
 # against documentation.suse.com/cloudnative/suse-observability/latest, 2026-09-05.
 
-__version__ = "__LABVERSION__"
+__version__ = "5fc5f69"
 
 PLUGIN = {
     "name": "suse_observability",

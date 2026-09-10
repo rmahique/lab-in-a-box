@@ -17,7 +17,7 @@
 #   rancher_cert_repo_url  : [OPTIONAL] cert-manager Helm repo URL            (default: https://charts.jetstack.io)
 #   cert_manager_ver       : [OPTIONAL] cert-manager version flag             (empty = latest, e.g. --version v1.14.4)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "rancher",

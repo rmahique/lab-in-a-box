@@ -9,7 +9,7 @@
 #   mariadb_name    : [OPTIONAL] Deployment and service name           (default: mariadb)
 #   mariadb_version : [OPTIONAL] Helm chart version                    (empty = latest)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "mariadb",

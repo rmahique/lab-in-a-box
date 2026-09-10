@@ -40,7 +40,7 @@
 # Ubuntu / Debian note:
 #   The official PGDG APT repository (apt.postgresql.org) is added automatically.
 
-__version__ = "__LABVERSION__"
+__version__ = "a45abd4"
 
 PLUGIN = {
     "name": "postgresql",

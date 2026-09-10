@@ -33,7 +33,7 @@
 # ephemeral/quick-demo, not durable; add real PVCs (and a StorageClass — confirmed elsewhere in
 # this project that a bare RKE2 cluster has none by default) before relying on this beyond a demo.
 
-__version__ = "__LABVERSION__"
+__version__ = "5fc5f69"
 
 PLUGIN = {
     "name": "mailman",

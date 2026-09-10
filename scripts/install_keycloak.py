@@ -12,7 +12,7 @@
 #   keycloak_admin      : [OPTIONAL] admin username (default: admin)
 #   keycloak_password   : [OPTIONAL] admin password (default: keycloak123)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "keycloak",

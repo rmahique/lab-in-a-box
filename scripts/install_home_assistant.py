@@ -41,7 +41,7 @@
 # stopped honoring YAML-based trusted-proxy config at runtime even though it accepts the YAML
 # without error, a genuine, currently-open upstream transition gap).
 
-__version__ = "__LABVERSION__"
+__version__ = "87e323b"
 
 PLUGIN = {
     "name": "home_assistant",

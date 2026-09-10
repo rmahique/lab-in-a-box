@@ -25,7 +25,7 @@
 # the pod reached Running in ~15s (no build step, as expected), and the real Traefik ingress
 # served a genuine HTTP 200 with <title>Skynet Simulator</title>.
 
-__version__ = "__LABVERSION__"
+__version__ = "87e323b"
 
 PLUGIN = {
     "name": "skynet_simulator",

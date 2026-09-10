@@ -26,7 +26,7 @@
 # meaningfully run in (there is no real USB hardware to test the final `dd`
 # against) — real-device selection/confirmation/write/grow (TODO task 4)
 # is not yet implemented; pass --build-only until it is.
-__version__ = "__LABVERSION__"
+__version__ = "6be996d"
 
 import ipaddress
 import subprocess

@@ -28,7 +28,7 @@
 # guix pack invocation above is stated per Guix's own documented docker-export feature, not
 # independently verified against this specific project's manifest.scm.
 
-__version__ = "__LABVERSION__"
+__version__ = "5fc5f69"
 
 PLUGIN = {
     "name": "wikimusic",

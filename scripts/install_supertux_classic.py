@@ -28,7 +28,7 @@
 # fetch script never had to trigger), the pod reached Running in under 30s, and the real Traefik
 # ingress served a genuine HTTP 200 with <title>SuperTux Classic</title>.
 
-__version__ = "__LABVERSION__"
+__version__ = "87e323b"
 
 PLUGIN = {
     "name": "supertux_classic",
