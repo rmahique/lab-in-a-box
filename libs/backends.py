@@ -585,20 +585,25 @@ class LibvirtBackend(VMBackend):
 
         ext = "raw" if disk_format == "raw" else "qcow2"
         dest = "{}/{}.{}".format(self.vm_img_loc, vm_name, ext)
+        # iso_image is the lab JSON's ISO_IMAGE (free text); dest embeds vm_name
+        # (a node hostname); vm_dsk_gb comes from the JSON too — shell-quote all
+        # of them so none can inject into the remote command string.
+        src_q = shlex.quote("{}/{}".format(self.iso_loc, iso_image))
+        dest_q = shlex.quote(dest)
 
         log("- Copy the image for the new VM \"{}{}{}\"".format(_RED, vm_name, _RESET))
         if disk_format == "raw":
-            result = ssh_run(self.remote_host, "qemu-img convert -O raw {}/{} {}".format(
-                self.iso_loc, iso_image, dest), check=False)
+            result = ssh_run(self.remote_host, "qemu-img convert -O raw {} {}".format(src_q, dest_q), check=False)
             if result.returncode != 0:
                 die("Failed to convert image for vm \"{}\" to raw".format(vm_name))
         else:
-            result = ssh_run(self.remote_host, "cp {}/{} {}".format(self.iso_loc, iso_image, dest), check=False)
+            result = ssh_run(self.remote_host, "cp {} {}".format(src_q, dest_q), check=False)
             if result.returncode != 0:
                 die("Failed to copy image for vm  \"{}\"".format(vm_name))
 
         log("- Resize to {}G".format(vm_dsk_gb))
-        result = ssh_run(self.remote_host, "qemu-img resize -f {} {} {}G".format(ext, dest, vm_dsk_gb), check=False)
+        result = ssh_run(self.remote_host, "qemu-img resize -f {} {} {}".format(
+            ext, dest_q, shlex.quote("{}G".format(vm_dsk_gb))), check=False)
         if result.returncode != 0:
             die("Failed to resize VM image \"{}\" to \"{}G\"".format(vm_name, vm_dsk_gb))
 
@@ -615,7 +620,7 @@ class LibvirtBackend(VMBackend):
             # at its final size there, never grown after the fact), so
             # scoped to the raw path only.
             log("- Repair GPT backup header/table after resize (raw disks only)")
-            result = ssh_run(self.remote_host, "sgdisk -e {}".format(dest), check=False)
+            result = ssh_run(self.remote_host, "sgdisk -e {}".format(dest_q), check=False)
             if result.returncode != 0:
                 die("Failed to repair GPT backup header on \"{}\" after resize".format(vm_name))
 

@@ -511,10 +511,13 @@ def create_basic_auth_secret(hostname, namespace, name, user, password):
     Create or update a username/password secret in a namespace. Mirrors
     create_basic_auth_secret (bash). Requires hostname to be a cluster server node.
     """
+    # user/password are free text — shlex.quote every field so a value with a
+    # quote / space / $() can't break out of the remote shell command.
     ssh_run(hostname,
-            "kubectl create secret generic {} -n {} --from-literal=username='{}' "
-            "--from-literal=password='{}' --dry-run=client -o yaml | kubectl apply -f -".format(
-                name, namespace, user, password))
+            "kubectl create secret generic {} -n {} --from-literal=username={} "
+            "--from-literal=password={} --dry-run=client -o yaml | kubectl apply -f -".format(
+                shlex.quote(name), shlex.quote(namespace),
+                shlex.quote(user), shlex.quote(password)))
 
 
 def set_longhorn_overprovisioning(hostname, percentage):

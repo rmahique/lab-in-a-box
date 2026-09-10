@@ -246,8 +246,20 @@ k8s.create_basic_auth_secret("vm1", "ns1", "mysecret", "admin", "s3cr3t")
 cmd = fake.calls[0][1]
 check("create_basic_auth_secret: names the secret and namespace correctly",
       "secret generic mysecret -n ns1" in cmd)
-check("create_basic_auth_secret: passes username/password as literals",
-      "username='admin'" in cmd and "password='s3cr3t'" in cmd)
+check("create_basic_auth_secret: passes username/password as --from-literal values",
+      "--from-literal=username=admin" in cmd and "--from-literal=password=s3cr3t" in cmd)
+
+# a password with shell metacharacters must be shlex-quoted, never able to
+# break out of the remote command string (targeted fix, 2026-09-10 — see TODO's
+# positional-{}-in-shell-command follow-up).
+import shlex as _shlex
+fake = FakeSSH()
+k8s.ssh_run = fake
+_pw = "p'w; rm -rf /$(id)"
+k8s.create_basic_auth_secret("vm1", "ns1", "mysecret", "admin", _pw)
+nasty = fake.calls[0][1]
+check("create_basic_auth_secret: a password with quotes/;/$() is shlex-quoted into the command",
+      "--from-literal=password={}".format(_shlex.quote(_pw)) in nasty)
 
 fake = FakeSSH(responses=[("storage-over-provisioning-percentage", FakeResult(returncode=1))])
 k8s.ssh_run = fake

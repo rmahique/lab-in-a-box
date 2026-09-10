@@ -153,18 +153,31 @@ def pg_configure_os(hostname, cfg, pg_ver):
                         "su - postgres -s /bin/bash -c 'psql -t -c \"SHOW data_directory;\"' 2>/dev/null "
                         "| tr -d ' \\n'") or "/var/lib/pgsql/data"
 
-    result = ssh_run(hostname, "su - postgres -s /bin/bash -c 'psql'",
-                      input_text="ALTER USER postgres PASSWORD '{}';".format(pw), check=False)
+    # Run every DDL statement through psql's stdin, never `psql -c "<sql>"` on
+    # the remote shell: postgresql_password/_db/_user are free-text addon config,
+    # and a value with a quote / $()/ ; would otherwise break out of the ssh
+    # command string. SQL string literals get '' escaping, identifiers "" .
+    def _lit(s):
+        return "'{}'".format(str(s).replace("'", "''"))
+
+    def _ident(s):
+        return '"{}"'.format(str(s).replace('"', '""'))
+
+    def _psql(sql):
+        return ssh_run(hostname, "sudo -u postgres psql -v ON_ERROR_STOP=1",
+                       input_text=sql + "\n", check=False)
+
+    result = _psql("ALTER USER postgres PASSWORD {};".format(_lit(pw)))
     if result.returncode != 0:
-        ssh_run(hostname, "sudo -u postgres psql -c \"ALTER USER postgres PASSWORD '{}';\"".format(pw), check=False)
+        # older images where `sudo -u postgres` isn't set up — fall back to a login shell
+        ssh_run(hostname, "su - postgres -s /bin/bash -c 'psql -v ON_ERROR_STOP=1'",
+                input_text="ALTER USER postgres PASSWORD {};\n".format(_lit(pw)), check=False)
 
     if db != "postgres":
-        ssh_run(hostname, "sudo -u postgres psql -c \"CREATE DATABASE {};\"".format(db), check=False)
+        _psql("CREATE DATABASE {};".format(_ident(db)))
     if user != "postgres":
-        ssh_run(hostname, "sudo -u postgres psql -c \"CREATE USER {} WITH PASSWORD '{}';\"".format(user, pw),
-                check=False)
-        ssh_run(hostname, "sudo -u postgres psql -c \"GRANT ALL PRIVILEGES ON DATABASE {} TO {};\"".format(
-            db, user), check=False)
+        _psql("CREATE USER {} WITH PASSWORD {};".format(_ident(user), _lit(pw)))
+        _psql("GRANT ALL PRIVILEGES ON DATABASE {} TO {};".format(_ident(db), _ident(user)))
 
     ssh_run(hostname, (
         "if [[ -f '{pgdata}/postgresql.conf' ]]; then\n"

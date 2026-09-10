@@ -28,6 +28,7 @@ PLUGIN = {
 }
 
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -150,8 +151,9 @@ def setup_rancher(hostname, definition, clu_name, mydomain, clu_type, cfg, remot
 
     result = ssh_run(hostname,
                       "helm upgrade -i {} {} --create-namespace --namespace cattle-system "
-                      "--set hostname=\"{}\" {} --set bootstrapPassword=\"{}\" --set replicas={} ".format(
-                          helm_rel, helm_chart, hostname_fqdn, rancher_version, initial_pwd, replicas),
+                      "--set hostname={} {} --set bootstrapPassword={} --set replicas={} ".format(
+                          shlex.quote(helm_rel), shlex.quote(helm_chart), shlex.quote(hostname_fqdn),
+                          rancher_version, shlex.quote(initial_pwd), shlex.quote(replicas)),
                       check=False)
     if result.returncode != 0:
         sys.exit(1)
