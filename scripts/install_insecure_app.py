@@ -17,7 +17,7 @@
 #   insecure_app_DBNAME     : [OPTIONAL] Database name                (default: photos)
 #   insecure_app_SECRET_KEY : [OPTIONAL] App secret key               (default: abcde1234)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "insecure_app",

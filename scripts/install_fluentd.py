@@ -9,7 +9,7 @@
 #   fluentd_rel         : Helm repo alias (default: fluent)
 #   fluentd_repo_url    : Helm repo URL (default: https://fluent.github.io/helm-charts)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "fluentd",

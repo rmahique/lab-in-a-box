@@ -10,7 +10,7 @@
 #   lh_repo_url  : [OPTIONAL] Helm repo URL                           (default: https://charts.longhorn.io)
 #   lh_version   : [OPTIONAL] Helm chart version                       (empty = latest)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "longhorn",

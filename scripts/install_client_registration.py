@@ -67,7 +67,7 @@
 #                                           after bootstrap (default: 30)
 #   client_registration_retry_interval   : seconds between polls (default: 10)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "client_registration",

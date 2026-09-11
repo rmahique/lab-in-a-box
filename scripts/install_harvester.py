@@ -13,7 +13,7 @@
 #   virt_version    : [OPTIONAL] Helm chart version                   (empty = latest)
 #   virt_replicas   : [OPTIONAL] Number of replicas                   (default: 1)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "harvester",

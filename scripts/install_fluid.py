@@ -9,7 +9,7 @@
 #   fluid_rel           : Helm repo alias (default: fluid)
 #   fluid_repo_url      : Helm repo URL (default: https://fluid-cloudnative.github.io/charts)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "fluid",

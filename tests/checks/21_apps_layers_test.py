@@ -83,9 +83,15 @@ check("attach_capabilities on an empty plugin dict fills in empty/None defaults,
 # ── every real install_*.py PLUGIN declares a non-empty layers (regression
 #    guard for the mechanical 40-file sweep — catches anything left on the
 #    DEFAULT_PLUGIN fallback by accident) ──────────────────────────────────────
+# Count last updated 2026-09-06: +10 AI/ML addons (suse_ai, apertus, kimi, open_webui, milvus,
+# qdrant, weaviate, gpu_operator, anthropic, openai) on top of the prior 40, then +11 more
+# (qwen, mistral, codellama, starcoder2, agones, suse_observability, games, mailman,
+# mediagoblin, colt, wikimusic), then the single bundled "games" addon was replaced with one
+# addon per self-hosted game (-1 games, +3: supertux_classic, skynet_simulator, open_saber),
+# then +1 more (home_assistant).
 scripts_dir = _REPO / "scripts"
 addon_files = sorted(glob.glob(str(scripts_dir / "install_*.py")))
-check("found the expected 40 python addon scripts to check", len(addon_files) == 40)
+check("found the expected 64 python addon scripts to check", len(addon_files) == 64)
 missing_layers = []
 for path in addon_files:
     plugin = apps.load_plugin_from_path(path)

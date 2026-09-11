@@ -12,7 +12,7 @@
 #   keycloak_admin      : [OPTIONAL] admin username (default: admin)
 #   keycloak_password   : [OPTIONAL] admin password (default: keycloak123)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "keycloak",
@@ -22,6 +22,7 @@ PLUGIN = {
     "aux_services": [],
 }
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -61,7 +62,10 @@ def setup_keycloak(hostname, clu_name, mydomain, keycloak_rel=None, keycloak_ns=
             "--set auth.adminPassword={} "
             "--set ingress.enabled=true "
             "--set ingress.hostname={} "
-            "{}".format(rel, ns, keycloak_admin or "admin", keycloak_password or "keycloak123", fqdn, ver_arg))
+            "{}".format(shlex.quote(rel), shlex.quote(ns),
+                        shlex.quote(keycloak_admin or "admin"),
+                        shlex.quote(keycloak_password or "keycloak123"),
+                        shlex.quote(fqdn), ver_arg))
     print("Keycloak available at: http://{}".format(fqdn))
 
 

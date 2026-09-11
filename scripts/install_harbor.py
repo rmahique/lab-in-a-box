@@ -11,7 +11,7 @@
 #   harbor_repo_url      : [OPTIONAL] Helm repo URL (default: https://helm.goharbor.io)
 #   harbor_admin_password: [OPTIONAL] admin password (default: Harbor12345)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "harbor",

@@ -10,7 +10,7 @@
 #   argocd_rel          : [OPTIONAL] Helm repo alias (default: argo)
 #   argocd_repo_url     : [OPTIONAL] Helm repo URL (default: https://argoproj.github.io/argo-helm)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "argocd",

@@ -1,0 +1,83 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailman-web
+  namespace: ${mailman_ns:-mailman}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailman-web
+  template:
+    metadata:
+      labels:
+        app: mailman-web
+    spec:
+      containers:
+      - name: mailman-web
+        image: maxking/mailman-web:${mailman_version:-0.5}
+        env:
+        - name: DATABASE_TYPE
+          value: "postgres"
+        - name: DATABASE_URL
+          value: "postgres://mailman:${mailman_db_password}@mailman-db:5432/mailmandb"
+        - name: HYPERKITTY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mailman-secrets
+              key: hyperkitty_api_key
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mailman-secrets
+              key: django_secret_key
+        - name: SERVE_FROM_DOMAIN
+          value: "${mailman_shorthn:-mailman}.${clu_name}.${mydomain}"
+        - name: MAILMAN_ADMIN_USER
+          value: "${mailman_admin_user:-admin}"
+        - name: MAILMAN_ADMIN_EMAIL
+          value: "${mailman_admin_email:-admin@lab.local}"
+        - name: MAILMAN_REST_API_HOST
+          value: "mailman-core"
+        - name: MAILMAN_REST_API_PORT
+          value: "8001"
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: web-data
+          mountPath: /opt/mailman-web-data
+      volumes:
+      - name: web-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailman-web
+  namespace: ${mailman_ns:-mailman}
+spec:
+  ports:
+    - port: 8000
+      name: web
+  selector:
+    app: mailman-web
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mailman-web
+  namespace: ${mailman_ns:-mailman}
+spec:
+  rules:
+    - host: ${mailman_shorthn:-mailman}.${clu_name}.${mydomain}
+      http:
+        paths:
+          - backend:
+              service:
+                name: mailman-web
+                port:
+                  name: web
+            path: /
+            pathType: Prefix
+...

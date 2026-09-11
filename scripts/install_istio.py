@@ -11,7 +11,7 @@
 #   istio_repo_url      : [OPTIONAL] Helm repo URL (default: https://istio-release.storage.googleapis.com/charts)
 #   istio_install_gateway: [OPTIONAL] install ingress gateway (default: true)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "istio",

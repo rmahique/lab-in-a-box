@@ -13,7 +13,7 @@
 #   trento_password     : [OPTIONAL] admin password (default: Trento12345)
 #   trento_secret_key   : [OPTIONAL] secret key base for sessions (default: auto-generated)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "trento",

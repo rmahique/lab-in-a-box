@@ -12,7 +12,7 @@
 # NOTE: Phoebe is a SUSE research project for AI-driven Kubernetes resource recommendations.
 # It may not have stable releases. Check https://github.com/SUSE/phoebe for current status.
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "phoebe",

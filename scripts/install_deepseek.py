@@ -14,7 +14,7 @@
 #
 # This script installs Ollama (if not present) and pulls the configured DeepSeek model.
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "deepseek",

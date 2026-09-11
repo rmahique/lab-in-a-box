@@ -1,0 +1,7 @@
+version: 2
+renderer: ${network_renderer}
+ethernets:
+  all-en:
+    match:
+      name: "e*"
+    dhcp4: true

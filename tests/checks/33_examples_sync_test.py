@@ -89,7 +89,7 @@ _ANCHORS = {
     "standalone": "### Minimal single-VM lab",
     "rancher-cluster": "## Lab definition format",
     "multi-host": "### Spreading a cluster across two hosts",
-    "uyuni-lab": "### SUSE Manager (Uyuni) server + a registered client",
+    "uyuni-lab": "### SUSE Multi-Linux Manager (Uyuni) server + a registered client",
     "legacy": "### Deploying a legacy image (CentOS 7)",
 }
 
