@@ -538,7 +538,12 @@ def phase_vm_addons(definition, json_file):
         lc.log("Installing VM \"{}{}{}\" addons".format(lc._RED, vm_name, lc._RESET))
         lc._level += 1
         node_target = targets.node_kind(definition, vm_name)
-        for addon in addons:
+        for addon_entry in addons:
+            # addon_entry is a plain "<addon>" string, or a single-key
+            # {"<addon>": {...}} mapping carrying this node's own override of
+            # that addon's config (read by the addon script itself, via
+            # k8s.addon_node_config() — this loop only needs the name).
+            addon = apps.addon_entry_name(addon_entry)
             installer = shutil.which("install_{}".format(addon))
             if not installer:
                 lc.die("Addon script \"install_{}\" not found".format(addon))

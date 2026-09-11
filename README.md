@@ -468,12 +468,44 @@ Optional node-level fields:
 
 | Field | Description |
 |---|---|
-| `addons` | List of addon scripts to run for this specific VM only |
+| `addons` | List of addon scripts to run for this specific VM only — see below for per-node config overrides |
 | `config_method` | Override provisioning method (`cloud-init`, `virt_customize`, `install_iso`) |
 | `kvm_host` | Pin this VM to a specific hypervisor in a [multi-host lab](#multi-host-labs) |
 | `extra_dsk` | Additional disk(s) to attach — `"/dev/sdb"`, or `"/dev/sdb,bus=scsi"` to override the default bus per disk |
 | `salt_states` | Salt states to apply (cloud-init method only) |
 | `VM_MACHINE` | virt-install machine type override — `""` (default, virt-install's own choice, currently `q35`) or `"pc"` (legacy i440fx), for an old guest whose kernel/GRUB can't find its root disk under q35 — see [Deploying a legacy image (CentOS 7)](#deploying-a-legacy-image-centos-7) |
+
+**Per-node addon config overrides, added 2026-09-11:** every addon has one shared top-level config
+section (e.g. `client_registration` in the earlier SMLM example) used by every node that lists it
+in `addons`. When different nodes genuinely need different values for that same addon — the
+motivating case: a lab registering many different OSes against one shared Uyuni/SMLM server,
+where every node needs its *own* `client_registration_activation_key` — give that one node's
+`addons[]` entry a nested override instead of a plain string:
+
+```jsonc
+"nodes": {
+  "mercury.mydemo.lab": {
+    "addons": [
+      { "client_registration": { "client_registration_activation_key": "1-sles15sp7" } }
+    ]
+  },
+  "callisto.mydemo.lab": {
+    "addons": [
+      "mariadb",
+      { "client_registration": { "client_registration_activation_key": "1-debian13" } }
+    ]
+  }
+}
+```
+
+A plain `"mariadb"` string entry behaves exactly as before (only the shared top-level `mariadb`
+section applies). The `{"client_registration": {...}}` form overrides *just those fields*, for
+*that node only* — anything the override doesn't mention (server, admin user, …) still comes from
+the shared `client_registration` section. This works the same way for any addon, not just
+`client_registration`; each `install_<addon>.py` opts in by reading its config via
+`k8s.addon_node_config(definition, "<addon>", vm_name)` instead of `definition.get("<addon>", {})`
+directly — see `libs/apps.py`'s `addon_entry_name()`/`addon_entry_overrides()` for the shared
+parsing every consumer of an `addons[]` list goes through.
 
 Optional kcluster fields:
 
