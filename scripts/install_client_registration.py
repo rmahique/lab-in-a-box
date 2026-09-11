@@ -159,11 +159,24 @@ def main():
         sys.exit(1)
     json_file = sys.argv[1]
     definition = primary.load_definition(json_file)
-    cfg = definition.get("client_registration", {}) or {}
 
     env_vm_name = os.environ.get("_vm_name") or None
     for vm_name, _ssh_cmd in k8s.addon_nodes(definition, "client_registration", vm_name=env_vm_name):
-        register_client(vm_name, cfg)
+        # Per-node override: a lab that registers many different OSes against
+        # one shared server needs a different activation_key (and, in
+        # principle, any other client_registration_* field) per node — e.g.
+        # solar-system-lab.json's 15 different distros all registering
+        # against the same smlm52beta.mydemo.lab, each with its own key. A
+        # node expresses this via its own addons[] entry:
+        # {"client_registration": {"client_registration_activation_key": "..."}}
+        # instead of a plain "client_registration" string — see
+        # k8s.addon_node_config()'s docstring (added 2026-09-11; this used to
+        # be a flat nodes[x].client_registration_* field, replaced by the
+        # nested addons[]-scoped form so it's unambiguous which addon a
+        # per-node override belongs to, and so the same mechanism works for
+        # any addon, not just this one).
+        eff_cfg = k8s.addon_node_config(definition, "client_registration", vm_name)
+        register_client(vm_name, eff_cfg)
 
 
 if __name__ == "__main__":

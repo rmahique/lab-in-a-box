@@ -53,12 +53,14 @@ def app_target(definition, app_name):
     that today), and the container placement is the more common/intended one
     for addon scripts that assume a running kubectl context.
     """
+    from apps import addon_entry_name  # lazy: apps imports lab_creation, avoid a module cycle
+
     for clu_name, clu_cfg in (definition.get("kclusters", {}) or {}).items():
-        if app_name in (clu_cfg or {}).get("addons", []):
+        if any(addon_entry_name(e) == app_name for e in (clu_cfg or {}).get("addons", [])):
             return TARGET_CONTAINER, clu_name
 
     for node_name, node_cfg in (definition.get("nodes", {}) or {}).items():
-        if app_name in (node_cfg or {}).get("addons", []):
+        if any(addon_entry_name(e) == app_name for e in (node_cfg or {}).get("addons", [])):
             return node_kind(definition, node_name), node_name
 
     return None, None
