@@ -503,7 +503,8 @@ _orig_try_acct = primary.try_load_cloud_account
 
 # a valid account -> treated as a cloud node: no myip needed
 lc.subprocess.run = img_check_ok
-primary.try_load_cloud_account = lambda name: ({"CLOUDTYPE": "aws", "AWS_REGION": "eu-central-1"}, None)
+primary.try_load_cloud_account = lambda name, config=None, passphrase_prompt=None: (
+    {"CLOUDTYPE": "aws", "AWS_REGION": "eu-central-1"}, None)
 acct_node = _lab_def({
     "common": dict(base_common),
     "nodes": {"vm1": {"cloud_account": "aws-sbx", "config_method": "virt_customize"}},
@@ -513,7 +514,8 @@ check("validate_lab_definition: a node with a valid cloud_account needs no myip 
 
 # a missing / unresolvable account file -> a preflight ERROR
 lc.subprocess.run = img_check_ok
-primary.try_load_cloud_account = lambda name: (None, "cloud account 'ghost' not found — looked for ...")
+primary.try_load_cloud_account = lambda name, config=None, passphrase_prompt=None: (
+    None, "cloud account 'ghost' not found — looked for ...")
 bad_acct = _lab_def({
     "common": dict(base_common),
     "nodes": {"vm1": {"cloud_account": "ghost", "config_method": "virt_customize"}},
@@ -526,7 +528,7 @@ check("validate_lab_definition: an unresolvable cloud_account is a preflight ERR
 
 # account cloudtype disagreeing with an explicit backend -> ERROR
 lc.subprocess.run = img_check_ok
-primary.try_load_cloud_account = lambda name: ({"CLOUDTYPE": "aws"}, None)
+primary.try_load_cloud_account = lambda name, config=None, passphrase_prompt=None: ({"CLOUDTYPE": "aws"}, None)
 mismatch = _lab_def({
     "common": dict(base_common),
     "nodes": {"vm1": {"cloud_account": "aws-sbx", "backend": "gcp", "config_method": "virt_customize"}},

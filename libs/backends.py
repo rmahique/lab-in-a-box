@@ -3756,10 +3756,13 @@ def resolve_cloud_account(definition, config, vm_name):
     """
     Multiple cloud accounts, the same way KVM_HOSTS gives multiple hypervisors.
 
-    An account is a file /etc/lab_creation/cloud/<name>.{cfg,yaml,json} carrying a
-    `cloudtype` (aws/gcp/…) plus that provider's usual connection keys (AWS_REGION,
-    etc.) — see primary.load_cloud_account(). A node (or common) picks one with a
-    "cloud_account": "<name>" field, exactly like "kvm_host": "<host>".
+    An account is a file /etc/lab_creation/credentials/<name>.{yaml,json,cfg}
+    (path configurable via lab_creation.cfg's CREDENTIALS_PATH), encrypted by
+    default (see libs/crypto_store.py + scripts/setup_credentials.py), carrying
+    a `cloudtype` (aws/gcp/…) plus that provider's usual connection keys
+    (AWS_REGION, etc.) — see primary.load_cloud_account(). A node (or common)
+    picks one with a "cloud_account": "<name>" field, exactly like
+    "kvm_host": "<host>".
 
     Returns (account_name, effective_config, cloudtype):
       - no cloud_account set anywhere -> ("", config, None): today's behaviour,
@@ -3772,7 +3775,7 @@ def resolve_cloud_account(definition, config, vm_name):
     account = node_cfg.get("cloud_account") or common_cfg.get("cloud_account") or ""
     if not account:
         return "", config, None
-    acct = primary.load_cloud_account(account)
+    acct = primary.load_cloud_account(account, config=config)
     cloudtype = acct.get("CLOUDTYPE", "")
     merged = dict(config)
     merged.update(acct)
@@ -3789,7 +3792,7 @@ def effective_backend_name(definition, config, vm_name):
     common_cfg = definition.get("common", {}) or {}
     account = node_cfg.get("cloud_account") or common_cfg.get("cloud_account") or ""
     if account:
-        return primary.load_cloud_account(account).get("CLOUDTYPE", "")
+        return primary.load_cloud_account(account, config=config).get("CLOUDTYPE", "")
     return node_cfg.get("backend") or common_cfg.get("backend") or config.get("BACKEND") or "libvirt"
 
 

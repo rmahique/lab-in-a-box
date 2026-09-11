@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory() as d:
     _write(d, "aws-sandbox", ".cfg",
            "CLOUDTYPE=aws\nAWS_REGION=us-east-1\nAWS_PROFILE=sandbox\n")
     with mock.patch.object(primary, "cloud_account_path",
-                           side_effect=lambda n: Path(d) / (n + ".cfg")):
+                           side_effect=lambda n, config=None: Path(d) / (n + ".cfg")):
         data, err = primary.try_load_cloud_account("aws-sandbox")
     check("cfg account: parses, no error", err is None and data is not None)
     check("cfg account: CLOUDTYPE normalised from the file's cloudtype/CLOUDTYPE key",
@@ -53,7 +53,7 @@ with tempfile.TemporaryDirectory() as d:
     _write(d, "gcp-prod", ".json",
            json.dumps({"cloudtype": "gcp", "GCP_PROJECT": "lab-prod", "GCP_ZONE": "europe-west1-b"}))
     with mock.patch.object(primary, "cloud_account_path",
-                           side_effect=lambda n: Path(d) / (n + ".json")):
+                           side_effect=lambda n, config=None: Path(d) / (n + ".json")):
         data, err = primary.try_load_cloud_account("gcp-prod")
     check("json account: parses with lowercase 'cloudtype'", err is None and data.get("CLOUDTYPE") == "gcp")
     check("json account: keys come through", data.get("GCP_PROJECT") == "lab-prod")
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory() as d:
         import yaml  # noqa: F401
         _write(d, "hetzner-eu", ".yaml", "cloudtype: hetzner\nHETZNER_TOKEN: tok-123\n")
         with mock.patch.object(primary, "cloud_account_path",
-                               side_effect=lambda n: Path(d) / (n + ".yaml")):
+                               side_effect=lambda n, config=None: Path(d) / (n + ".yaml")):
             data, err = primary.try_load_cloud_account("hetzner-eu")
         check("yaml account: parses", err is None and data.get("CLOUDTYPE") == "hetzner"
               and data.get("HETZNER_TOKEN") == "tok-123")
@@ -79,7 +79,7 @@ check("missing account file: returns a clear error, no data", data is None and e
 with tempfile.TemporaryDirectory() as d:
     _write(d, "broken", ".cfg", "AWS_REGION=us-east-1\n")
     with mock.patch.object(primary, "cloud_account_path",
-                           side_effect=lambda n: Path(d) / (n + ".cfg")):
+                           side_effect=lambda n, config=None: Path(d) / (n + ".cfg")):
         data, err = primary.try_load_cloud_account("broken")
 check("account file with no cloudtype: errors", data is None and err and "cloudtype" in err)
 
@@ -113,7 +113,8 @@ check("resolve_cloud_account: the passed-in config dict is not mutated", base_cf
 
 # per-node overrides common
 with mock.patch.object(backends.primary, "load_cloud_account",
-                       side_effect=lambda n: {"CLOUDTYPE": "gcp"} if n == "gcp-a" else {"CLOUDTYPE": "aws"}):
+                       side_effect=lambda n, config=None: (
+                           {"CLOUDTYPE": "gcp"} if n == "gcp-a" else {"CLOUDTYPE": "aws"})):
     acct, _e, ct = backends.resolve_cloud_account(
         {"nodes": {"vm1": {"cloud_account": "gcp-a"}}, "common": {"cloud_account": "aws-b"}}, {}, "vm1")
 check("resolve_cloud_account: per-node cloud_account beats common", acct == "gcp-a" and ct == "gcp")

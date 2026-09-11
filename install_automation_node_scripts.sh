@@ -106,7 +106,7 @@ do
 done
 
 # Non-addon, non-orchestration tooling.
-for i in pushDockerImage.sh lab_schema refresh_hypervisor_status.py setup_harvester_cluster.py build_lab_usb.py
+for i in pushDockerImage.sh lab_schema refresh_hypervisor_status.py setup_harvester_cluster.py build_lab_usb.py setup_credentials.py
 do
     cp "scripts/${i}" "/usr/local/bin/${i}"
     sed -i "s/__LABVERSION__/$(git log -1 --format='%h' -- scripts/${i} 2>/dev/null || echo 'unknown')/" "/usr/local/bin/${i}"

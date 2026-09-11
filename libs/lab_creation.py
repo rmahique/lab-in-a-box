@@ -372,7 +372,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         acct_name = _jq_or((nodes.get(node) or {}).get("cloud_account")) or _jq_or(common.get("cloud_account"))
         ct = None
         if not _empty(acct_name):
-            data, _e = try_load_cloud_account(acct_name)
+            data, _e = try_load_cloud_account(acct_name, config=config)
             if data:
                 ct = data.get("CLOUDTYPE") or None
         node_account_cloudtype[node] = ct
@@ -415,7 +415,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         cloud_account = _jq_or(node_cfg.get("cloud_account")) or _jq_or(common.get("cloud_account"))
         account_cloudtype = None
         if not _empty(cloud_account):
-            acct_data, acct_err = try_load_cloud_account(cloud_account)
+            acct_data, acct_err = try_load_cloud_account(cloud_account, config=config)
             if acct_err:
                 err("nodes.{}: {}".format(node, acct_err))
             else:
