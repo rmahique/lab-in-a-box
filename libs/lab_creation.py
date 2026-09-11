@@ -579,7 +579,9 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         if _empty(cdomain):
             err("kclusters.{}: 'mydomain' is required".format(clu))
 
-        for addon in clu_cfg.get("addons") or []:
+        from apps import addon_entry_name
+        for addon_entry in clu_cfg.get("addons") or []:
+            addon = addon_entry_name(addon_entry)
             if shutil.which("install_{}".format(addon)) is None:
                 err("kclusters.{}: addon '{}' — script 'install_{}' not found in PATH".format(clu, addon, addon))
                 continue
@@ -592,7 +594,9 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     # Per-VM addon scripts must also be present
     for node in nodes_to_check:
         node_cfg = nodes.get(node) or {}
-        for addon in node_cfg.get("addons") or []:
+        from apps import addon_entry_name
+        for addon_entry in node_cfg.get("addons") or []:
+            addon = addon_entry_name(addon_entry)
             if shutil.which("install_{}".format(addon)) is None:
                 err("nodes.{}: addon '{}' — script 'install_{}' not found in PATH".format(node, addon, addon))
                 continue
@@ -605,6 +609,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     # ── 5. Per-addon field validation — delegate to each install script ───────
     # Each install_* script supports --validate <json> and exits non-zero
     # with [ERROR] lines if its own fields are invalid or missing.
+    from apps import addon_entry_name
     if target_node:
         node_kcluster = _jq_or((nodes.get(target_node) or {}).get("kcluster"))
         addon_list = list((nodes.get(target_node) or {}).get("addons") or [])
@@ -616,7 +621,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
             addon_list += list((clu_cfg or {}).get("addons") or [])
         for node_cfg in nodes.values():
             addon_list += list((node_cfg or {}).get("addons") or [])
-    all_addons = sorted(set(addon_list))
+    all_addons = sorted(set(addon_entry_name(e) for e in addon_list))
 
     for addon in all_addons:
         exe = shutil.which("install_{}".format(addon))

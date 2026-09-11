@@ -101,6 +101,37 @@ def load_plugin(name):
     return plugin
 
 
+def addon_entry_name(entry):
+    """
+    The addon name from one addons[] list entry. An entry is either a plain
+    "<addon>" string (today's shape, unchanged — the addon runs with only
+    its shared top-level config section), or a single-key
+    {"<addon>": {...fields...}} mapping for a node that needs its own
+    per-node override of that addon's config (added 2026-09-11 — e.g. a lab
+    registering many different OSes against one Uyuni/SMLM server, each
+    node needing its own client_registration_activation_key). Every
+    consumer of an addons[] list (collect_addon_names below, k8s.
+    addon_nodes(), k8s.addon_node_config(), setup_lab.py's phase_vm_addons)
+    goes through this one function so they can never disagree on the shape.
+    """
+    if isinstance(entry, dict):
+        if len(entry) != 1:
+            die("addons[] entry {!r} must have exactly one key (the addon name) — "
+                "got {}".format(entry, len(entry)))
+        return next(iter(entry))
+    return entry
+
+
+def addon_entry_overrides(entry):
+    """The per-node override dict from one addons[] list entry — {} for a
+    plain-string entry (nothing to override), or the entry's own single
+    value for a {"<addon>": {...}} entry. See addon_entry_name()'s
+    docstring for the full shape."""
+    if isinstance(entry, dict):
+        return entry[addon_entry_name(entry)] or {}
+    return {}
+
+
 def collect_addon_names(definition):
     """
     Every addon name referenced anywhere in a lab definition — both
@@ -114,9 +145,9 @@ def collect_addon_names(definition):
     """
     names = set()
     for clu_cfg in (definition.get("kclusters", {}) or {}).values():
-        names.update((clu_cfg or {}).get("addons") or [])
+        names.update(addon_entry_name(e) for e in (clu_cfg or {}).get("addons") or [])
     for node_cfg in (definition.get("nodes", {}) or {}).values():
-        names.update((node_cfg or {}).get("addons") or [])
+        names.update(addon_entry_name(e) for e in (node_cfg or {}).get("addons") or [])
     return sorted(names)
 
 

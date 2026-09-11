@@ -31,6 +31,7 @@ from lab_creation import (
     prepare_local_as_kubeclient,
 )
 from services import DNSService
+import apps
 
 
 # ── Cluster metadata ──────────────────────────────────────────────────────────
@@ -386,6 +387,10 @@ def addon_nodes(definition, addon, vm_name=None):
     If vm_name is given, return only that node without scanning the definition.
 
     Returns a list of (vm_name, ssh_cmd) tuples.
+
+    An addons[] entry can be a plain "<addon>" string or a single-key
+    {"<addon>": {...}} mapping (per-node config override — see
+    apps.addon_entry_name()'s docstring); either way counts as "has addon".
     """
     if vm_name:
         ssh_cmd = "ssh -o StrictHostKeyChecking=accept-new root@{}".format(vm_name)
@@ -394,7 +399,8 @@ def addon_nodes(definition, addon, vm_name=None):
 
     results = []
     for name, node_cfg in definition.get("nodes", {}).items():
-        if addon in node_cfg.get("addons", []):
+        entries = node_cfg.get("addons", []) or []
+        if any(apps.addon_entry_name(e) == addon for e in entries):
             ssh_cmd = "ssh -o StrictHostKeyChecking=accept-new root@{}".format(name)
             log("# Using node: {}".format(name))
             results.append((name, ssh_cmd))
@@ -402,6 +408,30 @@ def addon_nodes(definition, addon, vm_name=None):
     if not results:
         warn("No node with addon '{}' found in definition".format(addon))
     return results
+
+
+def addon_node_config(definition, addon, vm_name):
+    """
+    Effective config for `addon` on `vm_name`: the shared top-level
+    definition[addon] section, with any per-node override layered on top
+    from nodes[vm_name].addons' own {"<addon>": {...}} entry for this addon
+    (see apps.addon_entry_name()/addon_entry_overrides()). A plain "<addon>"
+    string entry (or no override dict) means no override — the shared
+    section applies as-is, exactly like before this mechanism existed.
+
+    Every VM-level addon whose config can vary per node (e.g.
+    client_registration, one activation key per OS registering against the
+    same server) should read its config through this instead of
+    `definition.get(addon, {})` directly.
+    """
+    shared = definition.get(addon, {}) or {}
+    node_cfg = definition.get("nodes", {}).get(vm_name, {}) or {}
+    for entry in node_cfg.get("addons") or []:
+        if apps.addon_entry_name(entry) == addon:
+            overrides = apps.addon_entry_overrides(entry)
+            if overrides:
+                return dict(shared, **overrides)
+    return shared
 
 
 def iter_cluster_nodes(definition, clu_name):
