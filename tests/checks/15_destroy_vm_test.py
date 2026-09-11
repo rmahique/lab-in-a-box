@@ -46,7 +46,7 @@ defaults = {}
 destroy_vm.is_existing_node = lambda node_cfg: True
 destroy_vm.warn = _rec("warn")
 destroy_vm.backends.get_backend = _rec("get_backend", ret=_FakeBackend())
-destroy_vm.load_vm_vars = _rec("load_vm_vars", ret={})
+destroy_vm.load_vm_vars = _rec("load_vm_vars", ret={"myip": "192.168.1.50", "mydomain": "mydemo.lab"})
 destroy_vm.del_from_dns = _rec("del_from_dns")
 
 destroy_vm.destroy_vm(definition, config, defaults, "vm1")
@@ -58,6 +58,43 @@ destroy_vm.is_existing_node = lambda node_cfg: False
 destroy_vm.destroy_vm(definition, config, defaults, "vm1")
 check("destroy_vm: normal path resolves the backend, removes DNS, then deletes the VM",
       order == ["get_backend", "load_vm_vars", "del_from_dns", "delete_vm"])
+
+
+# ── a cloud-backend node (empty myip in the JSON, by design) resolves its real IP
+#    via backend.get_ip() BEFORE delete_vm() removes the instance — 2026-09-09 fix ──
+class _FakeCloudBackend:
+    def __init__(self):
+        self.calls = []
+
+    def get_ip(self, vm_name):
+        self.calls.append(("get_ip", vm_name))
+        return "203.0.113.42"
+
+    def vm_exists(self, vm_name):
+        self.calls.append(("vm_exists", vm_name))
+        return False  # no DNS VM for this backend yet — nothing to also clean up
+
+    def delete_vm(self, vm_name):
+        self.calls.append(("delete_vm", vm_name))
+
+
+cloud_definition = {"nodes": {"vm1": {"backend": "aws"}}, "common": {}}
+cloud_backend = _FakeCloudBackend()
+order.clear()
+destroy_vm.backends.get_backend = _rec("get_backend", ret=cloud_backend)
+destroy_vm.load_vm_vars = _rec("load_vm_vars", ret={"myip": "", "mydomain": "mydemo.lab"})
+destroy_vm.del_from_dns = lambda *a, **kw: order.append(("del_from_dns", a, kw))
+
+destroy_vm.destroy_vm(cloud_definition, config, defaults, "vm1")
+
+check("destroy_vm: a cloud node with an empty myip resolves its real IP via backend.get_ip() "
+      "before the instance is deleted",
+      ("get_ip", "vm1") in cloud_backend.calls)
+del_from_dns_call = next((c for c in order if isinstance(c, tuple) and c[0] == "del_from_dns"), None)
+check("destroy_vm: del_from_dns() is called with the REAL resolved IP, not the empty JSON value",
+      del_from_dns_call is not None and del_from_dns_call[1][1] == "203.0.113.42")
+check("destroy_vm: get_ip() is called before delete_vm() — the instance must still exist to ask",
+      cloud_backend.calls.index(("get_ip", "vm1")) < cloud_backend.calls.index(("delete_vm", "vm1")))
 
 
 # ── main(): --version exits cleanly ─────────────────────────────────────────

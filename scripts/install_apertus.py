@@ -27,7 +27,7 @@
 #
 # NOT live-tested (no matching hardware available in this session).
 
-__version__ = "__LABVERSION__"
+__version__ = "3d35d1a"
 
 PLUGIN = {
     "name": "apertus",

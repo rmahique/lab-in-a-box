@@ -1,0 +1,50 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailman-db
+  namespace: ${mailman_ns:-mailman}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailman-db
+  template:
+    metadata:
+      labels:
+        app: mailman-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "mailmandb"
+        - name: POSTGRES_USER
+          value: "mailman"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mailman-secrets
+              key: db_password
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailman-db
+  namespace: ${mailman_ns:-mailman}
+spec:
+  ports:
+    - port: 5432
+      name: postgres
+  selector:
+    app: mailman-db
+...

@@ -13,7 +13,7 @@
 # additional standalone instance in its own namespace (useful for custom DNS zones,
 # split-horizon DNS, or forwarding experiments).
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "coredns",

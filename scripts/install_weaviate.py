@@ -15,7 +15,7 @@
 # request or limit, so give the release its own resources.requests/limits via a values override on any
 # host that doesn't already have generous defaults, or the pod may go unbounded.
 
-__version__ = "__LABVERSION__"
+__version__ = "3d35d1a"
 
 PLUGIN = {
     "name": "weaviate",

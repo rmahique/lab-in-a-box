@@ -12,7 +12,7 @@
 # KIWI-NG Operator runs KIWI image builds as Kubernetes Jobs.
 # See: https://github.com/OSInside/kiwi-operator
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "kiwi",

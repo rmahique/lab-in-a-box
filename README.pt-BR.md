@@ -12,7 +12,7 @@
   <img alt="Licença" src="https://img.shields.io/badge/license-GPLv3-blue.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-containerized%20(podman)-success.svg">
-  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-41-informational.svg">
+  <img alt="Add-ons" src="https://img.shields.io/badge/add--ons-61-informational.svg">
 </p>
 
 <p align="center">
@@ -38,8 +38,8 @@
 `setup_lab.py` · **Um arquivo JSON/YAML, um comando.**
 Descreva VMs, clusters Kubernetes (RKE2/K3s) e add-ons de forma declarativa; ele constrói tudo na ordem correta.
 
-`install_<addon>` · **41 add-ons prontos para uso.**
-Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Manager/Uyuni (chaves de ativação, RBAC, Content Lifecycle Management, integração com Ansible, e mais), aplicações de demonstração vulneráveis para treinamento de segurança, e mais.
+`install_<addon>` · **65 add-ons prontos para uso.**
+Rancher, Longhorn, NeuVector, Harbor, Keycloak, Jenkins, Argo CD, SUSE Multi-Linux Manager/Uyuni (chaves de ativação, RBAC, Content Lifecycle Management, integração com Ansible, e mais), aplicações de demonstração vulneráveis para treinamento de segurança, e mais.
 
 [`lab-builder`](#web-ui-lab-builder) · **Uma interface web dinâmica.**
 Gera formulários diretamente a partir do próprio esquema de cada add-on — adicione um campo a um script, e a interface o reconhece sem nenhuma mudança no frontend.
@@ -550,7 +550,7 @@ Fixe o servidor em um hipervisor e deixe os agentes se autoposicionarem em qualq
 }
 ```
 
-### Servidor SUSE Manager (Uyuni) + um cliente registrado
+### Servidor SUSE Multi-Linux Manager (Uyuni) + um cliente registrado
 
 Suba um servidor Uyuni com uma chave de ativação, depois registre uma segunda VM como cliente Salt contra ele — veja [Add-ons disponíveis](#available-addons) para o conjunto completo de recursos (`orgs`, RBAC, Content Lifecycle Management, integração com Ansible, e mais):
 
@@ -655,7 +655,7 @@ Objetivo: duas VMs SLE Micro, um cluster RKE2, Rancher para gestão, Longhorn pa
    destroy_lab.py rancher-cluster.json
    ```
 
-### Guia 2 — Servidor SUSE Manager (Uyuni) com um cliente registrado
+### Guia 2 — Servidor SUSE Multi-Linux Manager (Uyuni) com um cliente registrado
 
 Objetivo: um servidor Uyuni com uma chave de ativação real, e uma segunda VM que se registra como cliente gerenciado por Salt contra ele. **Testado ao vivo** de ponta a ponta contra um servidor Uyuni real.
 
@@ -795,7 +795,7 @@ install_longhorn --schema yaml      # ...ou YAML
 
 Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O script `install_<name>` correspondente precisa estar no `PATH`.
 
-<sub>Ir para: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Segurança &amp; conformidade</a> · <a href="#addons-suma">SUSE Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento &amp; bancos de dados</a> · <a href="#addons-cicd">CI/CD &amp; ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização &amp; demos</a></sub>
+<sub>Ir para: <a href="#addons-k8s">Kubernetes &amp; GitOps</a> · <a href="#addons-security">Segurança &amp; conformidade</a> · <a href="#addons-suma">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento &amp; bancos de dados</a> · <a href="#addons-cicd">CI/CD &amp; ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização</a> · <a href="#addons-demos">Aplicações de demonstração</a> · <a href="#addons-games">Jogos</a></sub>
 
 <a id="addons-k8s"></a>
 <details open>
@@ -803,19 +803,20 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 | Nome do add-on | Descrição |
 |---|---|
-| `rancher` | Plataforma de gestão de Kubernetes SUSE Rancher Prime |
-| `longhorn` | Armazenamento em bloco distribuído SUSE Longhorn |
-| `harbor` | Registro de containers |
-| `argocd` | Controlador GitOps Argo CD |
-| `kubewarden` | Motor de políticas do Kubernetes |
-| `istio` | Service mesh |
-| `linkerd` | Service mesh |
-| `traefik` | Controlador de ingress |
-| `nginx` | Controlador de ingress / proxy reverso |
-| `coredns` | DNS do cluster |
-| `kucero` | Rotação de certificados do cluster Kubernetes |
-| `fluid` | Orquestração/cache de dados para cargas de trabalho cloud-native |
-
+| [`rancher`](https://www.rancher.com/) | Plataforma de gestão de Kubernetes SUSE Rancher Prime |
+| [`longhorn`](https://longhorn.io/) | Armazenamento em bloco distribuído SUSE Longhorn |
+| [`harbor`](https://goharbor.io/) | Registro de containers |
+| [`argocd`](https://argo-cd.readthedocs.io/) | Controlador GitOps Argo CD |
+| [`kubewarden`](https://www.kubewarden.io/) | Motor de políticas do Kubernetes |
+| [`istio`](https://istio.io/) | Service mesh |
+| [`linkerd`](https://linkerd.io/) | Service mesh |
+| [`traefik`](https://traefik.io/) | Controlador de ingress |
+| [`nginx`](https://nginx.org/) | Controlador de ingress / proxy reverso |
+| [`coredns`](https://coredns.io/) | DNS do cluster |
+| [`kucero`](https://github.com/SUSE/kucero) | Rotação de certificados do cluster Kubernetes |
+| [`fluid`](https://fluid-cloudnative.github.io/) | Orquestração/cache de dados para cargas de trabalho cloud-native |
+| [`suse_observability`](https://www.suse.com/products/suse-observability/) | SUSE Observability (métricas/traces/topologia baseadas em StackState) |
+| [`agones`](https://agones.dev/) | Hospedagem/escalonamento de servidores de jogo dedicados (agones.dev) |
 </details>
 
 <a id="addons-security"></a>
@@ -824,29 +825,27 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 | Nome do add-on | Descrição |
 |---|---|
-| `neuvector` | Plataforma de segurança de containers SUSE NeuVector |
-| `nv_testing` | Cargas de trabalho de teste de segurança do NeuVector (pods nginx/node/redis) |
-| `nv-demo-helm` | Demonstrações do NeuVector baseadas em Helm |
-| `complianceascode` | Operador OpenSCAP/ComplianceAsCode |
-| `keycloak` | Gestão de identidade e acesso |
-| `kagent` | Assistente de segurança de IA agêntica para Kubernetes |
+| [`neuvector`](https://open-docs.neuvector.com/) | Plataforma de segurança de containers SUSE NeuVector |
+| [`nv_testing`](https://open-docs.neuvector.com/testing/testing) | Cargas de trabalho de teste de segurança do NeuVector (pods nginx/node/redis) |
+| [`nv-demo-helm`](https://open-docs.neuvector.com/) | Demonstrações do NeuVector baseadas em Helm |
+| [`complianceascode`](https://complianceascode.github.io/) | Operador OpenSCAP/ComplianceAsCode |
+| [`keycloak`](https://www.keycloak.org/) | Gestão de identidade e acesso |
+| [`kagent`](https://kagent.dev/) | Assistente de segurança de IA agêntica para Kubernetes |
 | `insecure_app` | Aplicação web intencionalmente vulnerável (demo/treinamento) |
-| `struts_demo` | Aplicação de demonstração vulnerável Apache Struts2 (CVE-2017-5638) |
-
+| [`struts_demo`](https://struts.apache.org/) | Aplicação de demonstração vulnerável Apache Struts2 (CVE-2017-5638) |
 </details>
 
 <a id="addons-suma"></a>
 <details open>
-<summary><strong>SUSE Manager / Uyuni</strong></summary>
+<summary><strong>SUSE Multi-Linux Manager / Uyuni</strong></summary>
 
 | Nome do add-on | Descrição |
 |---|---|
-| `uyuni` | Servidor Uyuni (upstream): chaves de ativação, organizações, RBAC, Content Lifecycle Management, integração com Ansible, auditoria SCAP/CVE, topologia de ambientes dev/QA/prod — veja `install_uyuni --schema` para a lista completa de campos |
-| `smlm` | Servidor SUSE Manager Lifecycle Management — o mesmo conjunto de recursos que `uyuni`, implantado via Kubernetes/Helm |
-| `smlm_proxy` | Proxy do SMLM |
+| [`uyuni`](https://www.uyuni-project.org/) | Servidor Uyuni (upstream): chaves de ativação, organizações, RBAC, Content Lifecycle Management, integração com Ansible, auditoria SCAP/CVE, topologia de ambientes dev/QA/prod — veja `install_uyuni --schema` para a lista completa de campos |
+| [`smlm`](https://www.suse.com/products/multi-linux-manager/) | Servidor SUSE Multi-Linux Manager — o mesmo conjunto de recursos que `uyuni`, implantado via Kubernetes/Helm |
+| [`smlm_proxy`](https://www.suse.com/products/multi-linux-manager/) | Proxy do SMLM |
 | `client_registration` | Registra qualquer VM como cliente Salt de um servidor `uyuni`/`smlm` existente (bootstrap por chave de ativação + aceitação da chave salt) |
-| `suma` | SUSE Manager (SUMA), instalado diretamente no sistema operacional via `mgradm` — não em Kubernetes |
-
+| [`suma`](https://www.suse.com/products/multi-linux-manager/) | SUSE Multi-Linux Manager (SUMA), instalado diretamente no sistema operacional via `mgradm` — não em Kubernetes |
 </details>
 
 <a id="addons-storage"></a>
@@ -855,11 +854,10 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 | Nome do add-on | Descrição |
 |---|---|
-| `mariadb` | Banco de dados MariaDB |
-| `postgresql` | Banco de dados PostgreSQL |
-| `openldap` | Serviço de diretório OpenLDAP |
-| `ds389` | 389 Directory Server (LDAP) — o único add-on ainda implementado em bash |
-
+| [`mariadb`](https://mariadb.org/) | Banco de dados MariaDB |
+| [`postgresql`](https://www.postgresql.org/) | Banco de dados PostgreSQL |
+| [`openldap`](https://www.openldap.org/) | Serviço de diretório OpenLDAP |
+| [`ds389`](https://www.port389.org/) | 389 Directory Server (LDAP) — o único add-on ainda implementado em bash |
 </details>
 
 <a id="addons-cicd"></a>
@@ -868,11 +866,10 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 | Nome do add-on | Descrição |
 |---|---|
-| `jenkins` | Jenkins CI |
-| `appcollection` | SUSE Application Collection |
-| `stackpack` | Integração de monitoramento StackState |
-| `trento` | Monitoramento de infraestrutura SAP |
-
+| [`jenkins`](https://www.jenkins.io/) | Jenkins CI |
+| [`appcollection`](https://apps.rancher.io/) | SUSE Application Collection |
+| [`stackpack`](https://www.stackstate.com/) | Integração de monitoramento StackState |
+| [`trento`](https://www.trento-project.io/) | Monitoramento de infraestrutura SAP |
 </details>
 
 <a id="addons-ai"></a>
@@ -881,23 +878,62 @@ Add-ons são referenciados pelo nome no array `addons` de um kcluster ou nó. O 
 
 | Nome do add-on | Descrição |
 |---|---|
-| `ollama` | Runtime local de LLM |
-| `deepseek` | Modelo DeepSeek, servido via Ollama |
-| `gemini` | Integração com a API do Google Gemini |
-| `phoebe` | (veja `install_phoebe --schema`) |
-
+| [`ollama`](https://ollama.com/) | Runtime local de LLM |
+| [`deepseek`](https://www.deepseek.com/) | Modelo DeepSeek, servido via Ollama |
+| [`apertus`](https://www.swiss-ai.org/apertus) | Modelo Apertus (Swiss AI Initiative), servido via Ollama |
+| [`gemini`](https://ai.google.dev/gemini-api) | Proxy da API do Google Gemini (LiteLLM) |
+| [`anthropic`](https://www.anthropic.com/) | Proxy da API do Anthropic Claude (LiteLLM) |
+| [`openai`](https://openai.com/) | Proxy da API da OpenAI (LiteLLM) |
+| [`kimi`](https://www.moonshot.ai/) | Proxy da API do Moonshot AI Kimi (LiteLLM) |
+| [`open_webui`](https://openwebui.com/) | Frontend de chat para Ollama / endpoints compatíveis com OpenAI |
+| [`suse_ai`](https://www.suse.com/solutions/artificial-intelligence/) | Stack de IA próprio da SUSE: Ollama + Open WebUI + Milvus |
+| [`milvus`](https://milvus.io/) | Banco de dados vetorial Milvus (busca RAG/embeddings) |
+| [`qdrant`](https://qdrant.tech/) | Banco de dados vetorial Qdrant (busca RAG/embeddings) |
+| [`weaviate`](https://weaviate.io/) | Banco de dados vetorial Weaviate (busca RAG/embeddings) |
+| [`gpu_operator`](https://github.com/NVIDIA/gpu-operator) | NVIDIA GPU Operator (agendamento de GPU para cargas de trabalho de IA) |
+| [`qwen`](https://qwenlm.github.io/) | Modelo Qwen2.5, servido via Ollama |
+| [`mistral`](https://mistral.ai/) | Modelo Mistral, servido via Ollama |
+| [`codellama`](https://github.com/meta-llama/codellama) | Modelo Code Llama, servido via Ollama |
+| [`starcoder2`](https://github.com/bigcode-project/starcoder2) | Modelo StarCoder2, servido via Ollama |
+| [`phoebe`](https://github.com/SUSE/phoebe) | (veja `install_phoebe --schema`) |
 </details>
 
 <a id="addons-virt"></a>
 <details open>
-<summary><strong>Virtualização &amp; demos</strong></summary>
+<summary><strong>Virtualização</strong></summary>
 
 | Nome do add-on | Descrição |
 |---|---|
-| `harvester` | Provisionamento de nós SUSE Virtualization (Harvester/KubeVirt) |
-| `wordpress` | Aplicação de demonstração WordPress + MySQL |
-| `kiwi` | Construtor de appliances KIWI |
-| `fluentd` | Agregação de logs |
+| [`harvester`](https://harvesterhci.io/) | Provisionamento de nós SUSE Virtualization (Harvester/KubeVirt) |
+| [`kiwi`](https://osinside.github.io/kiwi/) | Construtor de appliances KIWI |
+
+</details>
+
+<a id="addons-demos"></a>
+<details open>
+<summary><strong>Aplicações de demonstração</strong></summary>
+
+| Nome do add-on | Descrição |
+|---|---|
+| [`wordpress`](https://wordpress.org/) | Aplicação de demonstração WordPress + MySQL |
+| [`fluentd`](https://www.fluentd.org/) | Agregação de logs |
+| [`mailman`](https://www.list.org/) | Gestão de listas de e-mail GNU Mailman 3 + interface web |
+| [`mediagoblin`](https://www.mediagoblin.org/) | Plataforma federada de publicação de mídia GNU MediaGoblin |
+| [`colt`](https://gitlab.com/NalaGinrut/colt) | Colt, um motor de blog baseado em git sobre GNU Artanis |
+| [`wikimusic`](https://codeberg.org/jjba23/wikimusic) | WikiMusic, um CMS de conhecimento musical sobre GNU Artanis |
+| [`home_assistant`](https://www.home-assistant.io/) | Plataforma de automação residencial Home Assistant |
+
+</details>
+
+<a id="addons-games"></a>
+<details open>
+<summary><strong>Jogos</strong></summary>
+
+| Nome do add-on | Descrição |
+|---|---|
+| [`supertux_classic`](https://github.com/Alzter/SuperTux-Classic) | SuperTux Classic, um jogo de plataforma Godot open source auto-hospedado |
+| [`skynet_simulator`](https://github.com/edisgreat/skynet-simulator) | Skynet Simulator, um jogo de quebra-cabeça/idle open source auto-hospedado para navegador |
+| [`open_saber`](https://github.com/leandrodreamer/BeepSaber) | Open Saber, um jogo de ritmo/corte de blocos open source auto-hospedado |
 
 </details>
 
@@ -937,7 +973,7 @@ Módulos de biblioteca Python instalados. Atualizados ao executar `install_autom
 | `lab_creation.py` | Funções auxiliares de ciclo de vida de VM, DNS, resolução multi-host e orquestração |
 | `backends.py` | Interface `VMBackend` + `LibvirtBackend` (criar/excluir/reiniciar uma VM, envio de arquivos de provisionamento) |
 | `services.py` | Gerenciamento do serviço DNS |
-| `spacecmd_common.py` | Automação compartilhada do SUSE Manager/Uyuni (chaves de ativação, organizações, RBAC, CLM, Ansible, SCAP/CVE) usada por `install_uyuni`/`install_smlm`/`install_client_registration` |
+| `spacecmd_common.py` | Automação compartilhada do SUSE Multi-Linux Manager/Uyuni (chaves de ativação, organizações, RBAC, CLM, Ansible, SCAP/CVE) usada por `install_uyuni`/`install_smlm`/`install_client_registration` |
 | `primary.py` | Validação de entrada e carregamento de configuração |
 | `k8s.py` | Interface de distribuição de cluster Kubernetes (RKE2/K3s) |
 | `addon_common.py` | Infraestrutura de CLI compartilhada usada por cada add-on `install_*` (dispatch de `--help`/`--version`/`--schema`, validação de esquema) |

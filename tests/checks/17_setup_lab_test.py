@@ -254,6 +254,145 @@ check("phase_create_vms: a node whose provision_vm() raises RuntimeError doesn't
       calls["provision"] == ["vm_first", "vm_slow", "vm_last"])
 
 
+# ── _RunReport / print_summary: end-of-run overview of what worked / failed ──
+# setup_lab.py used to swallow a failed node/addon with one mid-run [WARN] and
+# then just say "LAB setup completed" — print_summary() gives a grouped
+# breakdown and _report.failed drives main()'s exit code.
+setup_lab._report = setup_lab._RunReport()
+setup_lab._report.resources = (12, 24576, 240, 4)
+setup_lab._report.add_node("alpha", "created")
+setup_lab._report.add_node("bravo", "created")
+setup_lab._report.add_node("charlie", "reused")
+setup_lab._report.add_node("delta", "FAILED")
+setup_lab._report.add_cluster("prod", "ok")
+setup_lab._report.add_addon("node:alpha", "mariadb", "ok")
+setup_lab._report.add_addon("cluster:prod", "rancher", "FAILED (exit 2)")
+setup_lab._report.add_warning("nodes.delta.VM_DSK is 3 GiB but its source image is 10 GiB — raising to 10 GiB")
+setup_lab._report.add_error("provisioning 'delta' failed")
+
+check("_RunReport.failed is True when any node failed", setup_lab._report.failed is True)
+
+_out = io.StringIO()
+with redirect_stdout(_out):
+    setup_lab.print_summary()
+_summary = _out.getvalue()
+check("print_summary: has a clearly-separated LAB SUMMARY header", "LAB SUMMARY" in _summary)
+check("print_summary: is set apart by a full-width rule", "═" * 20 in _summary)
+check("print_summary: shows the lab resource totals", "12 vCPU" in _summary and "4 node(s)" in _summary)
+check("print_summary: groups the created nodes together", "created" in _summary and "alpha, bravo" in _summary)
+check("print_summary: shows the failed node", "FAILED" in _summary and "delta" in _summary)
+check("print_summary: shows a failed addon with its exit code", "FAILED (exit 2)" in _summary and "rancher" in _summary)
+check("print_summary: lists warnings", "Warnings (1)" in _summary and "raising to 10 GiB" in _summary)
+check("print_summary: lists errors", "Errors (1)" in _summary and "provisioning 'delta' failed" in _summary)
+check("print_summary: overall line calls out that the run had failures",
+      "WITH FAILURES" in _summary)
+
+# errors alone (no failed node/cluster/addon) still make the run count as failed
+setup_lab._report = setup_lab._RunReport()
+setup_lab._report.add_node("ok1", "created")
+setup_lab._report.add_error("preflight: something bad")
+check("_RunReport.failed is True when only errors are present (no FAILED status)",
+      setup_lab._report.failed is True)
+
+# warnings but no errors/failures -> OK-with-warnings, not failed
+setup_lab._report = setup_lab._RunReport()
+setup_lab._report.add_node("ok1", "created")
+setup_lab._report.add_warning("a heads-up")
+_out = io.StringIO()
+with redirect_stdout(_out):
+    setup_lab.print_summary()
+check("print_summary: warnings-only run reports OK with a warning count",
+      "with 1 warning(s)" in _out.getvalue())
+check("_RunReport.failed is False when there are only warnings", setup_lab._report.failed is False)
+
+setup_lab._report = setup_lab._RunReport()
+setup_lab._report.add_node("only", "created")
+_out = io.StringIO()
+with redirect_stdout(_out):
+    setup_lab.print_summary()
+check("print_summary: a fully clean run reports everything OK", "everything OK" in _out.getvalue())
+check("_RunReport.failed is False for an all-clean run", setup_lab._report.failed is False)
+
+# ── _fold_issues_into_report: preflight/addon issue lines -> warnings/errors ──
+setup_lab._report = setup_lab._RunReport()
+setup_lab._fold_issues_into_report([
+    "  \x1b[1;91m[ERROR]\x1b[0m nodes.venus.ISO_IMAGE: image 'x' not found",
+    "  \x1b[1;38;5;208m[WARN]\x1b[0m  nodes.mars.VM_DSK raised to 10 GiB",
+    "  addon 'longhorn': plain continuation line",
+])
+check("_fold_issues_into_report: [ERROR] lines become errors (ANSI stripped)",
+      any("not found" in e and "[ERROR]" not in e for e in setup_lab._report.errors))
+check("_fold_issues_into_report: [WARN] lines become warnings",
+      any("raised to 10 GiB" in w for w in setup_lab._report.warnings))
+check("_fold_issues_into_report: an untagged line is kept as an error",
+      any("continuation line" in e for e in setup_lab._report.errors))
+
+# ── _run_addon: quiet unless it fails / looks noisy / --debug ────────────────
+setup_lab.lc.set_debug(False)
+_seen = []
+setup_lab.subprocess.run = lambda cmd, **kw: FakeCompleted(returncode=0, stdout="all good\n")
+_out = io.StringIO()
+with redirect_stdout(_out):
+    setup_lab._run_addon(["install_x", "lab.json"], {})
+check("_run_addon: a clean, quiet addon prints nothing", _out.getvalue() == "")
+
+setup_lab.subprocess.run = lambda cmd, **kw: FakeCompleted(returncode=1, stdout="boom\n")
+_out = io.StringIO()
+with redirect_stdout(_out):
+    setup_lab._run_addon(["install_x", "lab.json"], {})
+check("_run_addon: a failing addon's output is shown", "boom" in _out.getvalue())
+
+setup_lab.subprocess.run = lambda cmd, **kw: FakeCompleted(returncode=0, stdout="WARNING: heads up\n")
+_out = io.StringIO()
+with redirect_stdout(_out):
+    setup_lab._run_addon(["install_x", "lab.json"], {})
+check("_run_addon: a rc=0 addon whose output has a warning is still shown", "heads up" in _out.getvalue())
+setup_lab.lc.set_debug(False)
+
+# main(): exit code follows _report.failed
+old_argv = sys.argv
+setup_lab.primary.load_defaults = lambda: {}
+setup_lab.primary.load_config = lambda: {}
+setup_lab.primary.load_definition = lambda path: {"nodes": {}, "common": {}}
+setup_lab.lc.validate_lab_definition = lambda *a, **kw: True
+setup_lab.validate_addon_configs = lambda *a, **kw: True
+setup_lab.lc.total_lab_resources = lambda definition: (0, 0, 0)
+
+
+def _setup_lab_one_failed(*a, **kw):
+    setup_lab._report = setup_lab._RunReport()
+    setup_lab._report.add_node("boom", "FAILED")
+
+
+setup_lab.setup_lab = _setup_lab_one_failed
+sys.argv = ["setup_lab.py", "lab.json"]
+code = None
+try:
+    setup_lab.main()
+except SystemExit as e:
+    code = e.code
+finally:
+    sys.argv = old_argv
+check("main: exits 1 when the run had a failed node", code == 1)
+
+
+def _setup_lab_all_ok(*a, **kw):
+    setup_lab._report = setup_lab._RunReport()
+    setup_lab._report.add_node("fine", "created")
+
+
+setup_lab.setup_lab = _setup_lab_all_ok
+sys.argv = ["setup_lab.py", "lab.json"]
+code = None
+try:
+    setup_lab.main()
+except SystemExit as e:
+    code = e.code
+finally:
+    sys.argv = old_argv
+check("main: exits 0 when every node/cluster/addon succeeded", code == 0)
+
+
 # ── main(): --version / --help / --keep parsing ──────────────────────────────
 old_argv = sys.argv
 sys.argv = ["setup_lab.py", "--version"]

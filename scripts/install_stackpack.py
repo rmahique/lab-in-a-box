@@ -13,7 +13,7 @@
 #   stackpack_rel             : [OPTIONAL] Helm repo alias (default: stackstate)
 #   stackpack_repo_url        : [OPTIONAL] Helm repo URL (default: https://helm.stackstate.io)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "stackpack",

@@ -57,7 +57,7 @@
 #       server (their Traefik port sets differ). TLS uses self-signed lab
 #       certificates.
 
-__version__ = "__LABVERSION__"
+__version__ = "39753e7"
 
 PLUGIN = {
     "name": "smlm_proxy",

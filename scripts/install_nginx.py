@@ -9,7 +9,7 @@
 #   nginx_rel           : Helm repo alias (default: ingress-nginx)
 #   nginx_repo_url      : Helm repo URL (default: https://kubernetes.github.io/ingress-nginx)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "nginx",

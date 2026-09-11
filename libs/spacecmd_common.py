@@ -2,7 +2,7 @@
 spacecmd_common.py — shared spacecmd/mgr-sync activation-key + channel-sync
 helpers for SMLM (install_smlm.py, Kubernetes deployment, kubectl exec) and
 Uyuni (install_uyuni.py, single-VM podman deployment via mgradm, mgrctl
-exec) — same underlying server tooling (SUSE Manager/Uyuni server), reached
+exec) — same underlying server tooling (SUSE Multi-Linux Manager/Uyuni server), reached
 through a different exec wrapper depending on how each product is deployed
 in this project. Callers pass that wrapper as `exec_prefix` (e.g.
 "kubectl exec -n {ns} deploy/uyuni -c uyuni --" or "mgrctl exec --").

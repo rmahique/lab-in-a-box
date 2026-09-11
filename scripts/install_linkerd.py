@@ -11,7 +11,7 @@
 #   linkerd_repo_url    : [OPTIONAL] Helm repo URL (default: https://helm.linkerd.io/stable)
 #   linkerd_install_viz : [OPTIONAL] install viz dashboard (default: true)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "linkerd",

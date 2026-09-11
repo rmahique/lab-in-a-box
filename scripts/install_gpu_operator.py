@@ -30,7 +30,7 @@
 # Ubuntu/RHEL-family kernels; check docs.nvidia.com's supported-OS matrix for this project's default
 # guest image before relying on driver_enabled=true (the default) on a SUSE-family node.
 
-__version__ = "__LABVERSION__"
+__version__ = "3d35d1a"
 
 PLUGIN = {
     "name": "gpu_operator",

@@ -16,13 +16,14 @@ setup_lab.py — provision all VMs defined in a lab JSON, set up Kubernetes
 clusters, and install cluster-level and VM-level addons in order.
 
 Usage:
-    setup_lab.py [--keep] <lab.json>
+    setup_lab.py [--keep] [--debug] <lab.json>
 """
 
-__version__ = "__LABVERSION__"
+__version__ = "fdfe335"
 _SCHEMA_VERSION = "1.0"
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,7 +44,7 @@ from destroy_vm import destroy_vm  # noqa: E402
 from setup_vm import provision_vm  # noqa: E402
 
 _HELP_TEXT = """\
-Usage: setup_lab.py [--keep] <lab.json>
+Usage: setup_lab.py [--keep] [--debug] <lab.json>
 
 Provisions all VMs defined in the lab JSON, sets up Kubernetes clusters, and
 installs cluster-level and VM-level addons in order.
@@ -52,6 +53,9 @@ Options:
   --keep    Skip VMs that already exist, are running, match the defined IP and
             MAC address, and are accessible via SSH with default credentials.
             Without this flag (default) every VM is destroyed and recreated.
+  --debug   Stream the full output of every command that is run. Without it
+            (default) only lab-in-a-box's own messages are shown; a command's
+            output is still shown if it fails or emits a warning/error.
 
 The lab definition JSON must contain:
   nodes      — map of VM hostname → node config (myip, mymac, kcluster, …)
@@ -62,6 +66,165 @@ The lab definition JSON must contain:
 Run 'install_<addon> --help' for the options accepted by each addon section.
 Run 'setup_lab.py --input-definition [json|yaml]' for the machine-readable schema.
 """
+
+
+class _RunReport:
+    """
+    Accumulates per-node / per-cluster / per-addon outcomes during a
+    setup_lab() run so print_summary() can show, at a glance, what worked
+    and what still needs a fix — added because setup_lab.py previously
+    swallowed a failed node/addon with a single [WARN] line mid-run and
+    then just said "LAB setup completed", giving no end-of-run overview.
+
+    Statuses: nodes  -> "created" | "reused" | "existing" | "FAILED"
+              clusters -> "ok" | "FAILED"
+              addons -> "ok" | "FAILED (exit N)"
+
+    warnings / errors are free-text lines (from the preflight and from
+    non-fatal failures during the run) re-surfaced in the summary so you
+    don't have to scroll back through the whole log to see what to fix.
+    """
+
+    def __init__(self):
+        self.nodes = []      # list of (name, status)
+        self.clusters = []   # list of (name, status)
+        self.addons = []     # list of (scope, name, status)
+        self.warnings = []   # list of str
+        self.errors = []     # list of str
+        self.resources = None  # (cpu, mem_mib, disk_gib, node_count) or None
+
+    def add_node(self, name, status):
+        self.nodes.append((name, status))
+
+    def add_cluster(self, name, status):
+        self.clusters.append((name, status))
+
+    def add_addon(self, scope, name, status):
+        self.addons.append((scope, name, status))
+
+    def add_warning(self, msg):
+        self.warnings.append(msg)
+
+    def add_error(self, msg):
+        self.errors.append(msg)
+
+    @property
+    def failed(self):
+        return (bool(self.errors)
+                or any(s == "FAILED" for _, s in self.nodes)
+                or any(s == "FAILED" for _, s in self.clusters)
+                or any(s.startswith("FAILED") for _, _, s in self.addons))
+
+
+# Module-level: reset at the top of every setup_lab() run. The phase
+# functions append to this as they go; main() reads .failed for its exit code.
+_report = _RunReport()
+
+
+_RULE = "═" * 64
+
+
+def print_summary():
+    """Print a simple end-of-run summary of _report, grouped by outcome, with
+    anything that FAILED in red so it stands out. Set apart from the execution
+    log above by a full-width rule. Called once at the end of setup_lab() (and
+    by main() if a preflight check aborts the run early)."""
+    r = _report
+    print("\n\n{}{}\n  LAB SUMMARY\n{}{}".format(lc._WHITE, _RULE, _RULE, lc._RESET))
+
+    if r.resources:
+        cpu, mem, disk, ncount = r.resources
+        print("Resources: {} vCPU, {} MiB RAM, {} GiB disk across {} node(s)".format(
+            cpu, mem, disk, ncount))
+
+    if not (r.nodes or r.clusters or r.addons):
+        print("  (nothing was provisioned)")
+
+    def _grouped(pairs):
+        out = {}
+        for label, status in pairs:
+            out.setdefault(status, []).append(label)
+        return out
+
+    if r.nodes:
+        g = _grouped(r.nodes)
+        print("Nodes ({}):".format(len(r.nodes)))
+        seen = []
+        for status in ("created", "reused", "existing", "FAILED"):
+            if status in g:
+                seen.append(status)
+                col = lc._RED if status == "FAILED" else (lc._GREEN if status == "created" else "")
+                rst = lc._RESET if col else ""
+                print("  {}{:<8}{} {}".format(col, status, rst, ", ".join(sorted(g[status]))))
+        for status in g:  # any unexpected status value, don't hide it
+            if status not in seen:
+                print("  {:<8} {}".format(status, ", ".join(sorted(g[status]))))
+
+    if r.clusters:
+        g = _grouped(r.clusters)
+        print("Clusters ({}):".format(len(r.clusters)))
+        for status in sorted(g):
+            col = lc._RED if status == "FAILED" else lc._GREEN
+            print("  {}{:<8}{} {}".format(col, status, lc._RESET, ", ".join(sorted(g[status]))))
+
+    if r.addons:
+        g = {}
+        for scope, name, status in r.addons:
+            g.setdefault(status, []).append("{} ({})".format(name, scope))
+        print("Addons ({}):".format(len(r.addons)))
+        for status in sorted(g):
+            col = lc._GREEN if status == "ok" else lc._RED
+            print("  {}{:<16}{} {}".format(col, status, lc._RESET, ", ".join(g[status])))
+
+    if r.warnings:
+        print("{}Warnings ({}):{}".format(lc._ORANGE, len(r.warnings), lc._RESET))
+        for w in r.warnings:
+            print("  {}•{} {}".format(lc._ORANGE, lc._RESET, w))
+
+    if r.errors:
+        print("{}Errors ({}):{}".format(lc._RED, len(r.errors), lc._RESET))
+        for e in r.errors:
+            print("  {}•{} {}".format(lc._RED, lc._RESET, e))
+
+    print("")
+    if r.failed:
+        print("{}✗ Lab setup finished WITH FAILURES{} — see the Errors list and the entries "
+              "marked FAILED above for what to fix.".format(lc._RED, lc._RESET))
+    elif r.warnings:
+        print("{}✓ Lab setup finished — OK, with {} warning(s){} (see the Warnings list above).".format(
+            lc._GREEN, len(r.warnings), lc._RESET))
+    else:
+        print("{}✓ Lab setup finished — everything OK{}.".format(lc._GREEN, lc._RESET))
+    print("{}{}{}".format(lc._WHITE, _RULE, lc._RESET))
+
+
+def _lab_resources(definition):
+    """(cpu, mem_mib, disk_gib, node_count) for the whole lab — thin wrapper over
+    lc.total_lab_resources() that also carries the node count, for the summary."""
+    try:
+        cpu, mem, disk = lc.total_lab_resources(definition)
+    except Exception:
+        cpu, mem, disk = 0, 0, 0
+    return (cpu, mem, disk, len(definition.get("nodes", {}) or {}))
+
+
+def _run_addon(cmd, env):
+    """
+    Run an addon installer (`install_<addon> [--validate] <lab.json>`).
+
+    Default (no --debug): its stdout/stderr are captured and only printed if it
+    exits non-zero or its output looks like it contains a warning/error — so a
+    clean run shows only lab-in-a-box's own progress lines. With --debug the
+    output streams through live. Returns the CompletedProcess either way.
+    """
+    if lc.debug_enabled():
+        return subprocess.run(cmd, env=env)
+    r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    out = (r.stdout or "").rstrip()
+    if out and (r.returncode != 0 or lc._looks_noisy(out)):
+        print(out)
+    return r
 
 
 def _merged_env(definition, config, defaults, vm_name):
@@ -76,7 +239,7 @@ def _merged_env(definition, config, defaults, vm_name):
     return env
 
 
-def validate_addon_configs(definition, json_file):
+def validate_addon_configs(definition, json_file, issues_out=None):
     """
     Run `install_<addon> --validate <json_file>` for every addon referenced
     anywhere in the lab definition (kclusters[x].addons and nodes[x].addons —
@@ -96,7 +259,9 @@ def validate_addon_configs(definition, json_file):
     own — several addons are like this, see handle_common_args()'s own
     docstring) always exits 0 here, same as running it by hand would.
 
-    Returns True iff every addon validated clean.
+    Returns True iff every addon validated clean. If issues_out is given, the
+    raw issue lines are appended to it (setup_lab.py folds them into the
+    end-of-run summary's Errors list).
     """
     addon_names = apps.collect_addon_names(definition)
     if not addon_names:
@@ -106,13 +271,17 @@ def validate_addon_configs(definition, json_file):
     for addon in addon_names:
         installer = shutil.which("install_{}".format(addon))
         if not installer:
-            issues.append("  [ERROR] addon '{}': install_{} not found on PATH".format(addon, addon))
+            issues.append("  {}[ERROR]{} addon '{}': install_{} not found on PATH".format(
+                lc._RED, lc._RESET, addon, addon))
             continue
         r = subprocess.run([installer, "--validate", json_file],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         if r.returncode != 0:
             for line in (r.stdout or "").splitlines():
                 issues.append("  addon '{}': {}".format(addon, line))
+
+    if issues_out is not None:
+        issues_out.extend(issues)
 
     if issues:
         print("\n".join(issues))
@@ -166,6 +335,7 @@ def phase_create_vms(definition, config, defaults, json_file, keep):
             lc.log("  Using existing host \"{}{}{}\" — not creating a VM for it".format(
                 lc._RED, vm_name, lc._RESET))
             lc.check_ssh_conn(vm_name)
+            _report.add_node(vm_name, "existing")
             continue
 
         env = _merged_env(definition, config, defaults, vm_name)
@@ -181,6 +351,7 @@ def phase_create_vms(definition, config, defaults, json_file, keep):
                 keep_virt_srv, vm_name, env.get("mymac", ""), env.get("myip", ""),
                 remote_host=keep_remote_host):
             lc.log("  Skipping \"{}{}{}\" — existing VM matches definition".format(lc._RED, vm_name, lc._RESET))
+            _report.add_node(vm_name, "reused")
             continue
 
         lc.purge_known_host(vm_name)
@@ -191,22 +362,39 @@ def phase_create_vms(definition, config, defaults, json_file, keep):
         try:
             destroy_vm(definition, config, defaults, vm_name)
         except SystemExit:
+            # destroy_vm() called die() — a refusal ("existing" node) or a
+            # nothing-to-do no-op on a first run. Not an error, don't record it.
             pass
         except RuntimeError as e:
-            lc.warn("destroy before recreate failed for '{}' (continuing): {}".format(vm_name, e))
+            # A genuine command/API failure in the pre-recreate destroy (e.g.
+            # expired cloud credentials) — real enough to flag as an ERROR and
+            # fail the run's exit code, even though the remaining nodes still
+            # get their turn.
+            msg = "destroy before recreate failed for '{}' (continuing): {}".format(vm_name, e)
+            lc.error(msg)
+            _report.add_error(msg)
 
         # A single node's boot-wait timing out (check_ssh_conn's own die(),
         # inside provision_vm()) must not abort the whole multi-node deploy —
         # reported live 2026-09-01: one slow/failed node ("ERROR: retry
         # limit ( 100 ) exceeded waiting for X to boot.") killed the entire
         # run instead of continuing with the rest. Mirrors the destroy_vm()
-        # error handling just above: log and move on to the next node.
+        # error handling just above: log and move on to the next node — but
+        # this is a genuine ERROR for that node (the whole point of --keep-
+        # going is that the OTHER nodes still get a chance), not a warning.
         try:
             provision_vm(definition, config, defaults, vm_name)
+            _report.add_node(vm_name, "created")
         except SystemExit:
-            lc.warn("provisioning '{}' failed (continuing with the remaining nodes)".format(vm_name))
+            msg = "provisioning '{}' failed (continuing with the remaining nodes)".format(vm_name)
+            lc.error(msg)
+            _report.add_node(vm_name, "FAILED")
+            _report.add_error(msg)
         except RuntimeError as e:
-            lc.warn("provisioning '{}' failed (continuing with the remaining nodes): {}".format(vm_name, e))
+            msg = "provisioning '{}' failed (continuing with the remaining nodes): {}".format(vm_name, e)
+            lc.error(msg)
+            _report.add_node(vm_name, "FAILED")
+            _report.add_error(msg)
     lc._level -= 1
 
 
@@ -294,9 +482,18 @@ def _install_cluster_addons(definition, config, defaults, json_file, clu_name, c
         env["clu_name"] = clu_name
         # bash never checks this call's exit code (no `||` on either addon
         # invocation in setup_lab.sh) — a failing addon does not stop the
-        # pipeline. Matched exactly: run it, ignore the result, move on.
-        subprocess.run([installer, json_file], env=env)
+        # pipeline. Matched exactly: run it, move on — but record the exit
+        # code so the end-of-run summary can flag an addon that failed.
+        r = _run_addon([installer, json_file], env)
         installed.add(addon)
+        rc = getattr(r, "returncode", 0)
+        if rc == 0:
+            _report.add_addon("cluster:{}".format(clu_name), addon, "ok")
+        else:
+            _report.add_addon("cluster:{}".format(clu_name), addon, "FAILED (exit {})".format(rc))
+            msg = "cluster addon '{}' on '{}' exited {}".format(addon, clu_name, rc)
+            lc.error(msg)
+            _report.add_error(msg)
         lc.log("Installed addon \"{}{}{}\" on cluster \"{}{}{}\"".format(
             lc._RED, addon, lc._RESET, lc._RED, clu_name, lc._RESET))
     lc._level -= 1
@@ -313,7 +510,18 @@ def phase_install_k8s_and_addons(definition, config, defaults, json_file):
         clu_cfg = k8s.load_kclu_vars(definition, clu_name)
         clu_type = clu_cfg.get("clu_type", "")
 
-        _install_k8s_on_cluster(definition, clu_name, clu_type, clu_cfg)
+        # Same resilience as phase_create_vms' per-node handling: one cluster's
+        # Kubernetes install blowing up should be recorded and skipped, not take
+        # the whole run (and its end-of-run summary) down with it.
+        try:
+            _install_k8s_on_cluster(definition, clu_name, clu_type, clu_cfg)
+            _report.add_cluster(clu_name, "ok")
+        except (SystemExit, RuntimeError) as e:
+            msg = "Kubernetes install for cluster '{}' failed (skipping its addons): {}".format(clu_name, e)
+            lc.error(msg)
+            _report.add_cluster(clu_name, "FAILED")
+            _report.add_error(msg)
+            continue
 
         total_wait = 2 + delay_min
         lc.log("Wait {} min for cluster \"{}{}{}\" to stabilise".format(total_wait, lc._RED, clu_name, lc._RESET))
@@ -340,12 +548,29 @@ def phase_vm_addons(definition, json_file):
             env = dict(os.environ)
             env["_vm_name"] = vm_name
             # Same as the cluster-addon loop: bash never checks this call's
-            # exit code either, so a failing addon must not stop the pipeline.
-            subprocess.run([installer, json_file], env=env)
+            # exit code either, so a failing addon must not stop the pipeline —
+            # but record it for the end-of-run summary.
+            r = _run_addon([installer, json_file], env)
+            rc = getattr(r, "returncode", 0)
+            if rc == 0:
+                _report.add_addon("node:{}".format(vm_name), addon, "ok")
+            else:
+                _report.add_addon("node:{}".format(vm_name), addon, "FAILED (exit {})".format(rc))
+                msg = "node addon '{}' on '{}' exited {}".format(addon, vm_name, rc)
+                lc.error(msg)
+                _report.add_error(msg)
         lc._level -= 1
 
 
-def setup_lab(definition, config, defaults, json_file, keep=False):
+def setup_lab(definition, config, defaults, json_file, keep=False, fresh=True):
+    # fresh=False is used by main(), which builds _report itself and seeds it
+    # with the preflight's warnings/errors before this runs.
+    global _report
+    if fresh:
+        _report = _RunReport()
+    if _report.resources is None:
+        _report.resources = _lab_resources(definition)
+
     lab_name = definition.get("common", {}).get("lab_name") or Path(json_file).name
     has_k8s = bool(definition.get("kclusters"))
     kind = "VMs + Kubernetes clusters" if has_k8s else "VMs only"
@@ -367,9 +592,30 @@ def setup_lab(definition, config, defaults, json_file, keep=False):
     phase_vm_addons(definition, json_file)
 
     lc.log("LAB setup completed")
+    print_summary()
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _fold_issues_into_report(lines):
+    """Sort raw preflight / addon-validate issue lines into _report.warnings
+    and _report.errors so print_summary() can re-surface them at the end."""
+    for raw in lines:
+        s = _ANSI_RE.sub("", raw).strip()
+        if not s:
+            continue
+        if "[ERROR]" in s:
+            _report.add_error(s.replace("[ERROR]", "").strip())
+        elif "[WARN]" in s:
+            _report.add_warning(s.replace("[WARN]", "").strip())
+        else:
+            # e.g. an addon --validate continuation line with no tag of its own
+            _report.add_error(s)
 
 
 def main():
+    global _report
     args = sys.argv[1:]
 
     if args and args[0] in ("--version", "-v"):
@@ -385,9 +631,11 @@ def main():
         sys.exit(subprocess.run(["lab_schema", "--base", fmt]).returncode)
 
     keep = "--keep" in args
-    positional = [a for a in args if a != "--keep"]
+    debug = "--debug" in args
+    lc.set_debug(debug)
+    positional = [a for a in args if a not in ("--keep", "--debug")]
     if not positional:
-        lc.die("Usage: setup_lab.py [--keep] <lab.json>")
+        lc.die("Usage: setup_lab.py [--keep] [--debug] <lab.json>")
     json_file = positional[0]
 
     defaults = primary.load_defaults()
@@ -397,17 +645,39 @@ def main():
     iso_loc        = defaults.get("ISO_LOC", "/var/lib/libvirt/images/sources")
     lab_setup_path = defaults.get("LAB_SETUP_PATH", "/srv/www/htdocs/lab_creation")
     vm_img_loc     = defaults.get("VM_IMG_LOC", "/var/lib/libvirt/images/").rstrip("/")
-    if not lc.validate_lab_definition(definition, config, iso_loc, lab_setup_path, vm_img_loc=vm_img_loc):
-        sys.exit(1)
 
-    if not validate_addon_configs(definition, json_file):
-        sys.exit(1)
+    # One report for the whole run, seeded here so the preflight's own
+    # warnings/errors (including the VM_DSK auto-raise warning) show up in the
+    # end-of-run summary alongside anything that fails during provisioning.
+    _report = _RunReport()
+    _report.resources = _lab_resources(definition)
 
-    total_cpu, total_mem, total_disk = lc.total_lab_resources(definition)
+    # Resource total up front, too — same numbers, shown before the run starts.
+    cpu, mem, disk, ncount = _report.resources
     lc.log("This lab needs {} vCPU, {} MiB RAM, {} GiB disk in total across {} node(s)".format(
-        total_cpu, total_mem, total_disk, len(definition.get("nodes", {}))))
+        cpu, mem, disk, ncount))
 
-    setup_lab(definition, config, defaults, json_file, keep=keep)
+    preflight_issues = []
+    ok = lc.validate_lab_definition(definition, config, iso_loc, lab_setup_path,
+                                    vm_img_loc=vm_img_loc, issues_out=preflight_issues)
+    _fold_issues_into_report(preflight_issues)
+    if not ok:
+        print_summary()
+        sys.exit(1)
+
+    addon_issues = []
+    if not validate_addon_configs(definition, json_file, issues_out=addon_issues):
+        _fold_issues_into_report(addon_issues)
+        print_summary()
+        sys.exit(1)
+
+    setup_lab(definition, config, defaults, json_file, keep=keep, fresh=False)
+
+    # Non-zero exit if any node / cluster / addon failed (or the preflight
+    # raised an error), so a scripted caller (or a glance at $?) can tell a
+    # clean run from one that needs a fix — the human-readable breakdown is
+    # print_summary()'s "Lab summary" block above.
+    sys.exit(1 if _report.failed else 0)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@
 #   kucero_rel          : Helm repo alias (default: reactive-tech)
 #   kucero_repo_url     : Helm repo URL (default: https://charts.reactive-tech.io)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "kucero",

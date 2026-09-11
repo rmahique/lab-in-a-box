@@ -205,6 +205,184 @@ def load_shell_vars(path):
     return _parse_shell_vars(p.read_text())
 
 
+_DEFAULT_CREDENTIALS_DIRS = ["/etc/lab_creation/credentials", "lab_creation-credentials"]
+_CLOUD_ACCOUNT_EXTS = [".yaml", ".yml", ".json", ".cfg"]
+
+# Passphrases live here ONLY — process memory, this run's lifetime, never
+# written anywhere. Keyed by the resolved account file's absolute path so a
+# multi-node setup_lab.py run prompts for a given account's passphrase once,
+# not once per node. clear_passphrase_cache() is a test hook; normal code
+# never needs to call it.
+_PASSPHRASE_CACHE = {}
+
+
+def clear_passphrase_cache():
+    _PASSPHRASE_CACHE.clear()
+
+
+def credentials_dirs(config=None):
+    """Search path for credential/cloud-account files: config["CREDENTIALS_PATH"]
+    (a lab_creation.cfg key, added 2026-09-11) if set, else the built-in
+    default + local dev fallback."""
+    custom = (config or {}).get("CREDENTIALS_PATH")
+    if custom:
+        return [custom]
+    return list(_DEFAULT_CREDENTIALS_DIRS)
+
+
+def cloud_account_path(name, config=None):
+    """First existing file for cloud account `name` — <dir>/<name>.<ext> across
+    credentials_dirs(config) x _CLOUD_ACCOUNT_EXTS, or None."""
+    for d in credentials_dirs(config):
+        for ext in _CLOUD_ACCOUNT_EXTS:
+            p = Path(d) / "{}{}".format(name, ext)
+            if p.exists():
+                return p
+    return None
+
+
+def _decrypt_value(envelope, cache_key, label, passphrase_prompt, max_attempts=3):
+    """
+    Decrypt one crypto_store envelope dict, trying a cached passphrase for
+    `cache_key` first, then prompting (via passphrase_prompt, defaulting to
+    crypto_store.prompt_passphrase) up to max_attempts times. A passphrase
+    that works is cached under cache_key for the rest of this process; a
+    cached one that DOESN'T fit this particular envelope is evicted, not
+    trusted blindly (lets one account's passphrase differ from another's
+    even though both happen to be requested in the same run).
+
+    Returns (plaintext_bytes, error) — exactly one is None. Never raises.
+    """
+    import crypto_store  # lazy: only needed once an ACTUALLY-encrypted value is hit
+    prompt_fn = passphrase_prompt or crypto_store.prompt_passphrase
+
+    if cache_key in _PASSPHRASE_CACHE:
+        try:
+            return crypto_store.decrypt_cascade(_PASSPHRASE_CACHE[cache_key], envelope), None
+        except crypto_store.DecryptionError:
+            del _PASSPHRASE_CACHE[cache_key]
+
+    last_err = None
+    for attempt in range(max_attempts):
+        pw = prompt_fn("Passphrase for {}: ".format(label))
+        try:
+            plaintext = crypto_store.decrypt_cascade(pw, envelope)
+        except crypto_store.DecryptionError as e:
+            last_err = e
+            if attempt < max_attempts - 1:
+                print("Wrong passphrase for {} — {} attempt(s) left.".format(
+                    label, max_attempts - attempt - 1))
+            continue
+        _PASSPHRASE_CACHE[cache_key] = pw
+        return plaintext, None
+    return None, "{}: {}".format(label, last_err)
+
+
+def try_load_cloud_account(name, config=None, passphrase_prompt=None):
+    """
+    Non-dying load of a per-account credentials/cloud-account file: returns
+    (data, error) where exactly one is None. `data`, when present, is a flat
+    dict with the provider normalised to the key "CLOUDTYPE". Used by the
+    preflight, which folds any error into its own issue list rather than
+    aborting.
+
+    Multiple cloud accounts, the same way KVM_HOSTS gives multiple hypervisors
+    (see backends.resolve_cloud_account()). Looks under credentials_dirs(config)
+    — default /etc/lab_creation/credentials, configurable via lab_creation.cfg's
+    CREDENTIALS_PATH — for <name>.{yaml,yml,json,cfg}. The file carries a
+    `cloudtype` (aws/gcp/hetzner/…) plus the same connection keys that
+    provider's backend already reads from lab_creation.cfg (AWS_REGION, etc.).
+
+    Encryption (added 2026-09-11 — see scripts/setup_credentials.py, which is
+    the normal way to create these files, and libs/crypto_store.py for the
+    actual cipher): encrypted by default. Two shapes are recognised, both
+    written by setup_credentials.py:
+      - Whole-file: a top-level "encrypted: true" with the crypto_store
+        envelope fields alongside it; the decrypted plaintext is itself a
+        YAML mapping of the real fields.
+      - Field-level: only some values are themselves envelope dicts
+        ({"encrypted": true, ...}) — the rest of the file stays plain text
+        (e.g. AWS_REGION/AWS_PROFILE readable, AWS_SECRET_ACCESS_KEY boxed).
+    A file can opt out entirely with a top-level "unencrypted: true" — no
+    passphrase is ever prompted for one (the loader checks for "encrypted"/
+    per-field envelopes, not "unencrypted", so an absent flag and an explicit
+    unencrypted: true behave identically: only actually-encrypted content
+    ever triggers a prompt).
+    """
+    p = cloud_account_path(name, config)
+    if p is None:
+        return None, ("cloud account '{}' not found — looked for <name>.{{{}}} in: {}".format(
+            name, ",".join(e.lstrip(".") for e in _CLOUD_ACCOUNT_EXTS),
+            ", ".join(credentials_dirs(config))))
+
+    text = p.read_text()
+    try:
+        if p.suffix.lower() == ".json":
+            data = json.loads(text)
+        elif p.suffix.lower() in (".yaml", ".yml"):
+            import yaml
+            data = yaml.safe_load(text)
+        else:
+            data = _parse_shell_vars(text)
+    except ImportError:
+        return None, "cloud account '{}' ({}) needs PyYAML to parse — pip install pyyaml".format(name, p)
+    except Exception as e:  # json.JSONDecodeError, yaml.YAMLError, …
+        return None, "cloud account '{}' ({}) failed to parse as {}: {}".format(
+            name, p, p.suffix.lstrip(".") or "config", e)
+
+    if not isinstance(data, dict):
+        return None, "cloud account '{}' ({}) must be a mapping of key: value".format(name, p)
+
+    # Normalise the provider key: accept cloudtype / CLOUDTYPE / cloud_type.
+    cloudtype = ""
+    for k in list(data.keys()):
+        if k.lower() in ("cloudtype", "cloud_type"):
+            cloudtype = str(data.pop(k) or "").strip()
+    if not cloudtype:
+        return None, "cloud account '{}' ({}) has no 'cloudtype' — set it to aws, gcp, hetzner, …".format(name, p)
+
+    data.pop("unencrypted", None)  # informational only — see docstring
+
+    if data.get("encrypted") is True:
+        plaintext, err = _decrypt_value(data, str(p), "cloud account '{}'".format(name), passphrase_prompt)
+        if err:
+            return None, err
+        import yaml
+        try:
+            inner = yaml.safe_load(plaintext.decode("utf-8")) or {}
+        except yaml.YAMLError as e:
+            return None, "cloud account '{}' ({}) decrypted, but the plaintext isn't valid YAML: {}".format(
+                name, p, e)
+        if not isinstance(inner, dict):
+            return None, "cloud account '{}' ({}) decrypted payload must be a mapping".format(name, p)
+        data = inner
+    else:
+        # Field-level (mode B): any value that is itself an envelope dict
+        # gets decrypted in place; everything else (region, profile name, …)
+        # stays exactly as written.
+        for key in list(data.keys()):
+            val = data[key]
+            if isinstance(val, dict) and val.get("encrypted") is True:
+                plaintext, err = _decrypt_value(
+                    val, "{}::{}".format(p, key), "{} ({})".format(key, name), passphrase_prompt)
+                if err:
+                    return None, err
+                data[key] = plaintext.decode("utf-8")
+
+    data["CLOUDTYPE"] = cloudtype
+    return data, None
+
+
+def load_cloud_account(name, config=None):
+    """Dying wrapper over try_load_cloud_account() — used by get_backend()/
+    effective_backend_name(), where a bad account reference (including a
+    wrong passphrase after retries) is fatal."""
+    data, error = try_load_cloud_account(name, config=config)
+    if error:
+        _die(error)
+    return data
+
+
 def _load_shell_vars_file(search_paths, name):
     for candidate in search_paths:
         p = Path(candidate)

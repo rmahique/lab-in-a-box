@@ -14,7 +14,7 @@
 # The chart's own README notes it needs Kubernetes v1.24+ (gRPC readiness probe support) and a
 # PersistentVolume provisioner — both already assumed elsewhere in this project's RKE2/K3s addons.
 
-__version__ = "__LABVERSION__"
+__version__ = "3d35d1a"
 
 PLUGIN = {
     "name": "qdrant",

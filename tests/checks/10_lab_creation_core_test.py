@@ -463,6 +463,85 @@ check("validate_lab_definition: common.backend=harvester (no per-node override) 
       lc.validate_lab_definition(harvester_via_common, single_host_cfg, "/iso", "/lab") is True)
 
 
+# ── a cloud-backend node's myip is deliberately empty — not a missing-field error ──
+# Added 2026-09-09 alongside create_vm()'s own real-IP return contract (see TODO): a cloud
+# node's real IP is only known once the provider assigns it at create time, so myip is left
+# empty in the JSON by design, not a mistake. libvirt/Harvester nodes are unaffected — they still
+# require myip exactly as before (the "baseline" tests above already cover that).
+lc.subprocess.run = img_check_ok
+cloud_no_myip = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"backend": "aws", "config_method": "virt_customize"}},
+})
+check("validate_lab_definition: an aws-backend node with no myip at all still passes preflight",
+      lc.validate_lab_definition(cloud_no_myip, single_host_cfg, "/iso", "/lab") is True)
+
+lc.subprocess.run = img_check_ok
+cloud_no_myip_via_common = _lab_def({
+    "common": dict(base_common, backend="hetzner"),
+    "nodes": {"vm1": {"config_method": "virt_customize"}},
+})
+check("validate_lab_definition: common.backend=hetzner (no per-node override) also skips the "
+      "myip requirement", lc.validate_lab_definition(cloud_no_myip_via_common, single_host_cfg, "/iso", "/lab") is True)
+
+lc.subprocess.run = img_check_ok
+libvirt_no_myip = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"config_method": "virt_customize"}},
+})
+check("validate_lab_definition: a plain libvirt node with no myip still fails (baseline, unaffected)",
+      lc.validate_lab_definition(libvirt_no_myip, single_host_cfg, "/iso", "/lab") is False)
+
+
+# ── cloud_account: multiple cloud accounts (like KVM_HOSTS for hypervisors) ──
+# validate_lab_definition() does `from primary import try_load_cloud_account`
+# INSIDE the function, so patching the name on the primary module is what takes
+# effect (same direct-assignment style as lc.subprocess.run above).
+import io as _acct_io
+from contextlib import redirect_stdout as _acct_redirect
+_orig_try_acct = primary.try_load_cloud_account
+
+# a valid account -> treated as a cloud node: no myip needed
+lc.subprocess.run = img_check_ok
+primary.try_load_cloud_account = lambda name, config=None, passphrase_prompt=None: (
+    {"CLOUDTYPE": "aws", "AWS_REGION": "eu-central-1"}, None)
+acct_node = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"cloud_account": "aws-sbx", "config_method": "virt_customize"}},
+})
+check("validate_lab_definition: a node with a valid cloud_account needs no myip (cloud node)",
+      lc.validate_lab_definition(acct_node, single_host_cfg, "/iso", "/lab") is True)
+
+# a missing / unresolvable account file -> a preflight ERROR
+lc.subprocess.run = img_check_ok
+primary.try_load_cloud_account = lambda name, config=None, passphrase_prompt=None: (
+    None, "cloud account 'ghost' not found — looked for ...")
+bad_acct = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"cloud_account": "ghost", "config_method": "virt_customize"}},
+})
+_b = _acct_io.StringIO()
+with _acct_redirect(_b):
+    ok = lc.validate_lab_definition(bad_acct, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: an unresolvable cloud_account is a preflight ERROR",
+      ok is False and "not found" in _b.getvalue())
+
+# account cloudtype disagreeing with an explicit backend -> ERROR
+lc.subprocess.run = img_check_ok
+primary.try_load_cloud_account = lambda name, config=None, passphrase_prompt=None: ({"CLOUDTYPE": "aws"}, None)
+mismatch = _lab_def({
+    "common": dict(base_common),
+    "nodes": {"vm1": {"cloud_account": "aws-sbx", "backend": "gcp", "config_method": "virt_customize"}},
+})
+_b = _acct_io.StringIO()
+with _acct_redirect(_b):
+    ok = lc.validate_lab_definition(mismatch, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: cloud_account cloudtype vs. an explicit disagreeing backend is an ERROR",
+      ok is False and "make them agree" in _b.getvalue())
+
+primary.try_load_cloud_account = _orig_try_acct
+
+
 # ── common.ISO_IMAGE only required when a node lacks its own override ───────
 # Regression test for a real bug reported live 2026-09-01: a lab where every
 # node pins its own ISO_IMAGE never needs a common default at all, but
@@ -688,6 +767,83 @@ check("validate_lab_definition: an explicit per-node config_method=\"\" wins ove
       "is likely unsupported on ISO_IMAGE" not in buf.getvalue())
 
 
+# ── VM_DSK auto-raise when it's below the source image's virtual size ───────
+# `qemu-img resize` fails if asked to shrink below the image's own virtual
+# size — detect it in preflight, bump VM_DSK up in memory, and warn.
+_GIB = 1024 ** 3
+_qemu_info_20g = FakeRun(responses=[
+    ("echo ok", FakeCompleted(returncode=0, stdout="ok")),
+    ("qemu-img info", FakeCompleted(returncode=0, stdout=json.dumps({"virtual-size": 20 * _GIB}))),
+])
+lc.subprocess.run = _qemu_info_20g
+undersized = _lab_def({
+    "common": dict(base_common, VM_DSK="8"),
+    "nodes": {"vm1": {"myip": "192.168.1.94", "mymac": "aa:bb:cc:dd:ee:94",
+                       "config_method": "virt_customize"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    ok = lc.validate_lab_definition(undersized, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: an undersized VM_DSK is a WARNING, not an ERROR (preflight still passes)",
+      ok is True)
+check("validate_lab_definition: it warns that VM_DSK is being raised to the image's size",
+      "raising VM_DSK to 20 GiB" in buf.getvalue())
+check("validate_lab_definition: it bumps the node's VM_DSK to the image size in memory",
+      undersized["nodes"]["vm1"]["VM_DSK"] == "20")
+
+# A VM_DSK already >= the image size is left alone, no warning.
+lc.subprocess.run = _qemu_info_20g
+big_enough = _lab_def({
+    "common": dict(base_common, VM_DSK="40"),
+    "nodes": {"vm1": {"myip": "192.168.1.95", "mymac": "aa:bb:cc:dd:ee:95",
+                       "config_method": "virt_customize"}},
+})
+buf = _io.StringIO()
+with _redirect_stdout(buf):
+    lc.validate_lab_definition(big_enough, single_host_cfg, "/iso", "/lab")
+check("validate_lab_definition: a big-enough VM_DSK is left untouched",
+      big_enough["nodes"]["vm1"].get("VM_DSK", "40") == "40" and "raising VM_DSK" not in buf.getvalue())
+
+
+# ── issues_out: hands the raw preflight issue lines back to the caller ──────
+lc.subprocess.run = _qemu_info_20g
+collected = []
+lc.validate_lab_definition(_lab_def({
+    "common": dict(base_common, VM_DSK="8"),
+    "nodes": {"vm1": {"myip": "192.168.1.96", "config_method": "virt_customize"}},
+}), single_host_cfg, "/iso", "/lab", issues_out=collected)
+check("validate_lab_definition: issues_out receives the preflight's issue lines",
+      any("raising VM_DSK" in line for line in collected))
+
+
+# ── set_debug / _looks_noisy: quiet-by-default ssh_run output gating ────────
+check("_looks_noisy: flags a line containing 'ERROR'", lc._looks_noisy("something ERROR here") is True)
+check("_looks_noisy: flags a line containing 'warning'", lc._looks_noisy("a warning: x") is True)
+check("_looks_noisy: a clean line is not noisy", lc._looks_noisy("all fine, done") is False)
+
+lc.set_debug(False)
+_quiet_ok = FakeRun(responses=[("", FakeCompleted(returncode=0, stdout="lots of chatter\n"))])
+lc.subprocess.run = _quiet_ok
+_b = _io.StringIO()
+with _redirect_stdout(_b):
+    lc.ssh_run("host1", "some command", check=False)
+check("ssh_run: a clean command's stdout is suppressed when debug is off", _b.getvalue() == "")
+
+_noisy = FakeRun(responses=[("", FakeCompleted(returncode=0, stdout="WARNING: disk almost full\n"))])
+lc.subprocess.run = _noisy
+_b = _io.StringIO()
+with _redirect_stdout(_b):
+    lc.ssh_run("host1", "some command", check=False)
+check("ssh_run: a command whose output looks like a warning is still shown", "disk almost full" in _b.getvalue())
+
+_failed = FakeRun(responses=[("", FakeCompleted(returncode=3, stdout="it broke\n"))])
+lc.subprocess.run = _failed
+_b = _io.StringIO()
+with _redirect_stdout(_b):
+    lc.ssh_run("host1", "some command", check=False)
+check("ssh_run: a failing command's output is shown even without debug", "it broke" in _b.getvalue())
+
+
 # ── prepare_cloud_init(): network_renderer defaulting/override ──────────────
 # Real bash-eval process_template() against the real shipped templates (not
 # mocked) — a real substitution bug in template_network-config would still be
@@ -709,7 +865,7 @@ def _render_network_config(variables):
     with tempfile.TemporaryDirectory() as tmp:
         ci_dir = Path(tmp) / "cloud-init"
         ci_dir.mkdir()
-        for kind in ("user-data", "network-config", "network-config-dhcp", "meta-data"):
+        for kind in ("user-data", "network-config", "network-config-dhcp", "network-config-dhcp-nomac", "meta-data"):
             src = _REPO / "templates" / "cloud-init.template_{}".format(kind)
             (ci_dir / "template_{}".format(kind)).write_text(src.read_text())
         lc.prepare_cloud_init("vm1.mydemo.lab", tmp, variables)
@@ -753,6 +909,27 @@ check("prepare_cloud_init: omitted myip (not just empty-string) also selects DHC
 check("prepare_cloud_init: a real static myip still gets the static template, unchanged",
       "dhcp4: false" in _render_network_config(dict(_base_vars))
       and "addresses:" in _render_network_config(dict(_base_vars)))
+
+# Real bug found live-testing AWSBackend, 2026-09-09 (see TODO), caught BEFORE it reached a real
+# cloud instance: a cloud backend leaves BOTH myip and mymac empty (see backends.py's
+# _cloud_no_mac()) — the original DHCP template matches its NIC by `macaddress: "${mymac}"`,
+# which renders an empty match when mymac is also empty and likely configures no interface at
+# all. The USB-delivery lab-host VM (myip empty, mymac real) must keep getting the ORIGINAL
+# mac-matched template unchanged — only "both empty" switches to the new name-glob template.
+cloud_vars = dict(_base_vars)
+cloud_vars["myip"] = ""
+cloud_vars["mymac"] = ""
+rendered = _render_network_config(cloud_vars)
+check("prepare_cloud_init: empty myip AND empty mymac (a cloud backend node) selects the "
+      "name-glob DHCP template, not an empty macaddress match",
+      "dhcp4: true" in rendered and "macaddress" not in rendered and 'name: "e*"' in rendered)
+
+usb_host_vars = dict(_base_vars)
+usb_host_vars["myip"] = ""
+rendered = _render_network_config(usb_host_vars)
+check("prepare_cloud_init: empty myip with a real mymac (the USB-delivery lab-host VM's own "
+      "case) still gets the original macaddress-matched DHCP template, unaffected",
+      "dhcp4: true" in rendered and 'macaddress: "52:54:00:aa:bb:cc"' in rendered)
 
 # Regression test for a real bug reported live 2026-09-02: setup_vm.py (the
 # only real caller) never puts "_vm_name" in the variables dict it passes —

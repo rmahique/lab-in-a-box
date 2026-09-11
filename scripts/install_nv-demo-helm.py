@@ -9,7 +9,7 @@
 #   nv_demo_helm_name : [OPTIONAL] Helm release name                  (default: nvdemohelm)
 #   nv_demo_helm_tag  : [OPTIONAL] Demo container image tag           (default: 0.4)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "nv-demo-helm",

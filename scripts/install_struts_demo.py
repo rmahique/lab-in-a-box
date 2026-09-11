@@ -8,7 +8,7 @@
 #   struts_demo_ns   : [OPTIONAL] Kubernetes namespace                  (default: struts)
 #   struts_demo_name : [OPTIONAL] Deployment, service and ingress name  (default: struts)
 
-__version__ = "__LABVERSION__"
+__version__ = "a45abd4"
 
 PLUGIN = {
     "name": "struts_demo",

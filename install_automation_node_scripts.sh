@@ -106,7 +106,7 @@ do
 done
 
 # Non-addon, non-orchestration tooling.
-for i in pushDockerImage.sh lab_schema refresh_hypervisor_status.py setup_harvester_cluster.py build_lab_usb.py
+for i in pushDockerImage.sh lab_schema refresh_hypervisor_status.py setup_harvester_cluster.py build_lab_usb.py setup_credentials.py
 do
     cp "scripts/${i}" "/usr/local/bin/${i}"
     sed -i "s/__LABVERSION__/$(git log -1 --format='%h' -- scripts/${i} 2>/dev/null || echo 'unknown')/" "/usr/local/bin/${i}"
@@ -123,7 +123,7 @@ do
   cp $i /srv/www/htdocs/lab_creation/salt/
 done
 
-for i in combustion.template ignition.template cloud-init.template_meta-data cloud-init.template_network-config cloud-init.template_network-config-dhcp cloud-init.template_user-data \
+for i in combustion.template ignition.template cloud-init.template_meta-data cloud-init.template_network-config cloud-init.template_network-config-dhcp cloud-init.template_network-config-dhcp-nomac cloud-init.template_user-data \
           install_iso.template_autoyast install_iso.template_kickstart install_iso.template_preseed install_iso.template_autoinstall
 do
   cp templates/${i} /srv/www/htdocs/lab_creation/${i//./\/}

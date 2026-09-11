@@ -3,7 +3,7 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# JSON section: "suma" — SUSE Manager (SUMA) host-level deployment
+# JSON section: "suma" — SUSE Multi-Linux Manager (SUMA) host-level deployment
 #   NOTE: Installed directly on the OS via mgradm, not in Kubernetes.
 #         The target node must list "suma" in its nodes[x].addons[] array.
 #
@@ -42,8 +42,14 @@ from lab_creation import ssh_run, process_template, reboot_vm, check_ssh_conn  #
 
 
 def setup_suma(hostname, virt_srv, templ_addons_loc, cfg, node_cfg):
-    """Install SUSE Manager on a host VM via mgradm. Mirrors setup_suma (bash)."""
+    """Install SUSE Multi-Linux Manager on a host VM via mgradm. Mirrors setup_suma (bash)."""
     print("- Registering system to SUMA channel")
+    # Default channel deliberately keeps the "SUSE-Manager-Server" product name (not renamed to
+    # "SUSE-Multi-Linux-Manager-Server") — this addon defaults to version 5.0, and SCC's own real
+    # product/channel identifiers only switched naming starting with 5.1 (confirmed against the
+    # actual source images on nuc6: SUSE-Manager-Server.x86_64-5.0.x-*.qcow2 vs.
+    # SUSE-Multi-Linux-Manager-Server.x86_64-5.1.x-*.qcow2 both genuinely exist, distinct names per
+    # version). A real registration string, not documentation prose — do not rename this one.
     ssh_run(hostname,
             "transactional-update --quiet register -p {} -r {} ; reboot".format(
                 cfg.get("suma_channel") or "SUSE-Manager-Server/5.0/x86_64", cfg.get("suma_key") or "aaaaaa"),

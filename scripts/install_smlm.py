@@ -279,7 +279,7 @@
 #       HelmChartConfig. On K3s (kclusters clu_type "k3s") the bundled Traefik
 #       is reused and the same ports are exposed through its ServiceLB.
 
-__version__ = "__LABVERSION__"
+__version__ = "39753e7"
 
 PLUGIN = {
     "name": "smlm",

@@ -32,7 +32,7 @@ Lives in [`webui/`](webui/).
 ## What it does
 
 - Shows a live **count of components** discovered by reading the definitions
-  (41 `install_*` addons today).
+  (61 `install_*` addons today).
 - **▚ Lab topology** (pinned) renders the base lab definition: `common`
   (singleton) plus `nodes` and `kclusters` as **repeatable** keyed maps
   (add/remove instances — hostname → settings, cluster name → settings).

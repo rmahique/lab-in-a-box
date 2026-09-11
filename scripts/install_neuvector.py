@@ -10,7 +10,7 @@
 #   nv_repo_url  : [OPTIONAL] Helm repo URL                            (default: https://neuvector.github.io/neuvector-helm)
 #   nv_version   : [OPTIONAL] Helm chart version                        (empty = latest)
 
-__version__ = "__LABVERSION__"
+__version__ = "526bc48"
 
 PLUGIN = {
     "name": "neuvector",
