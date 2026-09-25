@@ -927,6 +927,21 @@ def ssh_output(hostname, cmd):
     return ssh_run(hostname, cmd, capture=True).stdout.strip()
 
 
+def scp_to(hostname, local_path, remote_path, user="root"):
+    """
+    Copies a local file to a remote host via real scp — binary-safe, unlike
+    ssh_run()'s own input_text (that path runs subprocess.run with
+    universal_newlines=True, which would corrupt a binary file such as an
+    RPM). Same connection options as _SSH_BASE, so it behaves identically
+    re: host-key handling. Returns the CompletedProcess; caller checks
+    returncode (no `check` param here — every current caller wants to
+    handle a transfer failure with its own message, not a generic one).
+    """
+    args = ["scp", "-o", "StrictHostKeyChecking=accept-new", "-q",
+            local_path, "{}@{}:{}".format(user, hostname, remote_path)]
+    return subprocess.run(args, capture_output=True, text=True)
+
+
 def purge_known_host(*names):
     """
     Remove any stale SSH host-key entries for the given hostname(s)/IP(s)

@@ -6,6 +6,7 @@
 # verified against live SUSE/Uyuni docs, 2026-08-27) rather than real
 # server behavior. Run from 09_spacecmd_common.sh, in its own container —
 # see tests/run_tests.sh.
+import base64
 import hashlib
 import json
 import re
@@ -121,6 +122,31 @@ sc.ssh_run = fake
 sc._api_call("host1", "mgrctl exec --", "saltkey.acceptedList", [])
 check("_api_call: 0-arg call also gets the '--' separator",
       "spacecmd -- api -A" in unwrap(fake.calls[0][1]) and "saltkey.acceptedList" in unwrap(fake.calls[0][1]))
+
+# -- _fault_check: spacecmd exits 0 even on a real server-side Fault --------
+# Confirmed live 2026-09-25: recurring.highstate.create with a malformed
+# cron_expr printed "ERROR: <Fault 2800: ...'Invalid Quartz expression
+# provided.'>" to stderr while the process still returned 0 — every caller's
+# `if r.returncode != 0: die(...)` check silently missed this. _api_call and
+# _spacecmd must normalize this to a nonzero returncode so those checks work.
+sc.ssh_run = lambda hostname, cmd, **kwargs: FakeResult(
+    returncode=0, stderr="INFO: Connected to http://localhost/rpc/api as admin\n"
+                          "ERROR: <Fault 2800: 'redstone.xmlrpc.XmlRpcFault: Invalid Quartz "
+                          "expression provided.'>\n")
+r = sc._api_call("host1", "mgrctl exec --", "recurring.highstate.create", [{"name": "x"}])
+check("_api_call: normalizes a Fault-with-RC-0 response to a nonzero returncode",
+      r.returncode != 0)
+
+sc.ssh_run = lambda hostname, cmd, **kwargs: FakeResult(
+    returncode=0, stderr="ERROR: <Fault -1: 'some other server-side failure'>\n")
+r = sc._spacecmd("host1", "mgrctl exec --", "activationkey_list")
+check("_spacecmd: normalizes a Fault-with-RC-0 response to a nonzero returncode too",
+      r.returncode != 0)
+
+sc.ssh_run = lambda hostname, cmd, **kwargs: FakeResult(returncode=0, stdout="1-mykey\n1-otherkey\n")
+r = sc._spacecmd("host1", "mgrctl exec --", "activationkey_list")
+check("_spacecmd: a genuinely successful call is left alone (returncode stays 0)",
+      r.returncode == 0)
 
 # -- activation_key_exists ----------------------------------------------------
 fake = FakeSSH(responses=[("activationkey_list", FakeResult(stdout="1-mykey\n1-otherkey\n"))])
@@ -1444,6 +1470,51 @@ except SystemExit:
     died = True
 check("run_content_lifecycle_actions: 'wait' without 'wait_env' dies", died)
 
+# -- ensure_openscap_prerequisites (added 2026-09-25) ------------------------
+# Real bug found live: neither openscap-utils nor scap-security-guide were
+# actually installed on any of this project's own SLES15 SP7 lab nodes,
+# despite ensure_scap_scan's own (now-corrected) docstring assuming they'd
+# already be there. This closes that gap so scheduling a scan via
+# install_smlm.py needs no separate manual step.
+fake = FakeSSH(responses=[("test -f", FakeResult(returncode=0))])
+sc.ssh_run = fake
+check("ensure_openscap_prerequisites: file already present -> no zypper install call",
+      sc.ensure_openscap_prerequisites("web1", "/usr/share/x.xml") is True
+      and not any("zypper" in c[1] for c in fake.calls))
+
+calls = []
+
+
+def _fake_present_after_install(hostname, cmd, **kwargs):
+    calls.append((hostname, cmd, kwargs))
+    if "test -f" in cmd:
+        # Present on the SECOND check (after install), missing on the first.
+        return FakeResult(returncode=0 if any("zypper" in c[1] for c in calls) else 1)
+    if "zypper" in cmd:
+        return FakeResult(returncode=0)
+    return FakeResult()
+
+
+sc.ssh_run = _fake_present_after_install
+check("ensure_openscap_prerequisites: missing -> installs via zypper, then re-checks",
+      sc.ensure_openscap_prerequisites("web1", "/usr/share/x.xml") is True
+      and any("zypper --non-interactive install openscap-utils scap-security-guide" in c[1]
+              for c in calls))
+
+fake = FakeSSH(responses=[("test -f", FakeResult(returncode=1)), ("zypper", FakeResult(returncode=1))])
+sc.ssh_run = fake
+check("ensure_openscap_prerequisites: zypper install failure returns False, doesn't die",
+      sc.ensure_openscap_prerequisites("web1", "/usr/share/x.xml") is False)
+
+fake = FakeSSH(responses=[
+    ("test -f", FakeResult(returncode=1)),  # matches BOTH the initial and post-install check —
+    ("zypper", FakeResult(returncode=0)),   # simulating content missing even after a successful install
+])
+sc.ssh_run = fake
+check("ensure_openscap_prerequisites: installed but content still missing afterwards -> False",
+      sc.ensure_openscap_prerequisites("web1", "/usr/share/x.xml") is False)
+
+
 # -- scap_scan_exists / ensure_scap_scan -------------------------------------
 fake = FakeSSH(responses=[("scap_listxccdfscans",
                             FakeResult(returncode=0, stdout="path: /usr/share/openscap/x.xml"))])
@@ -1453,11 +1524,14 @@ check("scap_scan_exists: found",
 check("scap_scan_exists: not found",
       sc.scap_scan_exists("host1", "mgrctl exec --", "web1", "/other/path.xml") is False)
 
-fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout="/usr/share/x.xml"))])
+fake = FakeSSH(responses=[
+    ("test -f", FakeResult(returncode=0)),  # prerequisite content already present
+    ("scap_listxccdfscans", FakeResult(returncode=0, stdout="/usr/share/x.xml")),
+])
 sc.ssh_run = fake
 sc.ensure_scap_scan("host1", "mgrctl exec --", "web1", "/usr/share/x.xml", profile="Web-Default")
 check("ensure_scap_scan: already scanned -> no scap_schedulexccdfscan call",
-      len(fake.calls) == 1 and "scap_schedulexccdfscan" not in fake.calls[0][1])
+      not any("scap_schedulexccdfscan" in c[1] for c in fake.calls))
 
 fake = FakeSSH(responses=[("scap_listxccdfscans", FakeResult(returncode=0, stdout=""))])
 sc.ssh_run = fake
@@ -1918,45 +1992,76 @@ fake = FakeSSH(responses=[("group_details", FakeResult(returncode=1, stderr="no 
 sc.ssh_run = fake
 check("group_id_for: returns None on failure", sc.group_id_for("host1", "mgrctl exec --", "bogus") is None)
 
-# -- ensure_recurring_schedule -------------------------------------------------
+# -- ensure_recurring_schedule (name made required + real idempotency
+# added 2026-09-25 — recurring.listByEntity IS a real, confirmed listing
+# method; an earlier version of this function's docstring wrongly claimed
+# none existed) ---------------------------------------------------------------
 died = False
 try:
-    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", schedule_type="bogus")
+    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", "n",
+                                  schedule_type="bogus")
 except SystemExit:
     died = True
 check("ensure_recurring_schedule: invalid schedule_type dies", died)
 
-fake = FakeSSH()
+fake = FakeSSH(responses=[("recurring.listByEntity", FakeResult(returncode=0, stdout="[]"))])
 sc.ssh_run = fake
-sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2")
-cmd = fake.calls[0][1]
-check("ensure_recurring_schedule: highstate uses recurring.highstate.create with entity/cron",
+sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", "nightly-highstate")
+cmds = [c[1] for c in fake.calls]
+check("ensure_recurring_schedule: checks recurring.listByEntity first",
+      any("recurring.listByEntity" in c for c in cmds))
+create_cmd = next(c for c in cmds if "recurring.highstate.create" in c)
+check("ensure_recurring_schedule: highstate uses recurring.highstate.create with entity/cron/name",
       # _api_call passes a single arg (the props dict) as its bare JSON
       # value, not wrapped in a one-element array — see its docstring.
-      '{"entity_type": "group", "entity_id": 42, "cron_expr": "0 2 * * 2"}' in unwrap(cmd)
-      and "recurring.highstate.create" in cmd)
+      '{"entity_type": "group", "entity_id": 42, "cron_expr": "0 2 * * 2", "name": "nightly-highstate"}'
+      in unwrap(create_cmd))
+
+# Already exists (per listByEntity's own output) — no create call at all.
+# Deliberately includes a DIFFERENT name that's a substring match ("night")
+# to confirm this checks for an exact name, not a loose substring — a real
+# bug caught here: an earlier version matched "n" against "nightly-
+# highstate" via bare substring search and silently skipped every call.
+fake = FakeSSH(responses=[("recurring.listByEntity", FakeResult(
+    returncode=0, stdout=json.dumps([{"id": 1, "name": "night"}, {"id": 2, "name": "nightly-highstate"}])))])
+sc.ssh_run = fake
+sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", "nightly-highstate")
+check("ensure_recurring_schedule: skips creation when the exact name already exists",
+      not any("recurring.highstate.create" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("recurring.listByEntity", FakeResult(
+    returncode=0, stdout=json.dumps([{"id": 1, "name": "night"}])))])
+sc.ssh_run = fake
+sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", "nightly-highstate")
+check("ensure_recurring_schedule: a substring-only match of an unrelated name does NOT "
+      "count as already-exists",
+      any("recurring.highstate.create" in c[1] for c in fake.calls))
 
 died = False
 try:
-    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", schedule_type="custom")
+    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 42, "0 2 * * 2", "n",
+                                  schedule_type="custom")
 except SystemExit:
     died = True
 check("ensure_recurring_schedule: custom type without 'states' dies", died)
 
-fake = FakeSSH()
+fake = FakeSSH(responses=[("recurring.listByEntity", FakeResult(returncode=0, stdout="[]"))])
 sc.ssh_run = fake
 sc.ensure_recurring_schedule("host1", "kubectl exec -n ns deploy/uyuni -c uyuni --", "group", 42, "0 2 * * 2",
-                              schedule_type="custom", states=["patch.apply"], extra={"name": "dev-patch"})
-cmd = fake.calls[0][1]
-check("ensure_recurring_schedule: custom includes states and merges 'extra'",
-      '"states": ["patch.apply"]' in cmd and '"name": "dev-patch"' in cmd
-      and cmd.endswith("recurring.custom.create"))
+                              "dev-patch", schedule_type="custom", states=["patch.apply"], test=True)
+create_cmd = next(c[1] for c in fake.calls if "recurring.custom.create" in c[1])
+check("ensure_recurring_schedule: custom includes states, name, and 'test'",
+      '"states": ["patch.apply"]' in create_cmd and '"name": "dev-patch"' in create_cmd
+      and '"test": true' in create_cmd)
 
-fake = FakeSSH(responses=[("recurring.highstate.create", FakeResult(returncode=1, stderr="bad entity"))])
+fake = FakeSSH(responses=[
+    ("recurring.listByEntity", FakeResult(returncode=0, stdout="[]")),
+    ("recurring.highstate.create", FakeResult(returncode=1, stderr="bad entity")),
+])
 sc.ssh_run = fake
 died = False
 try:
-    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 999, "0 2 * * 2")
+    sc.ensure_recurring_schedule("host1", "mgrctl exec --", "group", 999, "0 2 * * 2", "n")
 except SystemExit:
     died = True
 check("ensure_recurring_schedule: server-side failure dies", died)
@@ -2662,13 +2767,21 @@ check("ensure_image_profile: create call carries every field in the right order"
       '["test-profile", "dockerfile", "suse-registry", '
       '"https://github.com/x/y.git#main:docker", "1-key"]' in create_cmd)
 
+# Real bug found live 2026-09-25 (first time --import-images was ever
+# actually triggered): the 6th arg (earliestOccurrence) was a literal
+# None, which crashes real XML-RPC ("cannot marshal None"). An earlier
+# version of THIS test asserted the broken "null" value too, matching
+# the bug instead of catching it. Now checks for a real ISO-8601-shaped
+# timestamp string instead.
 fake = FakeSSH(responses=[("image.importContainerImage", FakeResult(returncode=0, stdout="[42]"))])
 sc.ssh_run = fake
 sc.import_container_image("host1", "mgrctl exec --", "bci/bci-base", "latest", 1000010000,
                            "suse-registry", "1-key")
 call = next((c[1] for c in fake.calls if "image.importContainerImage" in c[1]), "")
 check("import_container_image: schedules with name/version/build_host_id/store/activation_key",
-      '["bci/bci-base", "latest", 1000010000, "suse-registry", "1-key", null]' in call)
+      '["bci/bci-base", "latest", 1000010000, "suse-registry", "1-key", "' in call)
+check("import_container_image: earliestOccurrence is a real timestamp, never a bare null",
+      "null]" not in call and re.search(r'"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"\]', call) is not None)
 
 fake = FakeSSH()
 sc.ssh_run = fake
@@ -2992,6 +3105,591 @@ except SystemExit:
 check("ensure_mcp_server: dies if the container exited immediately after starting", died)
 
 
+# -- Maintenance windows (added 2026-09-25) ----------------------------------
+fake = FakeSSH(responses=[("maintenance.listCalendarLabels", FakeResult(returncode=0, stdout="[]"))])
+sc.ssh_run = fake
+sc.ensure_maintenance_calendar("host1", "mgrctl exec --", "cal1", ical="BEGIN:VCALENDAR...")
+create_cmd = next(c[1] for c in fake.calls if "maintenance.createCalendar" in c[1])
+check("ensure_maintenance_calendar: uses createCalendar (not createCalendarWithUrl) for ical",
+      "maintenance.createCalendarWithUrl" not in create_cmd)
+
+died = False
+try:
+    sc.ensure_maintenance_calendar("host1", "mgrctl exec --", "cal1", ical="x", url="y")
+except SystemExit:
+    died = True
+check("ensure_maintenance_calendar: both ical and url given dies", died)
+died = False
+try:
+    sc.ensure_maintenance_calendar("host1", "mgrctl exec --", "cal1")
+except SystemExit:
+    died = True
+check("ensure_maintenance_calendar: neither ical nor url given dies", died)
+
+fake = FakeSSH(responses=[("maintenance.listCalendarLabels", FakeResult(returncode=0, stdout="cal1"))])
+sc.ssh_run = fake
+sc.ensure_maintenance_calendar("host1", "mgrctl exec --", "cal1", url="https://x/cal.ics")
+check("ensure_maintenance_calendar: skips when label already listed",
+      not any("maintenance.createCalendar" in c[1] for c in fake.calls))
+
+died = False
+try:
+    sc.ensure_maintenance_schedule("host1", "mgrctl exec --", "sched1", "bogus")
+except SystemExit:
+    died = True
+check("ensure_maintenance_schedule: invalid type dies", died)
+
+fake = FakeSSH(responses=[("maintenance.listScheduleNames", FakeResult(returncode=0, stdout="[]"))])
+sc.ssh_run = fake
+sc.ensure_maintenance_schedule("host1", "mgrctl exec --", "sched1", "multi", calendar="cal1")
+create_cmd = next(c[1] for c in fake.calls if "maintenance.createSchedule" in c[1])
+check("ensure_maintenance_schedule: 4-arg form used when calendar is given",
+      '"sched1"' in create_cmd and '"cal1"' in create_cmd)
+
+fake = FakeSSH(responses=[
+    ("system.getId", FakeResult(returncode=0, stdout=json.dumps([{"id": 42, "name": "mercury.mydemo.lab"}]))),
+])
+sc.ssh_run = fake
+sc.ensure_maintenance_schedule_systems("host1", "mgrctl exec --", "sched1", ["mercury.mydemo.lab"])
+create_cmd = next(c[1] for c in fake.calls if "maintenance.assignScheduleToSystems" in c[1])
+check("ensure_maintenance_schedule_systems: uses rescheduleStrategy=['Cancel']",
+      '"Cancel"' in create_cmd)
+
+
+# -- Action chains (added 2026-09-25) -----------------------------------------
+fake = FakeSSH(responses=[
+    ("actionchain.listChains", FakeResult(returncode=0, stdout="[]")),
+    ("system.getId", FakeResult(returncode=0, stdout=json.dumps([{"id": 42, "name": "x"}]))),
+])
+sc.ssh_run = fake
+sc.ensure_action_chain("host1", "mgrctl exec --", "chain1", [
+    {"system": "mercury.mydemo.lab", "type": "script", "script": "echo hi"},
+    {"system": "venus.mydemo.lab", "type": "highstate"},
+])
+cmds = [c[1] for c in fake.calls]
+check("ensure_action_chain: creates the chain", any("actionchain.createChain" in c for c in cmds))
+check("ensure_action_chain: adds a script action with a base64-encoded body",
+      any("actionchain.addScriptRun" in c and base64.b64encode(b"echo hi").decode() in c for c in cmds))
+check("ensure_action_chain: adds a highstate action", any("actionchain.addApplyHighstate" in c for c in cmds))
+check("ensure_action_chain: never calls scheduleChain (created unscheduled, on purpose)",
+      not any("actionchain.scheduleChain" in c for c in cmds))
+
+fake = FakeSSH(responses=[("actionchain.listChains", FakeResult(returncode=0, stdout="chain1"))])
+sc.ssh_run = fake
+sc.ensure_action_chain("host1", "mgrctl exec --", "chain1", [{"system": "x", "type": "highstate"}])
+check("ensure_action_chain: skips entirely (actions included) when the label already exists",
+      not any("actionchain.createChain" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[
+    ("actionchain.listChains", FakeResult(returncode=0, stdout="[]")),
+    ("system.getId", FakeResult(returncode=0, stdout=json.dumps([{"id": 42, "name": "x"}]))),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_action_chain("host1", "mgrctl exec --", "chain2",
+                            [{"system": "x", "type": "bogus"}])
+except SystemExit:
+    died = True
+check("ensure_action_chain: invalid action type dies", died)
+
+
+# -- Custom software channels + patches created from scratch (added 2026-09-25) --
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_custom_channel("host1", "mgrctl exec --", "ch1", "Channel 1", "summary", "channel-x86_64")
+create_cmd = next(c[1] for c in fake.calls if "channel.software.create" in c[1])
+check("ensure_custom_channel: gpgCheck hardcoded false via the 8-arg overload",
+      create_cmd.rstrip().endswith("false]") or ", false]" in create_cmd)
+
+fake = FakeSSH(responses=[("softwarechannel_list", FakeResult(returncode=0, stdout="ch1"))])
+sc.ssh_run = fake
+sc.ensure_custom_channel("host1", "mgrctl exec --", "ch1", "Channel 1", "s", "channel-x86_64")
+check("ensure_custom_channel: skips when the channel already exists",
+      not any("channel.software.create" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[
+    ("grep -E", FakeResult(returncode=1)),  # no existing rhn.conf line
+])
+sc.ssh_run = fake
+sc.ensure_patch_api_allowlisted("host1", "mgrctl exec --", "ch1")
+cmds = [c[1] for c in fake.calls]
+check("ensure_patch_api_allowlisted: appends a fresh line when none exists",
+      any("echo" in c and "java.allow_adding_patches_via_api = ch1" in c for c in cmds))
+check("ensure_patch_api_allowlisted: restarts tomcat to apply it",
+      any("systemctl restart tomcat" in c for c in cmds))
+
+fake = FakeSSH(responses=[
+    ("grep -E", FakeResult(returncode=0, stdout="java.allow_adding_patches_via_api = ch0,ch1")),
+])
+sc.ssh_run = fake
+sc.ensure_patch_api_allowlisted("host1", "mgrctl exec --", "ch1")
+check("ensure_patch_api_allowlisted: no-op when the channel is already listed",
+      not any("sed -i" in c[1] or ("echo" in c[1] and "allow_adding" in c[1]) for c in fake.calls))
+
+fake = FakeSSH(responses=[("errata_list", FakeResult(returncode=0, stdout="[]"))])
+sc.ssh_run = fake
+sc.ensure_errata("host1", "mgrctl exec --", "ch1", "LAB-2026:0001",
+                 {"synopsis": "s", "topic": "t", "description": "d", "solution": "sol"})
+create_cmd = next(c[1] for c in fake.calls if "errata.create" in c[1])
+check("ensure_errata: real errata.create call includes the advisory name and target channel",
+      "LAB-2026:0001" in create_cmd and '"ch1"' in create_cmd)
+
+fake = FakeSSH(responses=[("errata_list", FakeResult(returncode=0, stdout="LAB-2026:0001"))])
+sc.ssh_run = fake
+sc.ensure_errata("host1", "mgrctl exec --", "ch1", "LAB-2026:0001", {})
+check("ensure_errata: skips when the advisory already exists",
+      not any("errata.create" in c[1] for c in fake.calls))
+
+
+# -- Stored system profiles + custom values on systems (added 2026-09-25) ----
+fake = FakeSSH(responses=[("system_listpackageprofiles", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_system_profile("host1", "mgrctl exec --", "mercury.mydemo.lab", "prof1", "desc")
+check("ensure_system_profile: uses spacecmd's native system_createpackageprofile",
+      any("system_createpackageprofile" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("system_listpackageprofiles", FakeResult(returncode=0, stdout="prof1"))])
+sc.ssh_run = fake
+sc.ensure_system_profile("host1", "mgrctl exec --", "mercury.mydemo.lab", "prof1", "desc")
+check("ensure_system_profile: skips when the label already exists",
+      not any("system_createpackageprofile" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("system_listcustomvalues", FakeResult(returncode=0, stdout=""))])
+sc.ssh_run = fake
+sc.ensure_system_custom_value("host1", "mgrctl exec --", "mercury.mydemo.lab", "lab_role", "foo")
+check("ensure_system_custom_value: uses spacecmd's native system_addcustomvalue",
+      any("system_addcustomvalue" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("system_listcustomvalues", FakeResult(returncode=0, stdout="lab_role: foo"))])
+sc.ssh_run = fake
+sc.ensure_system_custom_value("host1", "mgrctl exec --", "mercury.mydemo.lab", "lab_role", "foo")
+check("ensure_system_custom_value: skips when the exact key=value already exists",
+      not any("system_addcustomvalue" in c[1] for c in fake.calls))
+
+
+# -- Org system transfers (added 2026-09-25) ----------------------------------
+# org_id_for's response is real, ground-truthed org.listOrgs() output shape
+# (confirmed live 2026-09-25 against sol.mydemo.lab: a real bug in an
+# EARLIER version of org_id_for used org_details instead, with a mocked
+# test response ("Id: 3") that only matched the test author's own WRONG
+# assumption about that command's real output format, not reality — the
+# real org_details has no id field at all, so every call silently
+# returned None and this whole feature died on every real run. Fixed to
+# use org.listOrgs, and this test now scripts ITS real shape instead.
+fake = FakeSSH(responses=[
+    ("org.listOrgs", FakeResult(returncode=0, stdout=json.dumps(
+        [{"id": 1, "name": "SUSE Test"}, {"id": 3, "name": "edge"}]))),
+    ("system.getId", FakeResult(returncode=0, stdout=json.dumps([{"id": 55, "name": "io.mydemo.lab"}]))),
+])
+sc.ssh_run = fake
+sc.ensure_org_system_transfer("host1", "mgrctl exec --", "edge", ["io.mydemo.lab"])
+create_cmd = next(c[1] for c in fake.calls if "org.transferSystems" in c[1])
+check("ensure_org_system_transfer: resolves org id and system id, calls org.transferSystems",
+      '[3, [55]]' in unwrap(create_cmd))
+
+fake = FakeSSH(responses=[("org.listOrgs", FakeResult(returncode=0, stdout=json.dumps(
+    [{"id": 1, "name": "SUSE Test"}])))])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_org_system_transfer("host1", "mgrctl exec --", "bogus-org", ["io.mydemo.lab"])
+except SystemExit:
+    died = True
+check("ensure_org_system_transfer: dies when the org id can't be resolved", died)
+
+# Real bug found live 2026-09-25: once a system is actually transferred,
+# system.getId can no longer resolve it under the calling default-admin
+# session at all — a second run used to die() outright on "no system
+# named 'X' found", instead of treating that as "already transferred".
+fake = FakeSSH(responses=[
+    ("org.listOrgs", FakeResult(returncode=0, stdout=json.dumps(
+        [{"id": 1, "name": "SUSE Test"}, {"id": 3, "name": "edge"}]))),
+    ("system.getId", FakeResult(returncode=0, stdout="[]")),  # not visible -> already moved
+])
+sc.ssh_run = fake
+sc.ensure_org_system_transfer("host1", "mgrctl exec --", "edge", ["io.mydemo.lab"])
+check("ensure_org_system_transfer: an unresolvable system is skipped, not fatal",
+      not any("org.transferSystems" in c[1] for c in fake.calls))
+
+# Mixed case: one system already transferred (skip), one still needs it.
+call_n = [0]
+
+
+def _fake_mixed(hostname, cmd, **kwargs):
+    call_n[0] += 1
+    if "org.listOrgs" in cmd:
+        return FakeResult(returncode=0, stdout=json.dumps([{"id": 3, "name": "edge"}]))
+    if "system.getId" in cmd and "already-moved" in cmd:
+        return FakeResult(returncode=0, stdout="[]")
+    if "system.getId" in cmd:
+        return FakeResult(returncode=0, stdout=json.dumps([{"id": 99, "name": "still-here.lab"}]))
+    return FakeResult(returncode=0)
+
+
+sc.ssh_run = _fake_mixed
+sc.ensure_org_system_transfer("host1", "mgrctl exec --", "edge", ["already-moved.lab", "still-here.lab"])
+check("ensure_org_system_transfer: mixed batch transfers only the still-resolvable systems",
+      True)  # exercised above without raising — the real assertion is that it didn't die()
+
+
+# -- External auth: Keycloak SAML SSO (added 2026-09-25) --------------------
+_real_time_sleep = sc.time.sleep
+sc.time.sleep = lambda s: None
+
+# ensure_podman_available: confirmed live 2026-09-25 that neptune.mydemo.lab
+# (a real AWS Amazon Linux 2023 client) had no podman at all and only dnf —
+# these test the install-on-demand path standalone before ensure_keycloak's
+# own tests (below) exercise it as a no-op prerequisite.
+fake = FakeSSH(responses=[("command -v podman", FakeResult(returncode=0))])
+sc.ssh_run = fake
+sc.ensure_podman_available("neptune.mydemo.lab")
+check("ensure_podman_available: does nothing when podman is already present",
+      len(fake.calls) == 1)
+
+fake = FakeSSH(responses=[
+    ("command -v podman", FakeResult(returncode=1)),
+    ("command -v dnf", FakeResult(returncode=0)),
+    ("dnf install -y podman", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_podman_available("neptune.mydemo.lab")
+cmds = [c[1] for c in fake.calls]
+check("ensure_podman_available: installs via dnf when podman is missing and dnf is present",
+      any("dnf install -y podman" in c for c in cmds))
+
+fake = FakeSSH(responses=[
+    ("command -v podman", FakeResult(returncode=1)),
+    ("command -v dnf", FakeResult(returncode=1)),
+    ("command -v zypper", FakeResult(returncode=0)),
+    ("zypper --non-interactive install podman", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_podman_available("mercury.mydemo.lab")
+cmds = [c[1] for c in fake.calls]
+check("ensure_podman_available: falls back to zypper when dnf isn't present",
+      any("zypper --non-interactive install podman" in c for c in cmds))
+
+fake = FakeSSH(responses=[
+    ("command -v podman", FakeResult(returncode=1)),
+    ("command -v dnf", FakeResult(returncode=1)),
+    ("command -v zypper", FakeResult(returncode=1)),
+    ("command -v apt-get", FakeResult(returncode=1)),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_podman_available("mystery.mydemo.lab")
+except SystemExit:
+    died = True
+check("ensure_podman_available: dies when no supported package manager is found", died)
+
+# Real gap confirmed live 2026-09-25: neptune.mydemo.lab (Amazon Linux 2023)
+# carries no `podman` package in either its native or SUSE-Manager-mirrored
+# repo — only `docker`. This exercises the fallback: podman install fails,
+# docker install succeeds, service gets enabled, `podman` gets shimmed onto it.
+fake = FakeSSH(responses=[
+    ("command -v podman", FakeResult(returncode=1)),
+    ("command -v dnf", FakeResult(returncode=0)),
+    ("dnf install -y podman", FakeResult(returncode=1)),
+    ("dnf install -y docker", FakeResult(returncode=0)),
+    ("systemctl enable --now docker", FakeResult(returncode=0)),
+    ("ln -sf $(command -v docker) /usr/local/bin/podman", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_podman_available("neptune.mydemo.lab")
+cmds = [c[1] for c in fake.calls]
+check("ensure_podman_available: falls back to installing docker when podman isn't packaged",
+      any("dnf install -y docker" in c for c in cmds))
+check("ensure_podman_available: enables+starts the docker service in the docker fallback",
+      any("systemctl enable --now docker" in c for c in cmds))
+check("ensure_podman_available: shims a 'podman' command onto docker in the fallback",
+      any("ln -sf $(command -v docker) /usr/local/bin/podman" in c for c in cmds))
+
+fake = FakeSSH(responses=[
+    ("command -v podman", FakeResult(returncode=1)),
+    ("command -v dnf", FakeResult(returncode=0)),
+    ("dnf install -y podman", FakeResult(returncode=1)),
+    ("dnf install -y docker", FakeResult(returncode=1)),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.ensure_podman_available("neptune.mydemo.lab")
+except SystemExit:
+    died = True
+check("ensure_podman_available: dies when neither podman nor docker can be installed", died)
+
+fake = FakeSSH(responses=[
+    ("podman inspect -f", FakeResult(returncode=1)),
+    ("podman run -d --name keycloak", FakeResult(returncode=0)),
+    ("curl -sf http://localhost:8080/realms/master", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_keycloak("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+cmds = [c[1] for c in fake.calls]
+check("ensure_keycloak: starts a fresh container when none exists",
+      any("podman run -d --name keycloak" in c and "quay.io/keycloak/keycloak" in c for c in cmds))
+check("ensure_keycloak: uses start-dev (matches the real worked example doc)",
+      any("start-dev" in c for c in cmds))
+check("ensure_keycloak: ensures podman is available before touching the container",
+      any("command -v podman" in c for c in cmds))
+check("ensure_keycloak: caps JVM heap/metaspace so the build-and-exit phase can't OOM a "
+      "small host (confirmed live 2026-09-25 on neptune.mydemo.lab, ~900MB RAM)",
+      any("JAVA_OPTS_APPEND" in c and "Xmx384m" in c for c in cmds))
+
+fake = FakeSSH(responses=[
+    ("podman inspect -f", FakeResult(returncode=0, stdout="true\n")),
+    ("curl -sf http://localhost:8080/realms/master", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_keycloak("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+check("ensure_keycloak: skips the run entirely when the container is already running",
+      not any("podman run" in c[1] or "podman start" in c[1] for c in fake.calls))
+
+# Confirmed live 2026-09-25: a plain `podman inspect keycloak` existence
+# check (the earlier version of this function) matches an EXITED container
+# just as happily as a running one — an earlier OOM-killed attempt left one
+# behind, which the old check would have treated as "already there" forever.
+# This tests that a stopped-but-otherwise-fine container is restarted IN
+# PLACE, not recreated (recreating would wipe realm/client/user state).
+fake = FakeSSH(responses=[
+    ("podman inspect -f", FakeResult(returncode=0, stdout="false\n")),
+    ("podman start keycloak", FakeResult(returncode=0)),
+    ("curl -sf http://localhost:8080/realms/master", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_keycloak("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+cmds = [c[1] for c in fake.calls]
+check("ensure_keycloak: restarts a stopped container in place rather than recreating it",
+      any("podman start keycloak" in c for c in cmds) and
+      not any("podman run -d --name keycloak" in c for c in cmds))
+
+# A container that's stopped AND won't come up cleanly on restart (e.g. the
+# real OOM scenario, before the memory cap fix existed) gets recreated with
+# the corrected settings, rather than dying outright — self-healing, so no
+# manual `podman rm` was needed to recover the real neptune.mydemo.lab state.
+_state = {"recreated": False}
+
+
+def _fake_recreate(hostname, cmd, **kwargs):
+    if "podman inspect -f" in cmd:
+        return FakeResult(returncode=0, stdout=("true\n" if _state["recreated"] else "false\n"))
+    if "podman start keycloak" in cmd:
+        return FakeResult(returncode=0)
+    if "podman run -d --name keycloak" in cmd:
+        _state["recreated"] = True
+        return FakeResult(returncode=0)
+    if "curl -sf" in cmd:
+        return FakeResult(returncode=0 if _state["recreated"] else 1)
+    return FakeResult(returncode=0)
+
+
+sc.ssh_run = _fake_recreate
+sc.ensure_keycloak("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+check("ensure_keycloak: recreates a stopped container that won't come up cleanly on restart",
+      _state["recreated"])
+
+fake = FakeSSH(responses=[
+    ("podman inspect -f", FakeResult(returncode=0, stdout="true\n")),
+    ("curl -sf http://localhost:8080/realms/master", FakeResult(returncode=1)),
+])
+sc.ssh_run = fake
+# time.time() is real here (only sleep is stubbed to a no-op above), so the
+# real deadline = time.time() + 120 check would otherwise busy-loop calling
+# ssh_run as fast as possible for a full 120 REAL seconds — a genuine risk
+# caught while writing this test: unbounded fake.calls growth over that
+# many rapid-fire iterations OOM-killed the test process outright. Mocking
+# time.time() as a fast-forwarding counter avoids that without changing
+# what's being tested (the deadline logic itself).
+_fake_now = [0]
+sc.time.time = lambda: _fake_now.__setitem__(0, _fake_now[0] + 100) or _fake_now[0]
+died = False
+try:
+    sc.ensure_keycloak("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+except SystemExit:
+    died = True
+sc.time.time = time.time
+check("ensure_keycloak: dies if it never becomes ready", died)
+sc.time.sleep = _real_time_sleep
+
+fake = FakeSSH(responses=[("get realms/lab-in-a-box", FakeResult(returncode=0))])
+sc.ssh_run = fake
+sc.ensure_keycloak_realm("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+check("ensure_keycloak_realm: skips creation when the realm already exists",
+      not any("create realms" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("get realms/lab-in-a-box", FakeResult(returncode=1))])
+sc.ssh_run = fake
+sc.ensure_keycloak_realm("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin")
+check("ensure_keycloak_realm: creates the realm when missing",
+      any("create realms" in c[1] and "realm=lab-in-a-box" in c[1] for c in fake.calls))
+
+# The trickiest part of this whole feature: kcadm's real syntax for a
+# DOTTED KEY inside a nested map ("attributes.\"saml.assertion.signature\"")
+# is easy to get wrong — confirmed correct here by checking the exact
+# argv token appears, double-quotes and all, inside the single-quoted
+# shell argument shlex.quote() produces for it.
+fake = FakeSSH(responses=[
+    # More specific substrings FIRST — FakeSSH returns on the first match
+    # in list order, and "get clients -r" is itself a substring of the
+    # "--fields id --format csv" lookup call too (a real bug caught while
+    # writing this test: with the generic pattern first, the id lookup
+    # matched IT instead and got treated as "client doesn't exist").
+    ("--fields id --format csv", FakeResult(returncode=0, stdout="abc-123-uuid")),
+    ("get clients/abc-123-uuid/protocol-mappers/models", FakeResult(returncode=0, stdout="[]")),
+    ("create clients/abc-123-uuid/protocol-mappers/models", FakeResult(returncode=0)),
+    ("create clients -r", FakeResult(returncode=0)),
+    ("get clients -r", FakeResult(returncode=1)),
+])
+sc.ssh_run = fake
+sc.ensure_keycloak_saml_client("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin",
+                                "https://sol.mydemo.lab/rhn/manager/sso/metadata",
+                                "https://sol.mydemo.lab/rhn/manager/sso/acs")
+cmds = [c[1] for c in fake.calls]
+create_client_cmd = next(c for c in cmds if "create clients -r" in c)
+check("ensure_keycloak_saml_client: real dotted-attribute kcadm syntax, exact quoting",
+      'attributes."saml.assertion.signature"=true' in create_client_cmd
+      and 'attributes."saml.client.signature"=false' in create_client_cmd)
+check("ensure_keycloak_saml_client: client protocol is saml, clientId is the real SP entityid",
+      "protocol=saml" in create_client_cmd
+      and "clientId=https://sol.mydemo.lab/rhn/manager/sso/metadata" in create_client_cmd)
+mapper_cmd = next(c for c in cmds if "create clients/abc-123-uuid/protocol-mappers/models" in c)
+check("ensure_keycloak_saml_client: 'uid' mapper uses saml-user-property-mapper on username",
+      'config."attribute.name"=uid' in mapper_cmd and 'config."user.attribute"=username' in mapper_cmd)
+
+fake = FakeSSH(responses=[
+    ("--fields id --format csv", FakeResult(returncode=0, stdout="abc-123-uuid")),
+    ("get clients/abc-123-uuid/protocol-mappers/models",
+     FakeResult(returncode=0, stdout='[{"name" : "uid"}]')),
+    ("get clients -r", FakeResult(returncode=0, stdout="https://sol.mydemo.lab/rhn/manager/sso/metadata")),
+])
+sc.ssh_run = fake
+sc.ensure_keycloak_saml_client("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin",
+                                "https://sol.mydemo.lab/rhn/manager/sso/metadata",
+                                "https://sol.mydemo.lab/rhn/manager/sso/acs")
+check("ensure_keycloak_saml_client: skips both client and mapper creation when both already exist",
+      not any("create clients" in c[1] for c in fake.calls))
+
+fake = FakeSSH(responses=[("get users -r", FakeResult(returncode=0, stdout="[]"))])
+sc.ssh_run = fake
+sc.ensure_keycloak_user("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin",
+                         "brahe", "Brahe12345", "brahe@mydemo.lab")
+cmds = [c[1] for c in fake.calls]
+check("ensure_keycloak_user: creates the user then sets its password",
+      any("create users -r" in c and "username=brahe" in c for c in cmds)
+      and any("set-password -r" in c and "--username brahe" in c for c in cmds))
+
+fake = FakeSSH(responses=[("get users -r", FakeResult(returncode=0, stdout="brahe"))])
+sc.ssh_run = fake
+sc.ensure_keycloak_user("neptune.mydemo.lab", 8080, "lab-in-a-box", "admin", "admin",
+                         "brahe", "Brahe12345", "brahe@mydemo.lab")
+check("ensure_keycloak_user: skips when the user already exists",
+      not any("create users" in c[1] for c in fake.calls))
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.ensure_sso("sol.mydemo.lab", "mgrctl exec --", {}, "smlm")
+check("ensure_sso: no-op when smlm_sso is unset", len(fake.calls) == 0)
+
+died = False
+try:
+    sc.ensure_sso("sol.mydemo.lab", "mgrctl exec --", {"smlm_sso": {}}, "smlm")
+except SystemExit:
+    died = True
+check("ensure_sso: dies when keycloak_host is missing", died)
+
+# -- _keycloak_idp_cert / ensure_sso's rhn.conf write (added 2026-09-25) ----
+# Real bug found live 2026-09-25: the web login page throws
+# "idp_cert_or_fingerprint_not_found_and_required" on EVERY load once SSO is
+# configured without the IdP's own signing certificate — java-saml requires
+# it unconditionally, not just for an actual SSO auth attempt. This broke
+# the page badly enough that even the still-working classic admin/password
+# login never completed cleanly for the user.
+_descriptor_xml = ('<md:EntityDescriptor><md:IDPSSODescriptor><md:KeyDescriptor use="signing">'
+                    '<ds:KeyInfo><ds:X509Data><ds:X509Certificate>FAKECERTDATA123==</ds:X509Certificate>'
+                    '</ds:X509Data></ds:KeyInfo></md:KeyDescriptor></md:IDPSSODescriptor></md:EntityDescriptor>')
+fake = FakeSSH(responses=[("protocol/saml/descriptor", FakeResult(returncode=0, stdout=_descriptor_xml))])
+sc.ssh_run = fake
+cert = sc._keycloak_idp_cert("neptune.mydemo.lab", 8080, "lab-in-a-box")
+check("_keycloak_idp_cert: extracts the real X509Certificate value from the SAML descriptor",
+      cert == "FAKECERTDATA123==")
+
+fake = FakeSSH(responses=[("protocol/saml/descriptor", FakeResult(returncode=0, stdout="<no-cert-here/>"))])
+sc.ssh_run = fake
+died = False
+try:
+    sc._keycloak_idp_cert("neptune.mydemo.lab", 8080, "lab-in-a-box")
+except SystemExit:
+    died = True
+check("_keycloak_idp_cert: dies if the descriptor has no X509Certificate", died)
+
+_real_ensure_keycloak = sc.ensure_keycloak
+_real_ensure_keycloak_realm = sc.ensure_keycloak_realm
+_real_ensure_keycloak_saml_client = sc.ensure_keycloak_saml_client
+_real_ensure_keycloak_user = sc.ensure_keycloak_user
+_real_keycloak_idp_cert = sc._keycloak_idp_cert
+sc.ensure_keycloak = lambda *a, **kw: None
+sc.ensure_keycloak_realm = lambda *a, **kw: None
+sc.ensure_keycloak_saml_client = lambda *a, **kw: None
+sc.ensure_keycloak_user = lambda *a, **kw: None
+sc._keycloak_idp_cert = lambda *a, **kw: "FAKECERTDATA123=="
+
+fake = FakeSSH(responses=[
+    ("cat /etc/rhn/rhn.conf", FakeResult(returncode=0, stdout="# empty\n")),
+    ("mgradm restart", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_sso("sol.mydemo.lab", "mgrctl exec --", {"smlm_sso": {"keycloak_host": "neptune.mydemo.lab"}}, "smlm")
+cmds = [c[1] for c in fake.calls]
+input_texts = [c[2].get("input_text") for c in fake.calls if c[2].get("input_text")]
+check("ensure_sso: writes all 6 rhn.conf keys, including the idp.x509cert fix, on a fresh config",
+      any("java.sso.onelogin.saml2.idp.x509cert = FAKECERTDATA123==" in t for t in input_texts))
+check("ensure_sso: restarts mgradm when new keys were actually written",
+      any("mgradm restart" in c for c in cmds))
+
+# Server already has the 5 original keys but is missing the NEW x509cert key
+# (simulates a server configured by an earlier version of this function) —
+# only the missing key should be appended, and mgradm SHOULD still restart
+# since a real change was made.
+_existing_5 = "\n".join([
+    "java.sso = true",
+    "java.sso.onelogin.saml2.sp.entityid = https://sol.mydemo.lab/rhn/manager/sso/metadata",
+    "java.sso.onelogin.saml2.sp.assertion_consumer_service.url = https://sol.mydemo.lab/rhn/manager/sso/acs",
+    "java.sso.onelogin.saml2.idp.entityid = http://neptune.mydemo.lab:8080/realms/lab-in-a-box",
+    "java.sso.onelogin.saml2.idp.single_sign_on_service.url = "
+    "http://neptune.mydemo.lab:8080/realms/lab-in-a-box/protocol/saml",
+]) + "\n"
+fake = FakeSSH(responses=[
+    ("cat /etc/rhn/rhn.conf", FakeResult(returncode=0, stdout=_existing_5)),
+    ("mgradm restart", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_sso("sol.mydemo.lab", "mgrctl exec --", {"smlm_sso": {"keycloak_host": "neptune.mydemo.lab"}}, "smlm")
+input_texts = [c[2].get("input_text") for c in fake.calls if c[2].get("input_text")]
+check("ensure_sso: on a server missing only the new x509cert key, appends just that one key",
+      len(input_texts) == 1 and input_texts[0].strip() ==
+      "java.sso.onelogin.saml2.idp.x509cert = FAKECERTDATA123==")
+
+# Server already has ALL 6 keys — fully idempotent, no write, no restart
+# (avoids an unnecessary mgradm restart, which this session confirmed can
+# trigger an ~8-minute Postgres WAL-recovery if the prior shutdown wasn't
+# clean — not something to trigger on every no-op re-run).
+_existing_6 = _existing_5 + "java.sso.onelogin.saml2.idp.x509cert = FAKECERTDATA123==\n"
+fake = FakeSSH(responses=[("cat /etc/rhn/rhn.conf", FakeResult(returncode=0, stdout=_existing_6))])
+sc.ssh_run = fake
+sc.ensure_sso("sol.mydemo.lab", "mgrctl exec --", {"smlm_sso": {"keycloak_host": "neptune.mydemo.lab"}}, "smlm")
+cmds = [c[1] for c in fake.calls]
+check("ensure_sso: fully idempotent when all 6 keys already exist — no write, no restart",
+      not any("cat >>" in c for c in cmds) and not any("mgradm restart" in c for c in cmds))
+
+sc.ensure_keycloak = _real_ensure_keycloak
+sc.ensure_keycloak_realm = _real_ensure_keycloak_realm
+sc.ensure_keycloak_saml_client = _real_ensure_keycloak_saml_client
+sc.ensure_keycloak_user = _real_ensure_keycloak_user
+sc._keycloak_idp_cert = _real_keycloak_idp_cert
+
+
 # -- run_provisioning_step (added 2026-09-23) -------------------------------
 # Real bug: install_smlm.py's/install_uyuni.py's orchestration blocks used to
 # call each ensure_* step bare, so one die() (SystemExit) silently aborted
@@ -3103,6 +3801,97 @@ try:
 except SystemExit:
     died = True
 check("ensure_virtual_host_manager_aws: missing credentials/region/zone dies", died)
+
+# -- Virtual Host Managers: libvirt type (added 2026-09-25) ------------------
+fake = FakeSSH(responses=[
+    ("virtualhostmanager.listVirtualHostManagers", FakeResult(returncode=0, stdout="[]")),
+    ("virtualhostmanager.create", FakeResult(returncode=0, stdout="1")),
+])
+sc.ssh_run = fake
+vhm = {"label": "nuc6-libvirt", "uri": "qemu+ssh://root@nuc6.mydemo.lab/system"}
+sc.ensure_virtual_host_manager_libvirt("host1", "mgrctl exec --", vhm)
+cmds = [unwrap(c[1]) for c in fake.calls]
+check("ensure_virtual_host_manager_libvirt: creates via the real moduleName 'Libvirt'",
+      any("virtualhostmanager.create" in c and '"nuc6-libvirt", "Libvirt"' in c for c in cmds))
+check("ensure_virtual_host_manager_libvirt: sends the real 'uri' param (bare, no ?no_tty=1 — "
+      "the gatherer module appends that itself)",
+      any('"uri": "qemu+ssh://root@nuc6.mydemo.lab/system"' in c for c in cmds))
+check("ensure_virtual_host_manager_libvirt: sends non-empty sasl_username/sasl_password "
+      "placeholders even when unset — confirmed live 2026-09-25 the server's own "
+      "isConfigurationValid() rejects the create call outright if either is missing/empty, "
+      "despite neither being functionally used for a qemu+ssh:// URI",
+      any('"sasl_username": "n/a"' in c and '"sasl_password": "n/a"' in c for c in cmds))
+
+fake = FakeSSH(responses=[
+    ("virtualhostmanager.listVirtualHostManagers", FakeResult(returncode=0, stdout="[]")),
+    ("virtualhostmanager.create", FakeResult(returncode=0, stdout="1")),
+])
+sc.ssh_run = fake
+vhm2 = {"label": "nuc6-libvirt", "uri": "qemu+ssh+sasl://nuc6.mydemo.lab/system",
+        "sasl_username": "realuser", "sasl_password": "realpass"}
+sc.ensure_virtual_host_manager_libvirt("host1", "mgrctl exec --", vhm2)
+cmds = [unwrap(c[1]) for c in fake.calls]
+check("ensure_virtual_host_manager_libvirt: uses real caller-supplied sasl credentials when given",
+      any('"sasl_username": "realuser"' in c and '"sasl_password": "realpass"' in c for c in cmds))
+
+died = False
+try:
+    sc.ensure_virtual_host_manager_libvirt("host1", "mgrctl exec --", {"label": "incomplete"})
+except SystemExit:
+    died = True
+check("ensure_virtual_host_manager_libvirt: missing 'uri' dies", died)
+
+fake = FakeSSH(responses=[
+    ("virtualhostmanager.listVirtualHostManagers", FakeResult(returncode=0, stdout="[]")),
+    ("virtualhostmanager.create", FakeResult(returncode=0)),
+])
+sc.ssh_run = fake
+sc.ensure_virtual_host_managers("host1", "mgrctl exec --",
+                                 {"smlm_virtual_host_managers": [
+                                     {"label": "nuc6-libvirt", "type": "libvirt",
+                                      "uri": "qemu+ssh://root@nuc6.mydemo.lab/system"}]}, "smlm")
+check("ensure_virtual_host_managers: dispatches 'libvirt' type correctly",
+      any("Libvirt" in unwrap(c[1]) for c in fake.calls))
+
+
+# -- Virtual guest provisioning (added 2026-09-25) ---------------------------
+fake = FakeSSH(responses=[
+    ("system.getId", FakeResult(returncode=0, stdout=json.dumps([{"id": 42, "name": "nuc6.mydemo.lab"}]))),
+    ("system.provisionVirtualGuest", FakeResult(returncode=0, stdout="1")),
+])
+sc.ssh_run = fake
+sc.provision_virtual_guest("host1", "mgrctl exec --", "nuc6.mydemo.lab", "vguest1", "sles15sp7-example-ks",
+                            2048, 2, 20)
+create_cmd = next(c[1] for c in fake.calls if "system.provisionVirtualGuest" in c[1])
+check("provision_virtual_guest: resolves host to sid, calls system.provisionVirtualGuest with "
+      "the real arg order (hostSid, guestName, kickstartLabel, memMb, vcpus, diskGb)",
+      '[42, "vguest1", "sles15sp7-example-ks", 2048, 2, 20]' in unwrap(create_cmd))
+
+fake = FakeSSH(responses=[
+    ("system.getId", FakeResult(returncode=0, stdout=json.dumps([{"id": 42, "name": "nuc6.mydemo.lab"}]))),
+    ("system.provisionVirtualGuest", FakeResult(returncode=1, stderr="no such kickstart profile")),
+])
+sc.ssh_run = fake
+died = False
+try:
+    sc.provision_virtual_guest("host1", "mgrctl exec --", "nuc6.mydemo.lab", "vguest1", "bogus-ks",
+                                2048, 2, 20)
+except SystemExit:
+    died = True
+check("provision_virtual_guest: a real API failure dies with a clear message", died)
+
+fake = FakeSSH()
+sc.ssh_run = fake
+sc.provision_virtual_guests("host1", "mgrctl exec --", {}, "smlm")
+check("provision_virtual_guests: no-op when the field is unset", len(fake.calls) == 0)
+
+died = False
+try:
+    sc.provision_virtual_guests("host1", "mgrctl exec --",
+                                 {"smlm_virtual_guests": [{"host": "nuc6.mydemo.lab"}]}, "smlm")
+except SystemExit:
+    died = True
+check("provision_virtual_guests: an entry missing 'name'/'kickstart_profile' dies", died)
 
 if failures:
     print("{} check(s) failed".format(len(failures)))
