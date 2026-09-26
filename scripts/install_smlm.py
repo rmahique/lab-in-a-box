@@ -603,14 +603,37 @@
 #                                                                          # this default matches
 #                                                                          # the real dev-mode
 #                                                                          # container's own default
-#                                 "demo_user": "...",                     # optional — MUST already
-#                                 "demo_password": "...", "demo_email": "...",  # be a real,
+#                                 "demo_user": "...",                     # optional — one EXTRA
+#                                 "demo_password": "...", "demo_email": "...",  # Keycloak user
+#                                                                          # beyond the ones
+#                                                                          # created automatically
+#                                                                          # (see below) — MUST
+#                                                                          # already be a real,
 #                                                                          # EXISTING Uyuni username
-#                                                                          # (smlm_users above) —
-#                                                                          # SSO maps to an existing
+#                                                                          # — SSO maps to an existing
 #                                                                          # account, never creates one
 #                               }
+#                             A Keycloak user is also created automatically for the real SMLM admin
+#                             account (smlm_admin_user/smlm_admin_pass above) and for every
+#                             smlm_users entry that has a real password (a "pam": true entry is
+#                             skipped — that authenticates against the OS directly, unrelated to
+#                             SAML SSO) — confirmed live 2026-09-25 that without this, logging in as
+#                             admin through the now-SSO-routed web UI fails at Keycloak with "invalid
+#                             username or password", even though admin's actual Uyuni credentials
+#                             were correct the whole time — the account simply didn't exist on the
+#                             Keycloak side at all.
 #                             Run with: install_smlm.py <lab.json> --enable-sso (never automatic).
+#                             REQUIREMENT confirmed live 2026-09-25: keycloak_host's own network
+#                             (e.g. its AWS security group, for a cloud node) must allow inbound
+#                             TCP on keycloak_port from wherever the WEB BROWSER connects from —
+#                             not just from this server or the automation node. The SAML flow
+#                             redirects the browser itself to http://<keycloak_host>:<port>/..., so
+#                             an SSH-reachable-but-otherwise-closed port (the failure mode this
+#                             project's own AWS nodes default to via aws_open_ports) causes a
+#                             silent browser-side connection timeout with nothing useful logged on
+#                             either server. Add keycloak_port to that node's aws_open_ports (AWS
+#                             backend) — or the equivalent for whatever backend hosts it — BEFORE
+#                             running --enable-sso.
 #
 # OPTIONAL – RBAC / custom "User Access Groups" (API-only feature, Uyuni 2025.05+ / SMLM 5.1+).
 # List of objects, usable at the top level (scoped to the default org) or nested inside an
