@@ -478,8 +478,31 @@ window.apiGet = async function(action, params = {}) {
     }
     return window.EMBEDDED_SCHEMAS.schemas[comp];
   }
-  // Fall back to original for other actions (base, validate, status, save)
-  return originalApiGet.call(this, action, params);
+  // For all other actions: static mode doesn't support them
+  // Return safe defaults or throw with a clear message
+  if (action === 'base') {
+    // Base schema with empty ISO choices (static can't query hypervisor)
+    return {
+      sections: {
+        common: { fields: [], description: '' },
+        nodes: { fields: [], description: '' },
+        kclusters: { fields: [], description: '' },
+        pxe: { fields: [], description: '' }
+      }
+    };
+  }
+  if (action === 'status') {
+    return { available: false };
+  }
+  if (action === 'validate') {
+    return { valid: true, errors: [] };
+  }
+  if (action === 'save') {
+    throw new Error('Save requires a backend. Use Download instead to save lab.json locally.');
+  }
+  // Unknown action
+  throw new Error(`Unsupported in static mode: ${action}`);
+}
 };
 
 "use strict";
