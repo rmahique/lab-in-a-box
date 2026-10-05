@@ -1,17 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>lab-in-a-box · lab builder</title>
-  <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="icon" href="favicon.ico" sizes="32x32">
-  <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <meta name="theme-color" content="#eceef1" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#16191e" media="(prefers-color-scheme: dark)">
-  <script src="theme.js"></script>
-  <link rel="stylesheet" href="style.css">
-
   <script id="embedded-schemas" type="application/json">
 {"version": "1.0", "generated": true, "addons": [], "infrastructure_addons": [], "schemas": {}}
   </script>
@@ -24,6 +13,17 @@ window.STATIC_MODE = true;
 window.EMBEDDED_SCHEMAS = JSON.parse(document.getElementById('embedded-schemas').textContent);
 window.EMBEDDED_BASE_SCHEMA = JSON.parse(document.getElementById('embedded-base-schema').textContent);
   </script>
+
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lab-in-a-box · lab builder</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="theme-color" content="#eceef1" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16191e" media="(prefers-color-scheme: dark)">
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
@@ -124,7 +124,7 @@ window.EMBEDDED_BASE_SCHEMA = JSON.parse(document.getElementById('embedded-base-
     </div>
   </dialog>
 
-  <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>__LABVERSION__</code></footer>
+  <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>6206399</code></footer>
 
   <div id="toast" class="toast" hidden></div>
   <!-- Vendored, not CDN-loaded: this project's automation VM may run on a
@@ -135,10 +135,11 @@ window.EMBEDDED_BASE_SCHEMA = JSON.parse(document.getElementById('embedded-base-
   <script src="app.js"></script>
 
   <script>
-// Static mode CSS: hide server-dependent buttons
+// Static mode CSS: hide server-dependent elements
 const style = document.createElement('style');
 style.textContent = `
   button[onclick*="validate"], button[onclick*="save"], button[onclick*="refresh"] { display: none !important; }
+  #statusPanel { display: none !important; }
   .actions { opacity: 1; }
   .actions .btn.disabled { opacity: 0.5; cursor: not-allowed; }
 `;
