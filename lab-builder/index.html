@@ -124,7 +124,7 @@ window.EMBEDDED_BASE_SCHEMA = JSON.parse(document.getElementById('embedded-base-
     </div>
   </dialog>
 
-  <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>6206399</code></footer>
+  <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>e7189d8</code></footer>
 
   <div id="toast" class="toast" hidden></div>
   <!-- Vendored, not CDN-loaded: this project's automation VM may run on a
@@ -145,13 +145,14 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// Hide Refresh Images button by text content (can't use :has-text in CSS)
+// Hide Refresh Images button by text content and attributes (can't use :has-text in CSS)
 const hideButtonsByText = () => {
   Array.from(document.querySelectorAll('button')).forEach(btn => {
-    if (btn.textContent.includes('Refresh Images') ||
-        btn.textContent.includes('Validate') ||
-        btn.textContent.includes('Save')) {
-      btn.style.display = 'none';
+    const txt = btn.textContent.toLowerCase();
+    const onclick = (btn.getAttribute('onclick') || '').toLowerCase();
+    if (txt.includes('refresh') || txt.includes('validate') || txt.includes('save') ||
+        onclick.includes('refresh') || onclick.includes('validate') || onclick.includes('save')) {
+      btn.style.display = 'none !important';
       btn.disabled = true;
     }
   });
