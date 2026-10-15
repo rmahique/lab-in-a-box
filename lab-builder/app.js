@@ -16,6 +16,9 @@ const API = "api";
 
 // ---- schema vocabulary (the only fixed convention) -------------------------
 const STRUCTURAL = new Set(["fields", "sections"]);        // containers, not output keys
+// Keys of a schema that describe the add-on rather than configure it: they carry no fields, so rendering them as
+// form groups left a heading with nothing under it. The dialog shows the layers as badges instead.
+const SCHEMA_METADATA = new Set(["capabilities"]);
 const META_SCALAR = new Set(["schema_version", "addon", "section",
   "component", "description", "repeatable", "key_label", "name", "type",
   "required", "default"]);
@@ -317,6 +320,28 @@ function makeCube(kind, size, letter) {
 //   model.addonCfg : {section: {field: value}}             -> one shared section per add-on
 const HIDDEN_NODE_FIELDS = new Set(["kcluster", "addons"]);   // set by dropping, not typing
 const HIDDEN_CLUSTER_FIELDS = new Set(["addons"]);
+
+/* The fields of `fields` that apply to an instance configured as `cfg`: a
+   field's "show_if" names another field it depends on, and it applies only
+   while that field has a value. The Kubernetes node fields
+   (KUBERNETES_NODE_TYPE, harvester_role, INSTALL_RKE2_TYPE) depend on
+   "kcluster", so a VM in no Kubernetes cluster does not offer them. */
+function shownFields(fields, cfg) {
+  const set = (k) => { const v = (cfg || {})[k]; return v !== undefined && v !== null && v !== ""; };
+  return (fields || []).filter((f) => !f.show_if || set(f.show_if));
+}
+
+/* An instance's own fields plus the keys the canvas sets for it rather than
+   the form: a VM's "kcluster" is the name of the Kubernetes cluster block it
+   sits in. */
+function structuralCfg(item) {
+  const cfg = Object.assign({}, item.cfg);
+  if (item.type === "node" && item.parent) {
+    const c = state.model.items.find((i) => i.id === item.parent);
+    if (c && c.name) cfg.kcluster = c.name;
+  }
+  return cfg;
+}
 
 function cleanObj(o) {
   const r = {};
@@ -929,7 +954,8 @@ async function openEditor(id) {
       const spec = item.type === "node" ? secs.nodes : secs.kclusters;
       const hidden = item.type === "node" ? HIDDEN_NODE_FIELDS : HIDDEN_CLUSTER_FIELDS;
       kind = item.type === "node" ? "VM" : "Kubernetes cluster"; title = item.name; desc = spec.description;
-      const inst = instanceBox(spec.fields.filter((f) => !hidden.has(f.name)), spec.key_label || "name");
+      const shown = shownFields(spec.fields.filter((f) => !hidden.has(f.name)), structuralCfg(item));
+      const inst = instanceBox(shown, spec.key_label || "name");
       form.appendChild(inst);
       inst.querySelector(".inst-key").value = item.name;
       inst.querySelectorAll("[data-field]").forEach((i) => setWidgetValue(i, item.cfg[i.dataset.field]));
@@ -996,6 +1022,7 @@ function walk(node, parent, outPath) {
 
   for (const [key, val] of Object.entries(node)) {
     if (!val || typeof val !== "object") continue;      // skip scalar meta
+    if (SCHEMA_METADATA.has(key)) continue;            // describes the add-on, not a setting
     if (STRUCTURAL.has(key)) { walk(val, parent, outPath); continue; }  // wrapper: no output key
     if (val.repeatable === true) {                                      // keyed map of instances
       parent.appendChild(repeatGroup(key, val, outPath.concat(key)));
@@ -1010,6 +1037,8 @@ function walk(node, parent, outPath) {
     box.appendChild(body);
     parent.appendChild(box);
     walk(val, body, outPath.concat(key));
+    // A group that turned out to hold no field is not shown at all: a heading with nothing under it says nothing.
+    if (!body.childNodes.length) parent.removeChild(box);
   }
 }
 
@@ -1780,6 +1809,37 @@ function setupEmbed(origin) {
 }
 
 // ---- saved labs (login) ---------------------------------------------------------
+async function openExamplesDialog() {
+  const list = $("#examplesList");
+  list.innerHTML = "";
+  showDialog("#examplesDialog");
+  try {
+    const r = await apiGet("examples");
+    if (!r.examples.length) list.appendChild(el("li", "muted", "No example lab was found."));
+    r.examples.forEach((ex) => {
+      const li = el("li", "saved-row");
+      li.appendChild(el("span", "saved-name", ex.title || ex.name));
+      const parts = [ex.nodes + (ex.nodes === 1 ? " VM" : " VMs")];
+      if (ex.kclusters) parts.push(ex.kclusters + (ex.kclusters === 1 ? " Kubernetes cluster" : " Kubernetes clusters"));
+      if (ex.addons.length) parts.push(ex.addons.join(", "));
+      li.appendChild(el("span", "muted", ex.description || parts.join(" · ")));
+      const b = el("button", "btn", "Open");
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        try {
+          loadLab(await apiGet("example", { name: ex.name }));
+          $("#labName").value = (ex.title || ex.name).replace(/\s+/g, "-");
+          closeDialog("#examplesDialog");
+          toast("Opened the " + (ex.title || ex.name) + " example");
+        } catch (e) { toast("Cannot open " + ex.name + ": " + e.message); }
+      });
+      li.appendChild(b);
+      list.appendChild(li);
+    });
+  } catch (e) { list.appendChild(el("li", "issue err", e.message)); }
+}
+
+
 async function openSavedDialog() {
   const list = $("#savedList");
   list.innerHTML = "";
@@ -1964,6 +2024,7 @@ function openCreate() {
   $("#createConfirm").hidden = false;
   $("#createJob").hidden = true;
   $("#createGo").hidden = false;
+  $("#createPass").value = "";
   showDialog("#createDialog");
 }
 
@@ -1971,7 +2032,11 @@ async function startCreate() {
   const filename = ($("#labName").value.trim() || "lab").replace(/\.json$/, "");
   try {
     await adminCall("save", { filename, config: state.lab });
-    const r = await adminCall("create", { filename: filename + ".json", keep: $("#createKeep").checked });
+    // The passphrase goes to this one request and is dropped straight away: it is never kept in state.
+    const passphrase = $("#createPass").value;
+    $("#createPass").value = "";
+    const r = await adminCall("create", {
+      filename: filename + ".json", keep: $("#createKeep").checked, passphrase });
     $("#createConfirm").hidden = true;
     $("#createGo").hidden = true;
     $("#createJob").hidden = false;
@@ -2002,6 +2067,8 @@ window.addEventListener("DOMContentLoaded", () => {
   $("#validateBtn").addEventListener("click", validateLab);
   $("#downloadBtn").addEventListener("click", downloadLab);
   $("#saveBtn").addEventListener("click", saveLab);
+  $("#examplesBtn").addEventListener("click", openExamplesDialog);
+  $("#examplesClose").addEventListener("click", () => closeDialog("#examplesDialog"));
   $("#savedBtn").addEventListener("click", openSavedDialog);
   $("#savedClose").addEventListener("click", () => closeDialog("#savedDialog"));
   $("#credBtn").addEventListener("click", openCredentials);
