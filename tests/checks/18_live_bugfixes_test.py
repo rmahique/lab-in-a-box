@@ -30,6 +30,9 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
 
 import services  # noqa: E402
+# Every zone path depends on the target's os-release, which services.py reads over SSH; nothing here
+# has a host to ask, so the default answer is an unknown family and its default zone directory.
+services.detect_os = lambda hostname: {"id": "", "ver_id": "", "like": "", "ver_major": ""}
 import dns_zone  # noqa: E402
 import backends  # noqa: E402
 import lab_creation as lc  # noqa: E402

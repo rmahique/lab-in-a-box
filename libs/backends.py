@@ -4050,19 +4050,23 @@ _OPTIONS_TEMPLATE = (
 
 def _cloud_dns_vm_user_data(root_ssh_key: str, mydomain: str, lab_networks=()) -> str:
     """
-    Minimal cloud-init for the cloud DNS VM created by ensure_cloud_dns_vm(). It installs BIND and serves
-    `mydomain` from the same on-disk path and convention DNSService (libs/services.py) uses for
-    automation.mydemo.lab: NAMED_ZONE_DIR is /var/lib/named, and named is restarted with `systemctl restart named`.
-    This lets add_to_dns() append records through the existing remote_dns_servers mechanism, which SSH-appends a line
-    to a zone file and restarts named on each listed server, with no new propagation code.
+    Minimal cloud-init for the cloud DNS VM created by ensure_cloud_dns_vm(): it installs BIND, writes the serving
+    policy this server needs on a public address, and starts named. It does NOT create the zone. The VM is one of
+    the lab's DNS masters, so DNSService.ensure_zone() (libs/services.py) creates the zone over SSH once the VM is
+    up, the same way it does for every other master — setup_vm.py adds this VM's address to remote_dns_servers,
+    and add_to_dns() reaches it from there. One zone-creation path, rather than one here and one there that have
+    to be kept saying the same thing.
 
-    The DNS VM boots from the lab's own image, so runcmd detects the OS family from /etc/os-release:
-      - Debian/Ubuntu: package bind9, user bind, zone stanza in /etc/bind/named.conf.local. Ubuntu's AppArmor
-        profile only allows /var/lib/bind/**, so a local/ override adds /var/lib/named/**.
-      - SUSE: package bind, user named, zone stanza in /etc/named.lab.conf, included from /etc/named.conf.
-      - Fedora family (RHEL, Amazon Linux): as SUSE, plus /etc/named.conf's localhost-only listen-on and allow-query
-        are opened to any client, with recursion kept to local networks; on SELinux, /var/lib/named gets the
-        named_zone_t type.
+    The DNS VM boots from the lab's own image, so runcmd detects the OS family from /etc/os-release for the things
+    that must happen at first boot:
+      - Debian/Ubuntu: package bind9, user bind.
+      - SUSE: package bind, user named.
+      - Fedora family (RHEL, Amazon Linux): package bind, user named.
+    ZONE_DIR comes from libs/dns_zone.py, the same table ensure_zone() uses, so both agree on where that family's
+    named reads a zone: /etc/bind on Debian and Ubuntu, whose AppArmor profile denies anything else, and
+    /var/lib/named elsewhere. Using each distribution's own permitted directory is what removes the need to
+    rewrite its AppArmor profile or relabel for SELinux at all.
+
     runcmd entries run as one shell script, so the variables set by the first entry apply to the later ones.
 
     Nodes query this server through its private IP; DNS queries to its public IP can be intercepted by networks on
@@ -4076,27 +4080,17 @@ def _cloud_dns_vm_user_data(root_ssh_key: str, mydomain: str, lab_networks=()) -
         escaping rule (YAML single-quoted strings don't support backslash escapes at all)."""
         return "'" + s.replace("'", "''") + "'"
 
-    # The same zone shape libs/services.py creates and compares, at a low TTL because a cloud node's address
-    # changes whenever it is recreated.
-    zone_lines = dns_zone.forward_header(mydomain, ttl=300)
-    zone_printf_args = " ".join("'{}'".format(line) for line in zone_lines)
-    named_conf_line = dns_zone.stanza(mydomain, dns_zone.zone_path(dns_zone.forward_file(mydomain)))
-
     # Each entry is one shell command, run through runcmd after cloud-init's own modules.
     commands = [
         '. /etc/os-release; case " $ID $ID_LIKE " in'
         ' *" debian "*|*" ubuntu "*) BIND_INSTALL="apt-get update -q && apt-get install -y bind9"; BIND_USER=bind;'
-        ' BIND_CONF=/etc/bind/named.conf.local;;'
+        ' ZONE_DIR={deb};;'
         ' *" suse "*|*" sles "*|*" opensuse "*) BIND_INSTALL="zypper --non-interactive install bind"; BIND_USER=named;'
-        ' BIND_CONF=/etc/named.lab.conf;;'
-        ' *) BIND_INSTALL="dnf install -y bind"; BIND_USER=named; BIND_CONF=/etc/named.lab.conf;;'
-        ' esac',
+        ' ZONE_DIR={other};;'
+        ' *) BIND_INSTALL="dnf install -y bind"; BIND_USER=named; ZONE_DIR={other};;'
+        ' esac'.format(deb=dns_zone.ZONE_DIR_DEBIAN, other=dns_zone.ZONE_DIR_DEFAULT),
         'sh -c "$BIND_INSTALL"',
-        "mkdir -p /var/lib/named",
-        "printf '%s\\n' {args} > /var/lib/named/{d}.lan".format(args=zone_printf_args, d=mydomain),
-        "printf '%s\\n' {conf} > \"$BIND_CONF\"".format(conf="'{}'".format(named_conf_line)),
-        'if [ "$BIND_CONF" = /etc/named.lab.conf ]; then grep -qF "$BIND_CONF" /etc/named.conf'
-        ' || echo \'include "/etc/named.lab.conf";\' >> /etc/named.conf; fi',
+        "mkdir -p \"$ZONE_DIR\"",
         # The serving policy is written rather than patched into whatever the distribution shipped, because this
         # server answers on a public address: it is authoritative for the lab's zone to anyone, recurses only for
         # the lab's own networks, rate-limits what it answers so it cannot be used to amplify an attack at someone
@@ -4107,13 +4101,8 @@ def _cloud_dns_vm_user_data(root_ssh_key: str, mydomain: str, lab_networks=()) -
         '\\|allow-transfer\\|allow-update\\|version\\|listen-on\\|listen-on-v6\\|rate-limit\\|forwarders\\|forward\\)/d" "$OPTS"',
         'sed -i "/^[[:space:]]*options[[:space:]]*{/a \\' + "\n".join(_OPTIONS_LINES) + '" "$OPTS"',
         'named-checkconf || { echo "named-checkconf refused the generated configuration" >&2; exit 1; }',
-        'chown -R "$BIND_USER:$BIND_USER" /var/lib/named',
-        "chmod 0755 /var/lib/named",
-        "if command -v selinuxenabled >/dev/null && selinuxenabled; then chcon -R -t named_zone_t /var/lib/named; fi",
-        "if [ -f /etc/apparmor.d/usr.sbin.named ]; then"
-        " printf '%s\\n' '/var/lib/named/** rw,' > /etc/apparmor.d/local/usr.sbin.named; fi",
-        "if [ -f /etc/apparmor.d/usr.sbin.named ] && command -v apparmor_parser >/dev/null; then"
-        " apparmor_parser -r /etc/apparmor.d/usr.sbin.named; fi",
+        'chown -R "$BIND_USER:$BIND_USER" "$ZONE_DIR"',
+        'chmod 0755 "$ZONE_DIR"',
         "systemctl enable --now named 2>/dev/null || systemctl enable --now bind9",
         'systemctl is-active named >/dev/null 2>&1 || systemctl is-active bind9 >/dev/null 2>&1'
         ' || { echo "BIND did not start" >&2; exit 1; }',

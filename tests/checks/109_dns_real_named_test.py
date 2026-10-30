@@ -60,7 +60,7 @@ named_conf.write_text(
     '    dnssec-validation no;\n'
     '}};\n'.format(d=elsewhere, t=tmp, p=PORT))
 
-zone_dir = Path(dns_zone.ZONE_DIR)
+zone_dir = Path(dns_zone.zone_dir())   # this container is openSUSE, so the default /var/lib/named
 zone_dir.mkdir(parents=True, exist_ok=True)
 for stale in (dns_zone.forward_file(DOMAIN), dns_zone.reverse_file(REVERSE)):
     if (zone_dir / stale).exists():
