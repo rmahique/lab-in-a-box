@@ -49,7 +49,7 @@ import urllib.request
 from pathlib import Path
 
 import dns_zone
-from lab_creation import log, warn, die, ssh_run, clean_ssh_keys
+from lab_creation import log, warn, die, ssh_run, clean_ssh_keys, ssh_reachable
 
 NAMED_ZONE_DIR = Path("/var/lib/named")
 NAMED_CONF = Path("/etc/named.conf")
@@ -136,19 +136,32 @@ class DNSService(AuxService):
     # otherwise cost an SSH connect per record, per node, on every write.
     _reachable_cache = {}
 
+    # How hard the gate tries before giving up on a master. ssh_reachable() retries only a failure to connect, so
+    # this waits for a server that is still booting or behind a momentary fault without waiting on one that is
+    # paused or destroyed: with ConnectTimeout=5, an address nothing answers at all costs about 20 seconds, once
+    # per process rather than once per record. A master down for longer than that is what report_zone() and
+    # dns_sync.py are for — retrying is not a substitute for them.
+    _REACHABLE_ATTEMPTS = 3
+    _REACHABLE_DELAY = 2
+
     def _reachable(self, server: str) -> bool:
         """
         Whether `server` answers SSH, probed once per process and reported once when it does not.
 
-        A first failure drops the host's known_hosts entry and probes once more: a cloud lab's DNS VM is recreated
-        under a reused address, and the key of the server that held it before makes every write to the new one fail
-        without saying so. This is the same stale-key handling clean_ssh_keys() does for a recreated VM.
+        A server that does not answer is retried, since a cloud lab's DNS VM is routinely still booting when the
+        first record is written. Once the retries are spent, the host's known_hosts entry is dropped and it is
+        probed once more: a DNS VM recreated under a reused address otherwise fails every write without saying so,
+        and that failure is a refusal rather than a timeout, so no amount of retrying reaches it.
         """
         if server not in self._reachable_cache:
-            reachable = self._remote(server, "true", check=False).returncode == 0
+            def probe(host):
+                return self._remote(host, "true", check=False, capture=True)
+
+            reachable = ssh_reachable(server, attempts=self._REACHABLE_ATTEMPTS,
+                                      delay=self._REACHABLE_DELAY, probe=probe)
             if not reachable:
                 clean_ssh_keys(server, server)
-                reachable = self._remote(server, "true", check=False).returncode == 0
+                reachable = ssh_reachable(server, attempts=1, probe=probe)
             self._reachable_cache[server] = reachable
             if not reachable:
                 warn("- DNS server '{}' is not reachable: its zone is left untouched and will be brought back in "
@@ -242,7 +255,7 @@ class DNSService(AuxService):
         if server is None:
             path = NAMED_ZONE_DIR / file_name
             return dns_zone.records(path.read_text()) if path.exists() else set()
-        result = self._remote(server, "cat /var/lib/named/{} 2>/dev/null".format(file_name),
+        result = self._remote(server, "cat {} 2>/dev/null".format(_quote(dns_zone.zone_path(file_name))),
                               check=False, capture=True)
         return dns_zone.records(result.stdout if result.returncode == 0 else "")
 
@@ -252,6 +265,54 @@ class DNSService(AuxService):
         if mynet_reverse:
             files.append(dns_zone.reverse_file(mynet_reverse))
         return files
+
+    def _zone_pairs(self, mydomain: str, mynet_reverse: str = "") -> list:
+        """The zone files of `mydomain` as (file name, zone name), for anything that has to name the zone itself."""
+        pairs = [(dns_zone.forward_file(mydomain), mydomain)]
+        if mynet_reverse:
+            pairs.append((dns_zone.reverse_file(mynet_reverse), dns_zone.reverse_zone(mynet_reverse)))
+        return pairs
+
+    def zone_loads(self, server, zone: str, file_name: str) -> tuple:
+        """
+        Whether `server` (None for this host) can load its own copy of `zone`, as (loads, detail).
+
+        Comparing records deliberately ignores a zone's header, because the SOA and the NS address are per server.
+        A master whose SOA is damaged or missing therefore compares as being in perfect agreement with the others
+        while serving nothing at all, and only asking named itself tells the two apart.
+
+        (True, "") when named-checkzone is not installed, since its absence says nothing about the zone, and when
+        the server holds no such zone file, which _compare_zone() reports as the missing records instead.
+        """
+        path = dns_zone.zone_path(file_name)
+        cmd = ("command -v named-checkzone >/dev/null 2>&1 || exit 127; [ -f {p} ] || exit 126; "
+               "named-checkzone {z} {p} 2>&1").format(p=_quote(path), z=_quote(zone))
+        if server is None:
+            result = subprocess.run(["sh", "-c", cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    universal_newlines=True)
+            output = result.stdout or ""
+        else:
+            result = self._remote(server, cmd, check=False, capture=True)
+            output = result.stdout or ""
+        if result.returncode in (0, 126, 127):
+            return True, ""
+        detail = " ".join(line.strip() for line in output.splitlines() if line.strip())
+        return False, detail or "named-checkzone exited {}".format(result.returncode)
+
+    def validate_zones(self, mydomain: str, mynet_reverse: str = "", remote_dns_servers=None) -> list:
+        """
+        One message per reachable master of `mydomain` whose own copy of a zone does not load, which is a fault no
+        record comparison can see. Empty when every master's zones load.
+        """
+        messages = []
+        for server in [None] + self.masters(remote_dns_servers):
+            for file_name, zone in self._zone_pairs(mydomain, mynet_reverse):
+                loads, detail = self.zone_loads(server, zone, file_name)
+                if not loads:
+                    messages.append("DNS server '{}' cannot load its copy of '{}', so it answers nothing for that "
+                                    "zone however well its records agree with the other masters: {}".format(
+                                        server or "this host", zone, detail))
+        return messages
 
     def _compare_zone(self, mydomain: str, mynet_reverse: str = "", remote_dns_servers=None) -> list:
         """
@@ -288,11 +349,15 @@ class DNSService(AuxService):
 
     def report_zone(self, mydomain: str, mynet_reverse: str = "", remote_dns_servers=None) -> list:
         """
-        What the reachable masters of `mydomain` disagree on, reported and returned as one message per difference,
-        changing nothing. Empty when they already hold the same records.
+        What is wrong across the reachable masters of `mydomain`, reported and returned as one message each,
+        changing nothing. Empty when every master's zones load and hold the same records.
+
+        A zone that does not load is reported first, because a master that serves nothing is a worse fault than a
+        record it is missing, and reconciling records would otherwise report success over it.
         """
         with _dns_lock:
-            messages = self._difference_messages(
+            messages = self.validate_zones(mydomain, mynet_reverse, remote_dns_servers=remote_dns_servers)
+            messages += self._difference_messages(
                 self._compare_zone(mydomain, mynet_reverse, remote_dns_servers=remote_dns_servers))
         for message in messages:
             warn("- " + message)
@@ -309,8 +374,9 @@ class DNSService(AuxService):
         reported for pruning rather than acted on. prune_zone() is the deliberate counterpart.
         """
         with _dns_lock:
+            messages = self.validate_zones(mydomain, mynet_reverse, remote_dns_servers=remote_dns_servers)
             comparison = self._compare_zone(mydomain, mynet_reverse, remote_dns_servers=remote_dns_servers)
-            messages = self._difference_messages(comparison)
+            messages += self._difference_messages(comparison)
             wrote = False
             for file_name, server, missing, _alone in comparison:
                 if missing:

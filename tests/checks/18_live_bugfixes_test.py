@@ -99,6 +99,8 @@ services.ssh_run = _dying_ssh
 svc = services.DNSService()
 # avoid a real local `systemctl restart named`; add_to_dns also restarts the masters it reached
 svc.restart_named = lambda remote_servers=None: None
+# the master gate waits between attempts for a server that is still booting; there is nothing to wait for here
+svc._REACHABLE_DELAY = 0
 # add_to_dns makes each master a master of the zone first, so the zone files and the named.conf it would
 # declare them in are this check's own, not the container's /etc and /var/lib/named.
 _zone_dir = tempfile.mkdtemp()

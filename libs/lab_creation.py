@@ -1655,6 +1655,39 @@ def locate_kvm_host(definition, vm_name, config):
 
 # ── VM management ─────────────────────────────────────────────────────────────
 
+# ssh's own exit code for "the connection never opened", as opposed to any code the remote command itself
+# returned. Only this one is worth retrying: a command that ran and failed would simply run again.
+SSH_NO_CONNECTION = 255
+
+
+def ssh_reachable(hostname, attempts=3, delay=2, user="root", probe=None):
+    """
+    Whether `hostname` answers SSH, retrying up to `attempts` times with `delay` seconds between tries.
+
+    Only a failure to connect at all (ssh's exit code 255) is retried, so a host that is still booting or behind a
+    momentary network fault is waited for, while a host that answered and refused is reported at once.
+
+    `probe` runs one attempt against a host and returns its CompletedProcess; the default runs `true` over
+    ssh_run(). A caller that reaches hosts through its own wrapper passes that wrapper, so every attempt goes the
+    one way it reaches a host.
+
+    Returns False rather than raising or exiting, because a caller such as the DNS master gate must carry on
+    without the host. check_ssh_conn() is the wrong tool there: it exits the process when its retries run out.
+    """
+    if probe is None:
+        def probe(host):
+            return ssh_run(host, "true", check=False, capture=True, user=user)
+    for attempt in range(max(1, attempts)):
+        result = probe(hostname)
+        if result.returncode == 0:
+            return True
+        if result.returncode != SSH_NO_CONNECTION:
+            return False
+        if attempt + 1 < max(1, attempts):
+            time.sleep(delay)
+    return False
+
+
 def clean_ssh_keys(vm_name, myip):
     """
     Remove stale SSH known-hosts entries for a VM (mirrors clean_ssh_keys).

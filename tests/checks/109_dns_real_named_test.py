@@ -143,6 +143,32 @@ check("named no longer answers the PTR record after del_from_dns", NODE not in d
 check("the zone still loads after a removal",
       "status: NOERROR" in dig("SOA", DOMAIN))
 
+# ── zone validity, as named-checkzone itself judges it ──────────────────────
+
+# A damaged header is the case record comparison cannot see: records() drops the header on purpose, because the
+# SOA and the NS address are per server, so a master with no SOA agrees perfectly with the others and serves
+# nothing at all. Only asking named tells them apart.
+forward = zone_dir / dns_zone.forward_file(DOMAIN)
+intact = forward.read_text()
+
+loads, detail = svc.zone_loads(None, DOMAIN, dns_zone.forward_file(DOMAIN))
+check("an intact zone loads: " + detail, loads is True)
+
+forward.write_text("\n".join(line for line in intact.splitlines() if "SOA" not in line) + "\n")
+loads, detail = svc.zone_loads(None, DOMAIN, dns_zone.forward_file(DOMAIN))
+check("a zone whose SOA is gone is reported as not loading: " + detail, loads is False)
+check("...and named's own reason is carried, not invented", "SOA" in detail)
+check("record comparison cannot see it at all, which is why this check exists",
+      dns_zone.records(intact) == dns_zone.records(forward.read_text()))
+
+messages = svc.validate_zones(DOMAIN, REVERSE)
+check("validate_zones names this host when its own zone does not load",
+      len(messages) == 1 and "this host" in messages[0])
+
+forward.write_text(intact)
+check("the restored zone loads again", svc.zone_loads(None, DOMAIN, dns_zone.forward_file(DOMAIN))[0] is True)
+check("...and validate_zones then reports nothing", svc.validate_zones(DOMAIN, REVERSE) == [])
+
 if _named["proc"] is not None:
     _named["proc"].terminate()
     _named["proc"].wait()

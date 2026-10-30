@@ -88,20 +88,57 @@ services.DNSService._reachable_cache = {}
 probes = []
 
 
-def _probe(host, cmd, check=True, capture=False, **kw):
-    probes.append(host)
-    return FakeResult(0 if host == "up.lab" else 255)
+def _probe(host, attempts=3, delay=2, user="root", probe=None):
+    probes.append((host, attempts))
+    return host == "up.lab"
 
 
 with mock.patch.object(services, "clean_ssh_keys", lambda *a: None), \
-        mock.patch.object(svc, "_remote", side_effect=_probe):
+        mock.patch.object(services, "ssh_reachable", side_effect=_probe):
     first = svc.masters(["up.lab", "down.lab"])
     second = svc.masters(["up.lab", "down.lab"])
 check("an unreachable master is left out of the list", first == ["up.lab"] and second == ["up.lab"])
-check("a reachable master is probed once per process, not once per write", probes.count("up.lab") == 1)
-check("an unreachable one is retried once with its host key dropped, then not probed again",
-      probes.count("down.lab") == 2)
+check("a reachable master is probed once per process, not once per write",
+      [host for host, _ in probes].count("up.lab") == 1)
+check("an unreachable one is retried, then probed once more with its host key dropped",
+      [attempts for host, attempts in probes if host == "down.lab"]
+      == [services.DNSService._REACHABLE_ATTEMPTS, 1])
+check("the retry budget is more than one attempt, so a booting server is waited for",
+      services.DNSService._REACHABLE_ATTEMPTS > 1)
 check("no remote servers means no masters and no probes", svc.masters(None) == [])
+
+services.DNSService._reachable_cache = {}
+svc = services.DNSService()
+through = []
+with mock.patch.object(services, "clean_ssh_keys", lambda *a: None), \
+        mock.patch.object(svc, "_remote",
+                          side_effect=lambda h, c, check=True, capture=False: through.append(h) or FakeResult(0)):
+    svc.masters(["via.lab"])
+check("the gate probes through the service's own SSH wrapper, so a caller that fakes it is honoured",
+      through == ["via.lab"])
+
+# ── ssh_reachable: only a failure to connect is worth retrying ───────────────
+
+import lab_creation  # noqa: E402
+
+calls = []
+
+
+def _ssh(host, cmd, check=True, capture=False, user="root"):
+    calls.append(host)
+    return FakeResult({"up": 0, "down": lab_creation.SSH_NO_CONNECTION, "refusing": 1}[host])
+
+
+with mock.patch.object(lab_creation, "ssh_run", side_effect=_ssh), \
+        mock.patch.object(lab_creation.time, "sleep", lambda _s: None):
+    check("a host that answers is reported reachable on the first try",
+          lab_creation.ssh_reachable("up", attempts=3) is True and calls.count("up") == 1)
+    calls[:] = []
+    check("a host that never connects is retried the full budget",
+          lab_creation.ssh_reachable("down", attempts=3) is False and calls.count("down") == 3)
+    calls[:] = []
+    check("a host that answered and whose command failed is not retried, since it would simply run again",
+          lab_creation.ssh_reachable("refusing", attempts=3) is False and calls.count("refusing") == 1)
 
 # ── ensure_zone: a master holds the zone before a record is written ──────────
 
@@ -133,6 +170,7 @@ held = {
 written = []
 
 with mock.patch.object(svc, "masters", lambda remote=None: ["dns2.lab"]), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: []), \
         mock.patch.object(svc, "zone_records", side_effect=lambda server, f: set(held[server])), \
         mock.patch.object(svc, "_write_records", side_effect=lambda s, f, r: written.append((s, tuple(r)))), \
         mock.patch.object(svc, "restart_named", lambda **kw: None):
@@ -148,6 +186,7 @@ check("every difference is reported", len(messages) == 4)
 written[:] = []
 same = {None: {"a IN A 1.1.1.1"}, "dns2.lab": {"a IN A 1.1.1.1"}}
 with mock.patch.object(svc, "masters", lambda remote=None: ["dns2.lab"]), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: []), \
         mock.patch.object(svc, "zone_records", side_effect=lambda server, f: set(same[server])), \
         mock.patch.object(svc, "_write_records", side_effect=lambda s, f, r: written.append(s)), \
         mock.patch.object(svc, "restart_named", lambda **kw: None):
@@ -158,6 +197,7 @@ with mock.patch.object(svc, "masters", lambda remote=None: ["dns2.lab"]), \
 
 reported = []
 with mock.patch.object(svc, "masters", lambda remote=None: ["dns2.lab"]), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: []), \
         mock.patch.object(svc, "zone_records", side_effect=lambda server, f: set(held[server])), \
         mock.patch.object(svc, "_write_records", side_effect=lambda s, f, r: reported.append(s)):
     check("report_zone finds the same differences and writes nothing",
@@ -167,6 +207,7 @@ with mock.patch.object(svc, "masters", lambda remote=None: ["dns2.lab"]), \
 
 removed = []
 with mock.patch.object(svc, "masters", lambda remote=None: ["dns2.lab"]), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: []), \
         mock.patch.object(svc, "zone_records", side_effect=lambda server, f: set(held[server])), \
         mock.patch.object(svc, "_dns_remove_record", side_effect=lambda f, r: removed.append((None, r))), \
         mock.patch.object(svc, "_remote_dns_remove_record",
@@ -179,6 +220,7 @@ check("...on either side", (None, "node102 IN A 192.168.88.102") in removed)
 check("...and says so", len(pruned) == 2)
 
 with mock.patch.object(svc, "masters", lambda remote=None: []), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: []), \
         mock.patch.object(svc, "zone_records", side_effect=lambda server, f: {"a IN A 1.1.1.1"}), \
         mock.patch.object(svc, "restart_named", lambda **kw: None):
     check("with one master there is nothing to prune against, so nothing is removed",
@@ -192,6 +234,7 @@ warnings = []
 with mock.patch.object(services, "warn", side_effect=lambda m: warnings.append(m)), \
         mock.patch.object(services, "log", lambda m: None), \
         mock.patch.object(svc, "masters", lambda remote=None: ["up.lab"]), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: []), \
         mock.patch.object(svc, "_remote", side_effect=lambda *a, **kw: FakeResult()), \
         mock.patch.object(svc, "_dns_remove_line", lambda *a: None), \
         mock.patch.object(svc, "_dns_remove_service_lines", lambda *a: None), \
@@ -202,6 +245,51 @@ check("the master a removal never reached is named", any("down.lab" in w for w i
 check("...and the reachable one is not reported as a problem", not any("'up.lab'" in w for w in warnings))
 check("...and the report says no later run will fix it, because a sync only adds",
       any("no later run" in w for w in warnings))
+
+# ── zone validity: records agreeing says nothing about the zone loading ─────
+
+services.DNSService._reachable_cache = {}
+svc = services.DNSService()
+
+# named-checkzone's exit code decides, and only a real failure is a fault: 127 is the binary not being installed
+# and 126 the server holding no such zone file, neither of which says the zone is broken.
+codes = {"broken.lab": FakeResult(1, "zone mydemo.lab/IN: has no SOA record"),
+         "bare.lab": FakeResult(127),
+         "empty.lab": FakeResult(126),
+         "good.lab": FakeResult(0)}
+with mock.patch.object(svc, "_remote", side_effect=lambda host, cmd, check=True, capture=False: codes[host]):
+    check("a zone named itself refuses to load is a fault", svc.zone_loads("broken.lab", "mydemo.lab", "f")[0] is False)
+    check("...and the reason it gave is carried",
+          "no SOA" in svc.zone_loads("broken.lab", "mydemo.lab", "f")[1])
+    check("a server without named-checkzone is not reported, since its absence says nothing",
+          svc.zone_loads("bare.lab", "mydemo.lab", "f")[0] is True)
+    check("a server holding no such zone file is left to the record comparison to report",
+          svc.zone_loads("empty.lab", "mydemo.lab", "f")[0] is True)
+    check("a zone that loads is no fault", svc.zone_loads("good.lab", "mydemo.lab", "f")[0] is True)
+
+services.DNSService._reachable_cache = {}
+svc = services.DNSService()
+with mock.patch.object(svc, "masters", lambda remote=None: ["broken.lab"]), \
+        mock.patch.object(svc, "zone_loads",
+                          side_effect=lambda server, zone, f: (server is None, "has no SOA record")):
+    messages = svc.validate_zones("mydemo.lab", remote_dns_servers=["broken.lab"])
+check("a master whose zone does not load is named", len(messages) == 1 and "broken.lab" in messages[0])
+check("...and the message says it answers nothing however well its records agree",
+      "answers nothing" in messages[0])
+
+# A master serving nothing must not be hidden by a clean record comparison, so report_zone reports it and still
+# writes nothing.
+services.DNSService._reachable_cache = {}
+svc = services.DNSService()
+reported = []
+with mock.patch.object(services, "warn", side_effect=lambda m: reported.append(m)), \
+        mock.patch.object(svc, "validate_zones", lambda *a, **kw: ["'down.lab' cannot load its copy"]), \
+        mock.patch.object(svc, "_compare_zone", lambda *a, **kw: []), \
+        mock.patch.object(svc, "_write_records", lambda *a: (_ for _ in ()).throw(AssertionError("wrote"))):
+    returned = svc.report_zone("mydemo.lab")
+check("an unloadable zone is reported even when every record agrees",
+      len(returned) == 1 and "cannot load" in returned[0])
+check("...and reporting it writes nothing", any("cannot load" in m for m in reported))
 
 if failures:
     print("{} check(s) failed".format(len(failures)))
