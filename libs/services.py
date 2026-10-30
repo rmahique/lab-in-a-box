@@ -212,7 +212,7 @@ class DNSService(AuxService):
             path.write_text("\n".join(header) + "\n")
             path.chmod(0o644)
         with NAMED_CONF.open("a") as conf:
-            conf.write("\n" + dns_zone.stanza(zone, file_name) + "\n")
+            conf.write("\n" + dns_zone.stanza(zone, dns_zone.zone_path(file_name)) + "\n")
 
     def _create_remote_zone(self, server: str, zone: str, file_name: str, header: list) -> None:
         """
@@ -226,11 +226,11 @@ class DNSService(AuxService):
             ' *" debian "*|*" ubuntu "*) BIND_CONF=/etc/bind/named.conf.local;;'
             ' *) BIND_CONF=/etc/named.lab.conf;;'
             ' esac',
-            "mkdir -p /var/lib/named",
-            "[ -s /var/lib/named/{f} ] || printf '%s\\n' {lines} > /var/lib/named/{f}".format(
-                f=file_name, lines=lines),
+            "mkdir -p {}".format(dns_zone.ZONE_DIR),
+            "[ -s {p} ] || printf '%s\\n' {lines} > {p}".format(
+                p=_quote(dns_zone.zone_path(file_name)), lines=lines),
             "printf '%s\\n' {stanza} >> \"$BIND_CONF\"".format(
-                stanza=_quote(dns_zone.stanza(zone, file_name))),
+                stanza=_quote(dns_zone.stanza(zone, dns_zone.zone_path(file_name)))),
             'if [ "$BIND_CONF" = /etc/named.lab.conf ]; then grep -qF "$BIND_CONF" /etc/named.conf'
             ' || echo \'include "/etc/named.lab.conf";\' >> /etc/named.conf; fi',
         ]), check=False)

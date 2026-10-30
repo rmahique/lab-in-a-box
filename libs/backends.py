@@ -4080,7 +4080,7 @@ def _cloud_dns_vm_user_data(root_ssh_key: str, mydomain: str, lab_networks=()) -
     # changes whenever it is recreated.
     zone_lines = dns_zone.forward_header(mydomain, ttl=300)
     zone_printf_args = " ".join("'{}'".format(line) for line in zone_lines)
-    named_conf_line = dns_zone.stanza(mydomain, "/var/lib/named/{}".format(dns_zone.forward_file(mydomain)))
+    named_conf_line = dns_zone.stanza(mydomain, dns_zone.zone_path(dns_zone.forward_file(mydomain)))
 
     # Each entry is one shell command, run through runcmd after cloud-init's own modules.
     commands = [

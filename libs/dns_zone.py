@@ -10,6 +10,7 @@ that is never resolved.
 
     forward_file(mydomain) / reverse_file(mynet_reverse)  -> the zone file's name, without a directory
     forward_header(mydomain) / reverse_header(...)        -> the lines a new zone file starts with
+    zone_path(file_name)                                  -> the absolute path a stanza must name it by
     stanza(zone, zone_file)                               -> the named.conf declaration for it
     records(text)                                         -> the comparable records of a zone file, as a set
     pattern(record)                                       -> matches the file line any records() entry came from
@@ -26,6 +27,12 @@ __version__ = "__LABVERSION__"
 # no secondary ever transfers the zone and the serial is never compared: it exists because BIND rejects a zone
 # without one.
 _SERIAL = 1
+
+# Where every writer in this project puts a zone file. A stanza names the file by its absolute path because BIND
+# otherwise resolves it against its own "directory" option, which is /var/lib/named on SUSE and the Fedora family
+# but /var/cache/bind on Debian and Ubuntu: a bare name there declares a zone whose file is not where it was
+# written, and named fails to load it.
+ZONE_DIR = "/var/lib/named"
 
 
 def forward_file(mydomain: str) -> str:
@@ -66,6 +73,11 @@ def reverse_header(mydomain: str, mynet_reverse: str, ttl: int = 86400) -> List[
         "@ IN SOA ns.{d}. admin.{d}. ( {s} 3600 900 604800 300 )".format(d=mydomain, s=_SERIAL),
         "@ IN NS ns.{d}.".format(d=mydomain),
     ]
+
+
+def zone_path(file_name: str) -> str:
+    """The absolute path of a zone file, which is how a stanza must name it regardless of the server's distro."""
+    return "{}/{}".format(ZONE_DIR, file_name)
 
 
 def stanza(zone: str, zone_file: str) -> str:

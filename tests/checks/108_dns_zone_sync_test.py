@@ -45,9 +45,12 @@ check("...and an address for that NS, which BIND needs to resolve inside the zon
 check("a cloud zone's TTL is the one it was asked for",
       dns_zone.forward_header("mydemo.lab", ttl=300)[0] == "$TTL 300")
 
-stanza = dns_zone.stanza("mydemo.lab", "mydemo.lab.lan")
+check("a zone file is named by an absolute path, so a stanza loads whatever named's own directory is",
+      dns_zone.zone_path("mydemo.lab.lan") == "/var/lib/named/mydemo.lab.lan")
+
+stanza = dns_zone.stanza("mydemo.lab", dns_zone.zone_path("mydemo.lab.lan"))
 check("the stanza declares the zone a master of its file",
-      'zone "mydemo.lab"' in stanza and "type master" in stanza and 'file "mydemo.lab.lan"' in stanza)
+      'zone "mydemo.lab"' in stanza and "type master" in stanza and 'file "/var/lib/named/mydemo.lab.lan"' in stanza)
 
 ZONE = "\n".join(dns_zone.forward_header("mydemo.lab")) + """
         IN  MX 10   automation.mydemo.lab.
