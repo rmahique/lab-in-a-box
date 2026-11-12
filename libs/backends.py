@@ -2229,12 +2229,17 @@ class AWSBackend(VMBackend):
         VMBackend.resolve_image_name() override. A product name is looked up as the region's newest image of that
         product, for the architecture `instance_type` runs (see instance_arch()):
 
-          - "sles", "sles16", "sles16.0": the newest plain pay-as-you-go SLES AMI SUSE publishes.
-          - "slmicro", "slmicro6", "slmicro6.1", "micro": the newest pay-as-you-go SUSE Linux Micro AMI.
-          - any of those with "-byos" appended ("slmicro6.1-byos", "sles16-byos"): the bring-your-own-subscription
-            AMI instead. It needs no AWS Marketplace subscription, which the pay-as-you-go SL Micro AMIs do, but
-            its zypper has no repositories until the node is registered with a registration code.
-          - "opensuse", "leap", "leap16", "leap16.0": the newest openSUSE Leap AMI.
+          - "sles", "sles16", "sles16.0": the newest bring-your-own-subscription (BYOS) SLES AMI SUSE publishes —
+            the preferred default; it needs no AWS Marketplace subscription, but its zypper has no repositories
+            until the node is registered with a registration code (the encrypted credential store's "scc" kind;
+            see setup_demo_server/setup_kvm_node.py's prepare_kvm_host()).
+          - "slmicro", "slmicro6", "slmicro6.1", "micro": the newest BYOS SUSE Linux Micro AMI, same default.
+          - any of those with "-payg" appended ("slmicro6.1-payg", "sles16-payg"): the pay-as-you-go AMI instead —
+            registered against AWS's own update infrastructure automatically, no regcode needed, at the cost of
+            AWS's own per-hour subscription charge on top of the instance price. "-byos" is still accepted
+            (now the default, so it's a no-op) for any lab file already naming it explicitly.
+          - "opensuse", "leap", "leap16", "leap16.0": the newest openSUSE Leap AMI — free, always the same image;
+            "-byos"/"-payg" make no sense here and die with a clear message.
           - every name in libs/cloud_images.py's AWS_PRODUCTS ("ubuntu24.04", "rhel9", "rocky10", ...): the
             vendor's own current AMI, from its AWS Systems Manager public parameter or its own AWS account.
 
@@ -2256,15 +2261,21 @@ class AWSBackend(VMBackend):
         if vendor_id:
             return self._log_resolved(name, vendor_id, wanted)
 
-        match = re.match(r"^(sles|slmicro|micro|leap|opensuse)(\d+)?(?:[.-](\d+))?(-byos)?$", wanted)
+        match = re.match(r"^(sles|slmicro|micro|leap|opensuse)(\d+)?(?:[.-](\d+))?(-byos|-payg)?$", wanted)
         if not match:
             return name
-        product, major, minor, byos = match.group(1), match.group(2), match.group(3), bool(match.group(4))
+        product, major, minor, suffix = match.group(1), match.group(2), match.group(3), match.group(4)
         major = int(major) if major else 0
         minor = int(minor) if minor else -1
         picker, label = self._SUSE_PRODUCTS[product]
-        if byos and product in ("leap", "opensuse"):
-            die("SOURCE_IMAGE '{}': openSUSE Leap is free and has no BYOS image, so drop '-byos'".format(name))
+        has_licensing_choice = product in ("sles", "slmicro", "micro")
+        if suffix and not has_licensing_choice:
+            die("SOURCE_IMAGE '{}': openSUSE Leap is free and always the same image, so drop '{}'".format(
+                name, suffix))
+        # BYOS is the preferred default: no AWS Marketplace subscription charge on top of the instance price.
+        # "-payg" opts back into the pay-as-you-go image (auto-registered, no regcode needed); "-byos" is still
+        # accepted, now a no-op, for a lab file that already names it explicitly.
+        byos = has_licensing_choice and suffix != "-payg"
         if byos:
             label += " BYOS"
         try:
@@ -2275,8 +2286,8 @@ class AWSBackend(VMBackend):
             die("could not read SUSE's public cloud image list for AWS region '{}' to resolve SOURCE_IMAGE "
                 "'{}': {}".format(self.region, name, exc))
         if not image.get("id"):
-            die("SUSE publishes no {} {}{} {} image in AWS region '{}' — name an AMI ID in SOURCE_IMAGE "
-                "instead".format("BYOS" if byos else "plain", label, " " + str(major) if major else "", arch,
+            die("SUSE publishes no {}{}{} {} image in AWS region '{}' — name an AMI ID in SOURCE_IMAGE "
+                "instead".format("" if byos else "plain ", label, " " + str(major) if major else "", arch,
                                  self.region))
         return self._log_resolved(name, image["id"], image.get("name", ""))
 

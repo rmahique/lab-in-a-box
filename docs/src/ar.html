@@ -208,7 +208,15 @@
 </tr>
 <tr>
 <td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1 باشتراكك الخاص (BYOS). يمكن إضافة <code>-byos</code> إلى أي اسم <code>sles</code> أو <code>slmicro</code>: لا يلزم اشتراك في AWS Marketplace، وتُسجَّل العقدة بعد إقلاعها الأول باستخدام <code>SUSE_regcode</code> من <code>lab_creation.cfg</code>، ومن دونه لا تملك مستودعات حزم</td>
+<td>SUSE Linux Micro 6.1، BYOS صريح (مطابق للافتراضي؛ يمكن إضافة <code>-byos</code> إلى أي اسم <code>sles</code> أو <code>slmicro</code> وقد تم الاحتفاظ به للتوافق مع الإصدارات السابقة). يتطلب التسجيل باستخدام <code>scc_regcode</code> أو من خلال <code>client_registration</code></td>
+</tr>
+<tr>
+<td><code>sles16-payg</code></td>
+<td>SUSE Linux Enterprise Server 16.x, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
+</tr>
+<tr>
+<td><code>slmicro6.1-payg</code></td>
+<td>SUSE Linux Micro 6.1, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
 </tr>
 <tr>
 <td><code>leap</code></td>
@@ -221,10 +229,6 @@
 <tr>
 <td><code>sles15.7-byos</code></td>
 <td>SUSE Linux Enterprise Server 15 SP7، باشتراكك الخاص (BYOS)</td>
-</tr>
-<tr>
-<td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1، باشتراكك الخاص (BYOS)</td>
 </tr>
 <tr>
 <td><code>ubuntu24.04</code></td>
@@ -260,7 +264,7 @@
 </tr>
 </tbody>
 </table>
-<p>اسم منتج من SUSE متبوعًا بـ <code>-byos</code> يختار صورة الاشتراك الخاص (BYOS) بدلًا من صورة الدفع حسب الاستخدام. لا تحتوي هذه الصورة على مستودعات حتى يتم تسجيلها: العقدة المسجلة في خادم SMLM عبر <code>client_registration</code> تحصل على حزمها منه، والعقدة التي تحتاج إلى حزم قبل ذلك، مثل عقدة Kubernetes، تضبط <code>scc_regcode</code> (واختياريًا <code>scc_email</code>) في common أو لكل عقدة، فيسجلها cloud-init باستخدام <code>SUSEConnect</code> عند أول إقلاع.</p>
+<p>تُحلَّل أسماء منتجات SUSE (<code>sles</code> و<code>sles16</code> و<code>slmicro</code> وغيرها) افتراضيًا إلى صورة BYOS (اشتراكك الخاص). أضف <code>-payg</code> لاختيار صورة الدفع حسب الاستخدام بدلًا من ذلك — تُسجِّل نفسها تلقائيًا عند بنية تحديث AWS الخاصة في الإقلاع الأول دون الحاجة إلى regcode، لكنها تُكلِّف رسوم اشتراك AWS بالساعة. لا يزال إضافة <code>-byos</code> صراحةً يعمل ويختار نفس الصورة كالاسم الأساسي. لا تحتوي صورة BYOS على مستودعات حتى يتم تسجيلها: العقدة المسجلة في خادم SMLM عبر <code>client_registration</code> تحصل على حزمها منه، والعقدة التي تحتاج إلى حزم قبل ذلك، مثل عقدة Kubernetes، تضبط <code>scc_regcode</code> (واختياريًا <code>scc_email</code>) في common أو لكل عقدة، فيسجلها cloud-init باستخدام <code>SUSEConnect</code> عند أول إقلاع.</p>
 <p>تأتي منتجات SUSE نفسها من متتبّع الصور العام الخاص بـ SUSE، ويأتي الباقي من معامل AWS Systems Manager العام لكل مزوّد أو من حسابه الخاص على AWS، ولا يأتي أبداً من بحث بالاسم قد يطابقه حساب آخر. وأي قيمة ليست اسم منتج، بما في ذلك مُعرّف صورة أو اسم ملف صورة، تُمرّر كما هي.</p>
 <p>يحتاج المختبر السحابي أيضاً إلى أن تحلّ عقده أسماء بعضها. يخدم جهاز ظاهري صغير واحد لـ DNS لكل حساب سحابي نطاق المختبر، وتُضبط شبكة الحساب لتسليم ذلك الخادم إلى كل نسخة فيها، فتنضم العقدة إلى عنقود Kubernetes الخاص بها باسم المضيف دون أي ضبط داخل النظام الضيف. وعلى AWS يكون ذلك مجموعة خيارات DHCP لشبكة VPC: تنطبق على VPC بأكملها، وتسري فوراً على أي نسخة تُطلق بعدها، وتتبنّاها نسخة تعمل بالفعل عند تجديد عقد DHCP الخاص بها.</p>
 <h3 id="kubernetes-setup">إعداد Kubernetes</h3>

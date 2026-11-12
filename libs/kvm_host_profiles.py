@@ -87,14 +87,19 @@ class HostOSProfile:
     unmapped_packages: List[str] = []
     repo_setup: List[List[str]] = []
     kubectl_package = ""
+    sshfs_package = "sshfs"
     verified = True
 
     def __init__(self, os_info: Dict[str, str]):
         self.os_info = os_info
 
-    def register_repos(self) -> None:
+    def register_repos(self) -> List[str]:
+        """Runs every repo_setup command (none fail best-effort here, unlike the SLES override
+        below — EPEL/CRB are a plain list of commands, not named modules to report on
+        individually). Always [] — nothing to report."""
         for cmd in self.repo_setup:
             self._run(cmd)
+        return []
 
     def refresh(self) -> None:
         raise NotImplementedError
@@ -117,6 +122,12 @@ class HostOSProfile:
         if not self.kubectl_package and not self._try(["sh", "-c", kubectl_binary_script()]):
             failed.append("kubectl {} (upstream binary)".format(KUBECTL_VERSION))
         return failed
+
+    def install_packages(self, pkgs: List[str]) -> bool:
+        """Best-effort install of `pkgs`, on demand — for a package only some callers ever need
+        (e.g. sshfs, only when --share-storage-from is actually used), so every KVM host doesn't
+        carry it unconditionally. True if it succeeded."""
+        return self._try(self._install_cmd(pkgs))
 
     def configure_dns(self, automation_ip: str, mydomain: str) -> None:
         """
@@ -145,12 +156,12 @@ class HostOSProfile:
 # SLES uses the same package names as the openSUSE Leap release of the same major version.
 _SUSE15_REQUIRED = [
     "libvirt-daemon-qemu", "libvirt-client", "qemu-x86", "qemu-tools", "virt-install",
-    "guestfs-tools", "libguestfs", "fuse3", "sshfs", "netcat-openbsd", "git-core", "podman",
+    "guestfs-tools", "libguestfs", "fuse3", "netcat-openbsd", "git-core", "podman",
     "rsync", "xorriso", "mkisofs", "jq", "curl", "openssh-clients", "openssl", "lsof",
 ]
 _SUSE16_REQUIRED = [
     "libvirt-daemon-qemu", "libvirt-client", "qemu-x86", "qemu-tools", "virt-install",
-    "guestfs-tools", "libguestfs", "fuse3", "sshfs", "netcat-openbsd", "git-core", "podman",
+    "guestfs-tools", "libguestfs", "fuse3", "netcat-openbsd", "git-core", "podman",
     "rsync", "xorriso", "mkisofs", "jq", "curl", "openssh-clients", "openssl", "lsof",
 ]
 _SUSE15_KUBECTL = "kubernetes1.35-client"
@@ -192,10 +203,21 @@ class _SuseZypperProfile(HostOSProfile):
         subprocess.run(["netconfig", "update", "-f"], check=False)
 
 
+_SCC_CREDENTIALS_FILE = Path("/etc/zypp/credentials.d/SCCcredentials")
+
+
+def is_scc_registered() -> bool:
+    """True if this host already has working SCC credentials — a manually SUSEConnect'd host,
+    or a cloud PAYG image (AWS/Azure/GCP), which registers itself against its own update
+    infrastructure on first boot without ever being given a regcode."""
+    return _SCC_CREDENTIALS_FILE.is_file()
+
+
 class _SuseRegisteredProfile(_SuseZypperProfile):
     """
     SUSEConnect registration for SLES. regcode/suse_email/suse_url are set by the caller from
-    lab.cfg's SUSE_regcode/SUSE_email/SUSE_url after detect_profile() returns.
+    the encrypted credential store's "scc" entry after detect_profile() returns, when one
+    exists — see setup_demo_server/setup_kvm_node.py's prepare_kvm_host().
     """
 
     _products: tuple = ()
@@ -203,10 +225,19 @@ class _SuseRegisteredProfile(_SuseZypperProfile):
     suse_email = ""
     suse_url = ""
 
-    def register_repos(self) -> None:
+    def register_repos(self) -> List[str]:
+        """Registers the base product, then every module in _products best-effort (one module
+        not yet mirrored on a given region's registration proxy — seen live on a brand-new SLES
+        16.1 AMI on AWS, PackageHub's repos not mirrored yet — must not block the host from
+        being usable with everything the base product already provides). Returns the modules
+        that failed to register, for the caller to decide whether/how to report; [] means every
+        one succeeded.
+        """
         # The base product is registered before the modules: adding a module to an unregistered
         # host fails. Registering an already registered host again is a no-op.
-        if self.regcode:
+        if is_scc_registered():
+            pass
+        elif self.regcode:
             base_args = ["SUSEConnect", "--regcode", self.regcode]
             if self.suse_email:
                 base_args += ["--email", self.suse_email]
@@ -215,14 +246,18 @@ class _SuseRegisteredProfile(_SuseZypperProfile):
             self._run(base_args)
         else:
             raise RuntimeError(
-                "SLES host registration requires a regcode — set SUSE_regcode "
-                "(and optionally SUSE_email/SUSE_url) in lab.cfg, or pre-register "
-                "this host with SUSEConnect yourself before running this.")
+                "SLES host registration requires a regcode, and this host isn't already "
+                "registered — set it in the credential store (scripts/setup_credentials.py's "
+                "\"scc\" kind), or pre-register this host with SUSEConnect yourself before "
+                "running this.")
 
         ver_id = self.os_info.get("VERSION_ID", "")
         arch = platform.machine()
+        failed = []
         for product in self._products:
-            self._run(["SUSEConnect", "--product", "{}/{}/{}".format(product, ver_id, arch)])
+            if not self._try(["SUSEConnect", "--product", "{}/{}/{}".format(product, ver_id, arch)]):
+                failed.append(product)
+        return failed
 
 
 class OpenSUSELeap15Profile(_SuseZypperProfile):
@@ -261,7 +296,7 @@ class SLES16Profile(_SuseRegisteredProfile):
 
 _DEB_REQUIRED = [
     "libvirt-daemon-system", "libvirt-clients", "qemu-system-x86", "qemu-utils", "virtinst",
-    "guestfs-tools", "libguestfs-tools", "fuse3", "sshfs", "netcat-openbsd", "git", "podman",
+    "guestfs-tools", "libguestfs-tools", "fuse3", "netcat-openbsd", "git", "podman",
     "rsync", "xorriso", "genisoimage", "jq", "curl", "openssh-client", "openssl",
     "bridge-utils", "lsof",
 ]
@@ -317,7 +352,7 @@ class Ubuntu2404Profile(_AptProfile):
 
 _RPM_REQUIRED = [
     "libvirt", "libvirt-client", "qemu-kvm", "qemu-img", "virt-install", "guestfs-tools",
-    "libguestfs", "fuse3", "fuse-sshfs", "nmap-ncat", "git-core", "podman", "rsync", "xorriso",
+    "libguestfs", "fuse3", "nmap-ncat", "git-core", "podman", "rsync", "xorriso",
     "genisoimage", "jq", "openssh-clients", "openssl", "lsof",
 ]
 _RPM_EXTRA = ["mc", "tcpdump", "lm_sensors", "gdisk", "gpgme-devel", "device-mapper-devel"]
@@ -341,6 +376,8 @@ def _el_repo_setup(os_id: str, major: str) -> List[List[str]]:
 
 
 class _DnfProfile(HostOSProfile):
+    sshfs_package = "fuse-sshfs"
+
     def __init__(self, os_info: Dict[str, str]):
         super().__init__(os_info)
         self.repo_setup = self._repo_setup()

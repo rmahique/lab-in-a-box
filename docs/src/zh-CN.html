@@ -208,7 +208,15 @@
 </tr>
 <tr>
 <td><code>slmicro6.1-byos</code></td>
-<td>自带订阅 (BYOS) 的 SUSE Linux Micro 6.1。<code>-byos</code> 可追加到任意 <code>sles</code> 或 <code>slmicro</code> 名称后：无需 AWS Marketplace 订阅，节点在首次启动后使用 <code>lab_creation.cfg</code> 中的 <code>SUSE_regcode</code> 注册，未设置时节点没有软件包仓库</td>
+<td>SUSE Linux Micro 6.1，显式 BYOS（与默认相同；<code>-byos</code> 可追加到任意 <code>sles</code> 或 <code>slmicro</code> 名称后，保留以向后兼容）。需要通过 <code>scc_regcode</code> 或 <code>client_registration</code> 注册</td>
+</tr>
+<tr>
+<td><code>sles16-payg</code></td>
+<td>SUSE Linux Enterprise Server 16.x, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
+</tr>
+<tr>
+<td><code>slmicro6.1-payg</code></td>
+<td>SUSE Linux Micro 6.1, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
 </tr>
 <tr>
 <td><code>leap</code></td>
@@ -221,10 +229,6 @@
 <tr>
 <td><code>sles15.7-byos</code></td>
 <td>SUSE Linux Enterprise Server 15 SP7，自带订阅（BYOS）</td>
-</tr>
-<tr>
-<td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1，自带订阅（BYOS）</td>
 </tr>
 <tr>
 <td><code>ubuntu24.04</code></td>
@@ -260,7 +264,7 @@
 </tr>
 </tbody>
 </table>
-<p>SUSE 产品名后加上 <code>-byos</code>，会选择该产品的自带订阅（BYOS）镜像，而不是按需付费镜像。该镜像在注册之前没有任何软件仓库：通过 <code>client_registration</code> 注册到 SMLM 服务器的节点从那里获取软件包；需要更早获取软件包的节点（例如 Kubernetes 节点）在 common 或单个节点中设置 <code>scc_regcode</code>（可选再加 <code>scc_email</code>），由 cloud-init 在首次启动时用 <code>SUSEConnect</code> 完成注册。</p>
+<p>SUSE 产品名称（<code>sles</code>、<code>sles16</code>、<code>slmicro</code> 等）默认解析为其 BYOS（自带订阅）镜像。追加 <code>-payg</code> 可选择按需付费镜像——它在首次启动时自动向 AWS 自有更新基础设施注册，无需 regcode，但会产生按小时计费的 AWS 订阅费用。显式追加 <code>-byos</code> 仍然有效，选择与基本名称相同的镜像。BYOS 镜像在注册之前没有任何软件仓库：通过 <code>client_registration</code> 注册到 SMLM 服务器的节点从那里获取软件包；需要更早获取软件包的节点（例如 Kubernetes 节点）在 common 或单个节点中设置 <code>scc_regcode</code>（可选再加 <code>scc_email</code>），由 cloud-init 在首次启动时用 <code>SUSEConnect</code> 完成注册。</p>
 <p>SUSE 自家产品取自 SUSE 的公开镜像追踪服务，其余取自各厂商的 AWS Systems Manager 公开参数或其自有 AWS 账户，绝不使用其他账户也可能匹配的名称搜索。凡不是产品名称的值，包括镜像 ID 和镜像文件名，都原样传递。</p>
 <p>云端实验室还需要节点之间能相互解析。每个云账户有一台小型 DNS 虚拟机提供实验室域名，并将账户网络配置为把该服务器分发给其中的每个实例，于是节点可以按主机名加入其 Kubernetes 集群，无需在客户机内部做任何配置。在 AWS 上这是一个 VPC DHCP 选项集：它作用于整个 VPC，之后启动的实例立即生效，已在运行的实例则在续租 DHCP 时获取。</p>
 <h3 id="kubernetes-setup">Kubernetes 设置</h3>

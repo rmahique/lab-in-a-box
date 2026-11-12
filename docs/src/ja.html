@@ -208,7 +208,15 @@
 </tr>
 <tr>
 <td><code>slmicro6.1-byos</code></td>
-<td>独自サブスクリプション (BYOS) の SUSE Linux Micro 6.1。<code>-byos</code> は任意の <code>sles</code> または <code>slmicro</code> の名前に付けられます。AWS Marketplace のサブスクリプションは不要ですが、ノードは初回起動後に <code>lab_creation.cfg</code> の <code>SUSE_regcode</code> で登録されます。これがない場合、ノードはパッケージリポジトリを持ちません</td>
+<td>SUSE Linux Micro 6.1（明示的な BYOS；デフォルトと同じ。<code>-byos</code> は任意の <code>sles</code> または <code>slmicro</code> 名に付けられ、後方互換性のために保持されています）。<code>scc_regcode</code> または <code>client_registration</code> によるユーザー登録が必要です</td>
+</tr>
+<tr>
+<td><code>sles16-payg</code></td>
+<td>SUSE Linux Enterprise Server 16.x, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
+</tr>
+<tr>
+<td><code>slmicro6.1-payg</code></td>
+<td>SUSE Linux Micro 6.1, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
 </tr>
 <tr>
 <td><code>leap</code></td>
@@ -221,10 +229,6 @@
 <tr>
 <td><code>sles15.7-byos</code></td>
 <td>SUSE Linux Enterprise Server 15 SP7（お手持ちのサブスクリプションを使用、BYOS）</td>
-</tr>
-<tr>
-<td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1（お手持ちのサブスクリプションを使用、BYOS）</td>
 </tr>
 <tr>
 <td><code>ubuntu24.04</code></td>
@@ -260,7 +264,7 @@
 </tr>
 </tbody>
 </table>
-<p>SUSE の製品名の後ろに <code>-byos</code> を付けると、従量課金のイメージではなく、お手持ちのサブスクリプションを使う (BYOS) イメージが選ばれます。このイメージは登録されるまでリポジトリを持ちません。<code>client_registration</code> で SMLM サーバーに登録されるノードはそこからパッケージを取得し、それより前にパッケージが必要なノード (Kubernetes ノードなど) は common またはノードごとに <code>scc_regcode</code> (必要なら <code>scc_email</code> も) を設定します。cloud-init が初回起動時に <code>SUSEConnect</code> で登録します。</p>
+<p>SUSE の製品名（<code>sles</code>、<code>sles16</code>、<code>slmicro</code> など）はデフォルトで BYOS（お手持ちのサブスクリプション）イメージに解決されます。<code>-payg</code> を付けると従量課金イメージを選択できます — 初回起動時に AWS 独自の更新インフラに regcode なしで自動登録されますが、AWS サブスクリプション料金が時間単位で発生します。<code>-byos</code> を明示的に付けることも引き続き有効で、ベース名と同じイメージを選択します。BYOS イメージは登録されるまでリポジトリを持ちません。<code>client_registration</code> で SMLM サーバーに登録されるノードはそこからパッケージを取得し、それより前にパッケージが必要なノード（Kubernetes ノードなど）は common またはノードごとに <code>scc_regcode</code>（必要なら <code>scc_email</code> も）を設定します。cloud-init が初回起動時に <code>SUSEConnect</code> で登録します。</p>
 <p>SUSE 自身の製品は SUSE の公開イメージトラッカーから、それ以外は各ベンダーの AWS Systems Manager 公開パラメーターまたはそのベンダー自身の AWS アカウントから取得されます。別のアカウントが一致しうる名前検索は決して使いません。製品名でない値は、イメージ ID やイメージファイル名も含めて、そのまま渡されます。</p>
 <p>クラウドラボでは、ノードが互いの名前を解決できることも必要です。クラウドアカウントごとに 1 台の小さな DNS VM がラボのドメインを提供し、アカウントのネットワークはその中のすべてのインスタンスにそのサーバーを配布するよう構成されます。これにより、ゲスト内で何も設定せずに、ノードはホスト名で Kubernetes クラスターに参加できます。AWS では VPC の DHCP オプションセットがこれに当たります。VPC 全体に適用され、以降に起動したインスタンスは直ちに反映され、すでに稼働中のインスタンスは DHCP リースの更新時に取り込みます。</p>
 <h3 id="kubernetes-setup">Kubernetes のセットアップ</h3>

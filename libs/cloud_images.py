@@ -137,16 +137,21 @@ def aws_product_image(product: str, arch: str, run_aws) -> str:
 # The product names SUSE's own image tracker answers, which libs/suse_catalogue.py resolves rather than this module.
 # A version is optional and may be a service pack: "sles15.7" is SLES 15 SP7, "sles" is the newest SLES there is.
 SUSE_PRODUCTS = {
-    "sles": "the newest SUSE Linux Enterprise Server, any version",
-    "sles16": "the newest SUSE Linux Enterprise Server 16.x",
-    "sles15.7": "SUSE Linux Enterprise Server 15 SP7",
-    "slmicro": "the newest SUSE Linux Micro, any version",
-    "slmicro6.1": "SUSE Linux Micro 6.1",
-    "slmicro6.1-byos": "SUSE Linux Micro 6.1, bring your own subscription (unregistered: no repositories)",
-    "sles16-byos": "SUSE Linux Enterprise Server 16.x, bring your own subscription (unregistered: no repositories)",
+    # Bring-your-own-subscription (BYOS) is the default for SLES/SL Micro: no AWS Marketplace
+    # per-hour subscription charge on top of the instance price, but no repositories until the
+    # node is registered (scc_regcode, or an SMLM server through client_registration). "-payg"
+    # after any of these opts back into the pay-as-you-go image instead, auto-registered against
+    # AWS's own update infrastructure, no regcode needed.
+    "sles": "the newest SUSE Linux Enterprise Server, any version (BYOS)",
+    "sles16": "the newest SUSE Linux Enterprise Server 16.x (BYOS)",
+    "sles15.7": "SUSE Linux Enterprise Server 15 SP7 (BYOS)",
+    "sles16-payg": "the newest SUSE Linux Enterprise Server 16.x, pay-as-you-go",
+    "sles15.7-payg": "SUSE Linux Enterprise Server 15 SP7, pay-as-you-go",
+    "slmicro": "the newest SUSE Linux Micro, any version (BYOS)",
+    "slmicro6.1": "SUSE Linux Micro 6.1 (BYOS)",
+    "slmicro6.1-payg": "SUSE Linux Micro 6.1, pay-as-you-go",
     "leap": "the newest openSUSE Leap",
-    # "-byos" after any SLES or SL Micro name picks the same product's Bring-Your-Own-Subscription image, which has no
-    # repositories until it is registered (scc_regcode, or an SMLM server through client_registration).
+    # "-byos" is still accepted (now a no-op, since it's the default).
     "sles16-byos": "SUSE Linux Enterprise Server 16.x, bring your own subscription",
     "sles15.7-byos": "SUSE Linux Enterprise Server 15 SP7, bring your own subscription",
     "slmicro6.1-byos": "SUSE Linux Micro 6.1, bring your own subscription",

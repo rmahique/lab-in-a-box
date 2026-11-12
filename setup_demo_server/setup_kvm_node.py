@@ -163,19 +163,24 @@ def _automation_host_reachable(myip, timeout=3):
     ).returncode == 0
 
 
-def setup_shared_storage(share_from, copy_from):
+def setup_shared_storage(profile, share_from, copy_from):
     """
     Make /var/lib/libvirt/images (covers both ISO_LOC's sources/ subdir and
     VM_IMG_LOC) available on this host by sshfs-mounting it from another
     host, or by a one-time rsync copy. At most one of share_from/copy_from
     is set (mutually exclusive CLI flags) — a no-op if neither is given,
     which is the default and today's unchanged behavior (this host manages
-    its own local storage).
+    its own local storage). sshfs itself is installed here, on demand —
+    not part of every KVM host's baseline packages, since most never share
+    storage with another one.
     """
     path = "/var/lib/libvirt/images"
     Path(path).mkdir(parents=True, exist_ok=True)
 
     if share_from:
+        if not profile.install_packages([profile.sshfs_package]):
+            die("could not install {} — needed to mount {} from {}".format(
+                profile.sshfs_package, path, share_from))
         log("Mount {} storage from {} via sshfs".format(path, share_from))
         fstab_line = (
             "{}:{} {} fuse.sshfs  noauto,x-systemd.automount,_netdev,reconnect,"
@@ -402,7 +407,10 @@ def prepare_kvm_host(cfg, script_dir, share_storage_from=None, copy_storage_from
         profile.suse_url = scc.get("scc_url", "")
 
     log("Configure package repositories")
-    profile.register_repos()
+    failed_modules = profile.register_repos()
+    if failed_modules:
+        warn("registration module(s) not available yet (base product is registered; proceeding "
+             "without them): {}".format(", ".join(failed_modules)))
 
     log("Update all packages and install necessary ones")
     profile.refresh()
@@ -430,7 +438,7 @@ def prepare_kvm_host(cfg, script_dir, share_storage_from=None, copy_storage_from
                      bridge_name, after.ip, before.ip, after.mac))
 
     if share_storage_from or copy_storage_from:
-        setup_shared_storage(share_storage_from, copy_storage_from)
+        setup_shared_storage(profile, share_storage_from, copy_storage_from)
 
     if _automation_host_reachable(cfg.get("_myip", "")):
         configure_automation_dns(cfg)
@@ -612,10 +620,7 @@ def _existing_ssh_keys() -> List[Path]:
     return sorted(Path("~/.ssh").expanduser().glob("id_*.pub"))
 
 
-def _scc_registered() -> bool:
-    """True if this host already has SUSEConnect credentials on file (registered by some other
-    means, e.g. at image build time) — asking for a regcode would be redundant."""
-    return Path("/etc/zypp/credentials.d/SCCcredentials").is_file()
+_scc_registered = kvm_host_profiles.is_scc_registered
 
 
 def scc_credential() -> Dict[str, str]:

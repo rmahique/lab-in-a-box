@@ -850,19 +850,24 @@ def rooted(p, *a):
 
 (root / "etc").mkdir()
 (root / "etc" / "fstab").write_text("/dev/vda1 / xfs defaults 0 0\n")
+storage_profile = mock.Mock(sshfs_package="sshfs")
 with mock.patch.object(skn, "Path", side_effect=rooted), mock.patch.object(skn.subprocess, "run", return_value=done()) as run:
-    skn.setup_shared_storage("nuc1.lab", "")
-    skn.setup_shared_storage("nuc1.lab", "")
+    skn.setup_shared_storage(storage_profile, "nuc1.lab", "")
+    skn.setup_shared_storage(storage_profile, "nuc1.lab", "")
     fstab = (root / "etc" / "fstab").read_text()
     check("setup_shared_storage: adds the sshfs automount line once and mounts it",
           fstab.count("nuc1.lab:/var/lib/libvirt/images /var/lib/libvirt/images fuse.sshfs") == 1
           and ["mount", "/var/lib/libvirt/images"] in [c[0][0] for c in run.call_args_list])
+    check("setup_shared_storage: installs sshfs on demand, only when actually sharing storage",
+          storage_profile.install_packages.call_args_list == [mock.call(["sshfs"])] * 2)
     run.reset_mock()
-    skn.setup_shared_storage("", "nuc2.lab")
+    skn.setup_shared_storage(storage_profile, "", "nuc2.lab")
     check("setup_shared_storage: copies once with rsync",
           run.call_args[0][0] == ["rsync", "-a", "nuc2.lab:/var/lib/libvirt/images/", "/var/lib/libvirt/images/"])
+    check("setup_shared_storage: a plain rsync copy never installs sshfs — it isn't needed",
+          storage_profile.install_packages.call_count == 2)
     run.reset_mock()
-    skn.setup_shared_storage("", "")
+    skn.setup_shared_storage(storage_profile, "", "")
     check("setup_shared_storage: does nothing without a source", not run.called)
 
 profile = mock.Mock()
