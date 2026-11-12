@@ -47,6 +47,7 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
         sys.path.insert(0, _candidate)
 
 import harvester  # noqa: E402
+import migrations  # noqa: E402
 import primary  # noqa: E402
 import services  # noqa: E402
 from lab_creation import (  # noqa: E402
@@ -297,6 +298,7 @@ def main():
         sys.exit(1)
 
     cluster_cfg = primary.load_definition(sys.argv[1])
+    cluster_cfg = migrations.ensure_current_json_config(Path(sys.argv[1]), "config:harvester-cluster.json")
     defaults = primary.load_defaults()
     config = primary.load_config()
 

@@ -615,7 +615,9 @@ def _load_shell_vars_file(search_paths, name):
     for candidate in search_paths:
         p = Path(candidate)
         if p.exists():
-            return _parse_shell_vars(p.read_text())
+            import migrations  # lazy: migrations.py imports primary at its own top, so this stays local to avoid a cycle
+            lines = migrations.ensure_current_shell_config(p, "config:" + name)
+            return _parse_shell_vars("\n".join(lines))
     _die("Configuration file '{}' not found in: {}".format(name, ", ".join(search_paths)))
 
 

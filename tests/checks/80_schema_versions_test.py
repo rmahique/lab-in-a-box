@@ -12,6 +12,7 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
 
 import migrations  # noqa: E402
+import primary  # noqa: E402
 import schema_versions as sv  # noqa: E402
 
 failures = []
@@ -337,6 +338,87 @@ with mock.patch.object(sv, "SNAPSHOTS", tmp / "snapshots"), \
 check("main: an unknown command or no command exits 2, --help exits 0",
       run_cli("bogus")[0] == 2 and run_cli()[0] == 2 and run_cli("--help")[0] == 0
       and run_cli("record", "addon:x", "t", "--other", "m")[0] == 2)
+
+# ── ensure_current_shell_config()/ensure_current_json_config(): config files other than lab ──
+# ── definitions now auto-migrate on load too, the same "detect, migrate, warn, continue" pattern ─
+# ── as ensure_current() — see CLAUDE.md's "Migrations run themselves" rule.                    ──
+_mig_tmp = Path(tempfile.mkdtemp())
+
+
+def _test_shell_2_0(lines):
+    changes = []
+    for i, line in enumerate(lines):
+        if line.startswith("KEY="):
+            lines[i] = "NEWKEY=" + line.split("=", 1)[1]
+            changes.append("KEY renamed to NEWKEY")
+    return changes
+
+
+shell_path = _mig_tmp / "shell.cfg"
+shell_path.write_text("KEY=oldvalue\n")
+shell_record = {"config:_test_shell": [
+    {"version": "1.0", "breaking": False, "changes": "First."},
+    {"version": "2.0", "breaking": True, "changes": "KEY renamed to NEWKEY.", "migration": "_test_shell_2_0"},
+]}
+mig_warned = []
+with mock.patch.object(migrations, "load_record", return_value=shell_record), \
+     mock.patch.dict(migrations.MIGRATIONS, {"_test_shell_2_0": _test_shell_2_0}), \
+     mock.patch.object(migrations, "warn", side_effect=mig_warned.append):
+    shell_lines = migrations.ensure_current_shell_config(shell_path, "config:_test_shell")
+check("ensure_current_shell_config: migrates the lines in memory",
+      shell_lines == ["# Schema version: 2.0", "NEWKEY=oldvalue"])
+check("ensure_current_shell_config: the original file is never touched", shell_path.read_text() == "KEY=oldvalue\n")
+shell_sibling = Path(str(shell_path) + ".system_modified")
+check("ensure_current_shell_config: writes a sibling for review",
+      shell_sibling.is_file() and "NEWKEY=oldvalue" in shell_sibling.read_text())
+check("ensure_current_shell_config: warns once per change, then one naming the file to replace",
+      any("KEY renamed to NEWKEY" in w for w in mig_warned) and str(shell_path) in mig_warned[-1])
+
+shell_path2 = _mig_tmp / "shell2.cfg"
+shell_path2.write_text("KEY=value\n")
+with mock.patch.object(migrations, "load_record",
+                       return_value={"config:_test_shell2": [{"version": "1.0", "breaking": False,
+                                                              "changes": "First."}]}), \
+     mock.patch.object(migrations, "warn", side_effect=mig_warned.append):
+    before = len(mig_warned)
+    shell_lines2 = migrations.ensure_current_shell_config(shell_path2, "config:_test_shell2")
+check("ensure_current_shell_config: an already-current file warns nothing and writes no sibling",
+      shell_lines2 == ["KEY=value"] and len(mig_warned) == before
+      and not Path(str(shell_path2) + ".system_modified").exists())
+
+
+def _test_json_2_0(data):
+    if "old_field" in data:
+        data["new_field"] = data.pop("old_field")
+        return ["old_field renamed to new_field"]
+    return []
+
+
+json_path = _mig_tmp / "cluster.json"
+json_path.write_text(json.dumps({"old_field": "x"}))
+json_record = {"config:_test_json": [
+    {"version": "1.0", "breaking": False, "changes": "First."},
+    {"version": "2.0", "breaking": True, "changes": "old_field renamed to new_field.", "migration": "_test_json_2_0"},
+]}
+with mock.patch.object(migrations, "load_record", return_value=json_record), \
+     mock.patch.dict(migrations.MIGRATIONS, {"_test_json_2_0": _test_json_2_0}), \
+     mock.patch.object(migrations, "warn", side_effect=mig_warned.append):
+    json_data = migrations.ensure_current_json_config(json_path, "config:_test_json")
+check("ensure_current_json_config: migrates the dict in memory",
+      json_data == {"new_field": "x", "schema_version": "2.0"})
+check("ensure_current_json_config: the original file is never touched",
+      json.loads(json_path.read_text()) == {"old_field": "x"})
+json_sibling = Path(str(json_path) + ".system_modified.json")
+check("ensure_current_json_config: writes a sibling for review",
+      json_sibling.is_file() and json.loads(json_sibling.read_text()) == json_data)
+
+# ── primary.py's load_config()/load_defaults() apply ensure_current_shell_config() for free ──
+cfg_path = _mig_tmp / "lab_creation.cfg"
+cfg_path.write_text("SOME_KEY=some_value\n")
+with mock.patch.object(migrations, "load_record", return_value={}):
+    loaded_cfg = primary.load_config([str(cfg_path)])
+check("primary.load_config() auto-migrates through ensure_current_shell_config() "
+      "(here: already current, values unaffected)", loaded_cfg == {"SOME_KEY": "some_value"})
 
 if failures:
     print("{} check(s) failed".format(len(failures)))
