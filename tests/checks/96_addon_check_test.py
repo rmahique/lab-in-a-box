@@ -1,10 +1,12 @@
 #!/usr/bin/env python3.11
 # An add-on's --check: is what is deployed what the lab asked for? See 96_addon_check.sh.
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
 
@@ -117,6 +119,42 @@ check("...and that the capability matches what the add-on does",
       'caps.get("check")' in source)
 contract = (_REPO / "libs" / "apps.py").read_text()
 check("the add-on contract documents --check", "--check <json>" in contract)
+
+# ── install_longhorn's _check(): a pod can be phase=Running with a container failing its ────
+# ── readiness probe — the same gap NeuVector's own check was fixed for (see TODO's test-     ──
+# ── coverage entry). Phase alone must never be enough to call a pod healthy.                 ──
+_lh_loader = SourceFileLoader("install_longhorn", str(_REPO / "scripts" / "install_longhorn"))
+_lh_spec = importlib.util.spec_from_loader("install_longhorn", _lh_loader)
+lh = importlib.util.module_from_spec(_lh_spec)
+_lh_loader.exec_module(lh)
+
+_lh_helm_out = mock.Mock(stdout=json.dumps([{"status": "deployed", "chart": "longhorn-1.12.1"}]))
+
+
+def _lh_ssh(ready):
+    pods = {"items": [{"metadata": {"name": "longhorn-manager-abc"},
+                       "status": {"phase": "Running", "containerStatuses": [{"ready": ready}]}}]}
+    pods_out = mock.Mock(stdout=json.dumps(pods))
+
+    def _run(hostname, cmd, **kw):
+        return _lh_helm_out if cmd.startswith("helm") else pods_out
+    return _run
+
+
+lh_chk_ok = ac.Checker({"longhorn": {"lh_version": "1.12.1"}}, vm_name="n1.lab")
+with mock.patch.object(lh, "k8s") as lh_k8s, mock.patch.object(lh, "ssh_run", side_effect=_lh_ssh(ready=True)):
+    lh_k8s.first_server_node.return_value = ("n1.lab", None)
+    lh._check(lh_chk_ok)
+check("install_longhorn's check passes when every container is ready",
+      not lh_chk_ok.problems and any("running and ready" in n for n in lh_chk_ok.notes))
+
+lh_chk_bad = ac.Checker({"longhorn": {"lh_version": "1.12.1"}}, vm_name="n1.lab")
+with mock.patch.object(lh, "k8s") as lh_k8s2, mock.patch.object(lh, "ssh_run", side_effect=_lh_ssh(ready=False)):
+    lh_k8s2.first_server_node.return_value = ("n1.lab", None)
+    lh._check(lh_chk_bad)
+check("install_longhorn's check catches a pod that is Running but not ready "
+      "(the NeuVector-pattern bug, found by the 2026-11-12 coverage re-audit)",
+      any("running but not ready" in p for p in lh_chk_bad.problems))
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

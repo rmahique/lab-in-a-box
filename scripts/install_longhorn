@@ -155,14 +155,26 @@ def _check(chk):
                    versions.normalize(str(release[0].get("chart", "")).rsplit("-", 1)[-1]))
     else:
         chk.ok("lh_version is unset, so any deployed version matches ({})".format(release[0].get("chart")))
-    not_running = ssh_run(
-        hostname, "kubectl -n longhorn-system get pods --no-headers "
-                  "--field-selector=status.phase!=Running,status.phase!=Succeeded", capture=True).stdout.strip()
-    if not_running:
-        chk.fail("every Longhorn pod should be running, these are not:\n    "
-                 + "\n    ".join(not_running.splitlines()))
+    # A phase filter alone is not enough: a pod can be Phase=Running with a container stuck failing its
+    # readiness probe (the same gap NeuVector's own check was fixed for — see install_neuvector's _check()),
+    # so every Running pod's own containerStatuses are checked too.
+    pods = json.loads(ssh_run(
+        hostname, "kubectl -n longhorn-system get pods -o json", capture=True).stdout or '{"items": []}')["items"]
+    unhealthy = []
+    for pod in pods:
+        phase = (pod.get("status") or {}).get("phase")
+        if phase not in ("Running", "Succeeded"):
+            unhealthy.append("{} (phase {})".format(pod["metadata"]["name"], phase))
+            continue
+        if phase == "Running":
+            statuses = (pod.get("status") or {}).get("containerStatuses") or []
+            if not all(c.get("ready") for c in statuses):
+                unhealthy.append("{} (running but not ready)".format(pod["metadata"]["name"]))
+    if unhealthy:
+        chk.fail("every Longhorn pod should be running and ready, these are not:\n    "
+                 + "\n    ".join(unhealthy))
     else:
-        chk.ok("every pod in longhorn-system is running")
+        chk.ok("every pod in longhorn-system is running and ready")
 
 
 def main():
