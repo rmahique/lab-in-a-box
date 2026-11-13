@@ -1366,7 +1366,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>Instala rodeo-cli, una CLI al estilo Terraform que despliega labs KVM anidados (Harvester HCI, Rancher Prime, o ambos), lista para usarse en el nodo destino — los propios archivos de plan/secretos de rodeo-cli no son responsabilidad de este addon. Su Rodeo Builder (puerto 8678) responde al FQDN del nodo y a la dirección a la que se resuelve (su IP pública en un nodo cloud); cualquier otro nombre que usen los clientes va en <code>rodeo_cli_builder_allow</code></td>
+<td>Instala rodeo-cli, una CLI al estilo Terraform que despliega labs KVM anidados (Harvester HCI, Rancher Prime, o ambos), lista para usarse en el nodo destino — los propios archivos de plan/secretos de rodeo-cli no son responsabilidad de este addon. Su Rodeo Builder (puerto 8678) responde al FQDN del nodo y a la dirección a la que se resuelve (su IP pública en un nodo cloud); cualquier otro nombre que usen los clientes va en <code>rodeo_cli_builder_allow</code>. Las opciones del propio instalador son campos del addon: <code>rodeo_cli_ref</code>, <code>rodeo_cli_repo_url</code>, <code>rodeo_cli_dir</code>, <code>rodeo_cli_mode</code> (<code>kvm-host</code> o <code>control-plane</code>, que no necesita <code>/dev/kvm</code>), <code>rodeo_cli_builder</code> y <code>rodeo_cli_builder_host</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>

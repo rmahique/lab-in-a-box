@@ -54,19 +54,39 @@ died.clear()
 results.clear()
 results["test -e /dev/kvm"] = FakeResult(returncode=0)
 results["rodeo --version"] = FakeResult(returncode=0, stdout="rodeo-cli 0.7.0\n")
-rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh")
-check("setup_rodeo_cli: fetches and runs the install script on the target host",
-      any(h == "sol.mydemo.lab" and "curl" in c and "https://example.com/install.sh" in c and c.endswith(" bash")
-          for h, c, _ in calls))
+_cmd = "curl -fsSL https://example.com/install.sh | RODEO_BUILDER_ALLOW='' bash"
+rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh", _cmd)
+check("setup_rodeo_cli: runs the given installer command on the target host",
+      any(h == "sol.mydemo.lab" and c == _cmd for h, c, _ in calls))
 check("setup_rodeo_cli: checks for /dev/kvm", any("test -e /dev/kvm" in c for _, c, _ in calls))
 check("setup_rodeo_cli: confirms the install with rodeo --version",
       any("rodeo --version" in c for _, c, _ in calls))
 check("setup_rodeo_cli: no death on a clean install", died == [])
 
 calls.clear()
-rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh", "sol.mydemo.lab 3.1.2.3")
-check("setup_rodeo_cli: passes the builder's allowed names to the installer as RODEO_BUILDER_ALLOW",
-      any("| RODEO_BUILDER_ALLOW='sol.mydemo.lab 3.1.2.3' bash" in c for _, c, _ in calls))
+rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh", _cmd, needs_kvm=False)
+check("setup_rodeo_cli: a control-plane install does not look for /dev/kvm",
+      not any("test -e /dev/kvm" in c for _, c, _ in calls))
+
+# ── installer_command(): the add-on's fields as the installer's own options ──
+_url = "https://example.com/install.sh"
+check("installer_command: no fields set passes only the builder's allowed names",
+      rc.installer_command(_url, {}, "sol.mydemo.lab 3.1.2.3") ==
+      "curl -fsSL https://example.com/install.sh | RODEO_BUILDER_ALLOW='sol.mydemo.lab 3.1.2.3' bash")
+_full = rc.installer_command(_url, {
+    "rodeo_cli_ref": "v0.29.0", "rodeo_cli_repo_url": "https://git.example.com/rodeo-cli.git",
+    "rodeo_cli_mode": "control-plane", "rodeo_cli_builder": "false", "rodeo_cli_builder_host": "127.0.0.1",
+    "rodeo_cli_dir": "/srv/rodeo cli"}, "")
+check("installer_command: rodeo_cli_ref becomes RODEO_REF", " RODEO_REF=v0.29.0 " in _full)
+check("installer_command: rodeo_cli_repo_url becomes RODEO_REPO",
+      " RODEO_REPO=https://git.example.com/rodeo-cli.git " in _full)
+check("installer_command: rodeo_cli_mode becomes RODEO_MODE", " RODEO_MODE=control-plane " in _full)
+check("installer_command: rodeo_cli_builder_host becomes RODEO_BUILDER_HOST", " RODEO_BUILDER_HOST=127.0.0.1 " in _full)
+check("installer_command: rodeo_cli_builder false becomes RODEO_BUILDER=0", " RODEO_BUILDER=0 " in _full)
+check("installer_command: rodeo_cli_dir becomes a quoted --dir argument",
+      _full.endswith(" bash -s -- --dir '/srv/rodeo cli'"))
+check("installer_command: rodeo_cli_builder true leaves the builder on",
+      "RODEO_BUILDER=" not in rc.installer_command(_url, {"rodeo_cli_builder": "true"}, ""))
 
 # ── builder_allow(): the node's FQDN, its resolved address, and the extra field ──
 rc.socket.gethostbyname = lambda name: "3.1.2.3"
@@ -91,7 +111,7 @@ check("builder_allow: a name that does not resolve still allows the FQDN",
 calls.clear()
 died.clear()
 results["test -e /dev/kvm"] = FakeResult(returncode=1)
-rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh")
+rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh", _cmd)
 check("setup_rodeo_cli: missing /dev/kvm does not die (install still proceeds)", died == [])
 
 # The install script ran, but rodeo isn't actually usable afterwards: dies.
@@ -100,7 +120,7 @@ died.clear()
 results["test -e /dev/kvm"] = FakeResult(returncode=0)
 results["rodeo --version"] = FakeResult(returncode=1, stderr="rodeo: command not found")
 try:
-    rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh")
+    rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh", _cmd)
 except SystemExit:
     pass
 check("setup_rodeo_cli: dies if 'rodeo --version' fails after the install",
@@ -163,13 +183,21 @@ v = FakeValidator({"rodeo_cli": {"rodeo_cli_install_url": "https://example.com/i
 rc._validate(v)
 check("_validate: a valid https install URL has no error", v.errors == [])
 
+v = FakeValidator({"rodeo_cli": {"rodeo_cli_repo_url": "git@github.com:x/rodeo-cli.git"}})
+rc._validate(v)
+check("_validate: a non-http(s) repository URL is an error", v.errors != [])
+
+v = FakeValidator({"rodeo_cli": {"rodeo_cli_builder": "maybe"}})
+rc._validate(v)
+check("_validate: rodeo_cli_builder must be true or false", v.errors != [])
+
 
 # ── rodeo_cli_install_lab_in_a_box: the opt-in lab-in-a-box tie-in ──────────
 lic_calls = []
 reach_calls = []
 rc.require_ssh = lambda hostname: reach_calls.append(hostname)
 rc.install_lab_in_a_box = lambda hostname: lic_calls.append(hostname)
-rc.setup_rodeo_cli = lambda hostname, install_url, allow="": None
+rc.setup_rodeo_cli = lambda hostname, install_url, command, needs_kvm=True: None
 
 rc.lab_in_a_box_installed = lambda hostname: False
 definition_tiein = primary.LabDefinition({
@@ -229,16 +257,28 @@ definition = primary.LabDefinition({
 }, source_path="/tmp/fake.json", fmt="json")
 
 setup_calls = []
-rc.setup_rodeo_cli = lambda hostname, install_url, allow="": setup_calls.append((hostname, install_url))
+rc.setup_rodeo_cli = lambda hostname, install_url, command, needs_kvm=True: setup_calls.append(
+    (hostname, install_url, needs_kvm))
 sys.argv = ["install_rodeo_cli", "/tmp/fake.json"]
 primary.load_definition = lambda path: definition
 rc.main()
 check("main(): runs on every node listing rodeo_cli, not earth (which doesn't)",
-      {h for h, _ in setup_calls} == {"sol.mydemo.lab", "luna.mydemo.lab"})
+      {h for h, _, _ in setup_calls} == {"sol.mydemo.lab", "luna.mydemo.lab"})
 check("main(): the shared section with no override uses the default install URL",
-      dict(setup_calls)["sol.mydemo.lab"] == rc.DEFAULT_INSTALL_URL)
+      {h: u for h, u, _ in setup_calls}["sol.mydemo.lab"] == rc.DEFAULT_INSTALL_URL)
 check("main(): a per-node override wins over the default install URL",
-      dict(setup_calls)["luna.mydemo.lab"] == "https://mirror.lab/install.sh")
+      {h: u for h, u, _ in setup_calls}["luna.mydemo.lab"] == "https://mirror.lab/install.sh")
+
+setup_calls.clear()
+definition_cp = primary.LabDefinition({
+    "nodes": {"sol.mydemo.lab": {"addons": [{"rodeo_cli": {"rodeo_cli_mode": "control-plane"}}]},
+              "luna.mydemo.lab": {"addons": ["rodeo_cli"]}},
+    "rodeo_cli": {},
+}, source_path="/tmp/fake.json", fmt="json")
+primary.load_definition = lambda path: definition_cp
+rc.main()
+check("main(): only a control-plane node skips the /dev/kvm check",
+      {h: k for h, _, k in setup_calls} == {"sol.mydemo.lab": False, "luna.mydemo.lab": True})
 
 
 if failures:

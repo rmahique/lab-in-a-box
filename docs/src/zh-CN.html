@@ -1361,7 +1361,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>安装 rodeo-cli——一个 Terraform 风格的 CLI，用于部署嵌套的 KVM 实验环境（Harvester HCI、Rancher Prime 或两者），在目标节点上即装即用——rodeo-cli 自身的计划/密钥文件不在本插件的职责范围内。其 Rodeo Builder（端口 8678）响应节点的 FQDN 及其解析到的地址（云节点上为公网 IP）；客户端使用的其他名称请列在 <code>rodeo_cli_builder_allow</code> 中</td>
+<td>安装 rodeo-cli——一个 Terraform 风格的 CLI，用于部署嵌套的 KVM 实验环境（Harvester HCI、Rancher Prime 或两者），在目标节点上即装即用——rodeo-cli 自身的计划/密钥文件不在本插件的职责范围内。其 Rodeo Builder（端口 8678）响应节点的 FQDN 及其解析到的地址（云节点上为公网 IP）；客户端使用的其他名称请列在 <code>rodeo_cli_builder_allow</code> 中。安装程序自身的选项即插件字段：<code>rodeo_cli_ref</code>、<code>rodeo_cli_repo_url</code>、<code>rodeo_cli_dir</code>、<code>rodeo_cli_mode</code>（<code>kvm-host</code> 或无需 <code>/dev/kvm</code> 的 <code>control-plane</code>）、<code>rodeo_cli_builder</code> 和 <code>rodeo_cli_builder_host</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>
