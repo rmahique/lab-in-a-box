@@ -633,6 +633,10 @@ rancher:
 <td>أوامر شِل تنفّذها هذه الآلة الافتراضية بنفسها بصلاحية root: <code>pre_commands</code> بمجرد أن تصبح جاهزة وقبل أي عمل يتعلق بـ Kubernetes أو الإضافات، و<code>post_commands</code> بعد كل ذلك. ويمكن تعيينهما في <code>common</code> لكل الآلات؛ وقائمة العقدة نفسها تحل محلهما، و<code>[]</code> تستثني تلك العقدة</td>
 </tr>
 <tr>
+<td><code>ssh_authorized_keys</code></td>
+<td>مفاتيح SSH إضافية تُضاف إلى هذه الآلة الافتراضية بعد تشغيلها. كل مدخل هو سطر مفتاح عام، أو عنوان https يحوي مفاتيح (مثل <code>https://github.com/&lt;user&gt;.keys</code>)، أو مسار ملف على عقدة الأتمتة، كنص بسيط للمستخدم root أو بصيغة <code>{"key": ..., "user": "alice"}</code> لحساب آخر. يمكن ضبطه أيضاً في <code>common</code>؛ وتُضاف مدخلات العقدة إلى مدخلات common. المستخدم غير الموجود على الآلة أو مصدر المفاتيح الذي تتعذّر قراءته يُعدّ تحذيراً في ملخّص التشغيل</td>
+</tr>
+<tr>
 <td><code>extra_dsk</code></td>
 <td>أقراص إضافية تُرفق: <code>"/dev/sdb"</code>، أو <code>"/dev/sdb,bus=scsi"</code> لتغيير الناقل الافتراضي لقرص بعينه</td>
 </tr>
@@ -1366,7 +1370,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>يثبّت rodeo-cli، أداة سطر أوامر على طراز Terraform تنشر معامل KVM متداخلة (Harvester HCI وRancher Prime أو كلاهما)، جاهزة للاستخدام على العقدة الهدف — ملفات rodeo-cli الخاصة بالخطة/الأسرار ليست من مسؤولية هذه الإضافة. يستجيب Rodeo Builder الخاص به (المنفذ 8678) لاسم FQDN للعقدة وللعنوان الذي يُحلّ إليه (عنوان IP العام على عقدة سحابية)؛ أدرج أي اسم آخر يستخدمه العملاء في <code>rodeo_cli_builder_allow</code></td>
+<td>يثبّت rodeo-cli، أداة سطر أوامر على طراز Terraform تنشر معامل KVM متداخلة (Harvester HCI وRancher Prime أو كلاهما)، جاهزة للاستخدام على العقدة الهدف — ملفات rodeo-cli الخاصة بالخطة/الأسرار ليست من مسؤولية هذه الإضافة. يستجيب Rodeo Builder الخاص به (المنفذ 8678) لاسم FQDN للعقدة وللعنوان الذي يُحلّ إليه (عنوان IP العام على عقدة سحابية)؛ أدرج أي اسم آخر يستخدمه العملاء في <code>rodeo_cli_builder_allow</code>. خيارات المثبّت نفسه هي حقول في الإضافة: <code>rodeo_cli_ref</code> و<code>rodeo_cli_repo_url</code> و<code>rodeo_cli_dir</code> و<code>rodeo_cli_mode</code> (<code>kvm-host</code> أو <code>control-plane</code> الذي لا يحتاج إلى <code>/dev/kvm</code>) و<code>rodeo_cli_builder</code> و<code>rodeo_cli_builder_host</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>

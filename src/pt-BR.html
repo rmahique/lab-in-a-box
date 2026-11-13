@@ -633,6 +633,10 @@ rancher:
 <td>Comandos de shell que esta VM executa por si mesma, como root: <code>pre_commands</code> assim que ela está no ar e antes de qualquer trabalho de Kubernetes ou de add-ons, <code>post_commands</code> depois de tudo isso. Também podem ser definidos em <code>common</code> para todas as VMs; a lista própria de um nó a substitui, e <code>[]</code> exclui aquele nó</td>
 </tr>
 <tr>
+<td><code>ssh_authorized_keys</code></td>
+<td>Chaves SSH extras adicionadas a esta VM assim que ela estiver no ar. Cada entrada é uma linha de chave pública, uma URL https com chaves (como <code>https://github.com/&lt;user&gt;.keys</code>) ou um caminho de arquivo no nó de automação, como string simples para root ou como <code>{"key": ..., "user": "alice"}</code> para outra conta. Também pode ser definido em <code>common</code>; as entradas próprias de um nó somam-se às de common. Um usuário que não existe na VM, ou uma fonte de chaves que não pode ser lida, é um aviso no resumo da execução</td>
+</tr>
+<tr>
 <td><code>extra_dsk</code></td>
 <td>Discos adicionais a anexar: <code>"/dev/sdb"</code>, ou <code>"/dev/sdb,bus=scsi"</code> para mudar o barramento padrão de um disco</td>
 </tr>
@@ -1366,7 +1370,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>Instala o rodeo-cli, uma CLI no estilo Terraform que implanta labs KVM aninhados (Harvester HCI, Rancher Prime, ou ambos), pronta para uso no nó de destino — os próprios arquivos de plan/secrets do rodeo-cli não são responsabilidade deste addon. O Rodeo Builder dele (porta 8678) responde ao FQDN do nó e ao endereço para o qual ele resolve (o IP público em um nó de nuvem); qualquer outro nome usado pelos clientes vai em <code>rodeo_cli_builder_allow</code></td>
+<td>Instala o rodeo-cli, uma CLI no estilo Terraform que implanta labs KVM aninhados (Harvester HCI, Rancher Prime, ou ambos), pronta para uso no nó de destino — os próprios arquivos de plan/secrets do rodeo-cli não são responsabilidade deste addon. O Rodeo Builder dele (porta 8678) responde ao FQDN do nó e ao endereço para o qual ele resolve (o IP público em um nó de nuvem); qualquer outro nome usado pelos clientes vai em <code>rodeo_cli_builder_allow</code>. As opções do próprio instalador são campos do addon: <code>rodeo_cli_ref</code>, <code>rodeo_cli_repo_url</code>, <code>rodeo_cli_dir</code>, <code>rodeo_cli_mode</code> (<code>kvm-host</code> ou <code>control-plane</code>, que não precisa de <code>/dev/kvm</code>), <code>rodeo_cli_builder</code> e <code>rodeo_cli_builder_host</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>

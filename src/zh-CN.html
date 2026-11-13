@@ -633,6 +633,10 @@ rancher:
 <td>此 VM 以 root 身份自行运行的 shell 命令：<code>pre_commands</code> 在它启动并可连接之后、任何 Kubernetes 或插件工作之前运行，<code>post_commands</code> 在这些工作全部完成之后运行。也可以写在 <code>common</code> 中以适用于所有 VM；节点自己的列表会替换它，<code>[]</code> 则让该节点不运行任何命令</td>
 </tr>
 <tr>
+<td><code>ssh_authorized_keys</code></td>
+<td>VM 启动后为其添加的额外 SSH 密钥。每个条目是一行公钥、包含密钥的 https URL（例如 <code>https://github.com/&lt;user&gt;.keys</code>）或自动化节点上的文件路径；写成普通字符串则添加给 root，写成 <code>{"key": ..., "user": "alice"}</code> 则添加给其他账户。也可在 <code>common</code> 中设置；节点自身的条目会追加到 common 的条目之后。VM 上不存在的用户或无法读取的密钥来源，会作为警告列入运行摘要</td>
+</tr>
+<tr>
 <td><code>extra_dsk</code></td>
 <td>要挂载的额外磁盘：<code>"/dev/sdb"</code>，或用 <code>"/dev/sdb,bus=scsi"</code> 为单个磁盘覆盖默认总线</td>
 </tr>
@@ -1361,7 +1365,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>安装 rodeo-cli——一个 Terraform 风格的 CLI，用于部署嵌套的 KVM 实验环境（Harvester HCI、Rancher Prime 或两者），在目标节点上即装即用——rodeo-cli 自身的计划/密钥文件不在本插件的职责范围内。其 Rodeo Builder（端口 8678）响应节点的 FQDN 及其解析到的地址（云节点上为公网 IP）；客户端使用的其他名称请列在 <code>rodeo_cli_builder_allow</code> 中</td>
+<td>安装 rodeo-cli——一个 Terraform 风格的 CLI，用于部署嵌套的 KVM 实验环境（Harvester HCI、Rancher Prime 或两者），在目标节点上即装即用——rodeo-cli 自身的计划/密钥文件不在本插件的职责范围内。其 Rodeo Builder（端口 8678）响应节点的 FQDN 及其解析到的地址（云节点上为公网 IP）；客户端使用的其他名称请列在 <code>rodeo_cli_builder_allow</code> 中。安装程序自身的选项即插件字段：<code>rodeo_cli_ref</code>、<code>rodeo_cli_repo_url</code>、<code>rodeo_cli_dir</code>、<code>rodeo_cli_mode</code>（<code>kvm-host</code> 或无需 <code>/dev/kvm</code> 的 <code>control-plane</code>）、<code>rodeo_cli_builder</code> 和 <code>rodeo_cli_builder_host</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>
