@@ -1043,7 +1043,7 @@ def detect_os(hostname):
     os_ver_id = parts[1] if len(parts) > 1 else ""
     os_like = parts[2] if len(parts) > 2 else ""
     os_ver_major = os_ver_id.split(".")[0] if os_ver_id else ""
-    print("# Detected remote OS: id={} version={} like={}".format(os_id, os_ver_id, os_like))
+    print("# Detected remote OS on {}: id={} version={} like={}".format(hostname, os_id, os_ver_id, os_like))
     return {"id": os_id, "ver_id": os_ver_id, "like": os_like, "ver_major": os_ver_major}
 
 

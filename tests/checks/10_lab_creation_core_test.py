@@ -963,6 +963,14 @@ except SystemExit:
 check("require_ssh: returns when the host answers", _ok)
 lc.time.sleep = _real_sleep
 
+# detect_os(): its line names the host it read
+lc.subprocess.run = FakeRun(responses=[("os-release", FakeCompleted(stdout="sles|16.1|suse"))])
+_b = _io.StringIO()
+with _redirect_stdout(_b):
+    _info = lc.detect_os("dns1.mydemo.lab")
+check("detect_os: the printed line names the host", "Detected remote OS on dns1.mydemo.lab: id=sles" in _b.getvalue())
+check("detect_os: returns the parsed fields", _info["id"] == "sles" and _info["ver_major"] == "16")
+
 _child = _real_subprocess_run(
     [sys.executable, "-c", "import sys; sys.path.insert(0, {!r}); import lab_creation; "
                            "print(lab_creation.debug_enabled())".format(str(_REPO / "libs"))],
