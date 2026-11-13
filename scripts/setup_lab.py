@@ -62,7 +62,10 @@ Options:
             Without this flag (default) every VM is destroyed and recreated.
   --debug   Stream the full output of every command that is run. Without it
             (default) only lab-in-a-box's own messages are shown; a command's
-            output is still shown if it fails or emits a warning/error. Always
+            output is still shown if it fails or emits a warning/error. Also
+            drops ssh/scp's -q so their own connection errors are shown, and
+            exports LAB_DEBUG=1 so addon installers run by this command (or
+            run by hand with LAB_DEBUG=1 set) behave the same. Always
             on, regardless of this flag, when LAB_STATUS_JOB/LAB_STATUS_TOKEN
             are set in the environment (a run launched behind the webui's
             live status page) — see _debug_wanted().

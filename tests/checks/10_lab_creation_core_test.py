@@ -15,6 +15,8 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
 
 import lab_creation as lc  # noqa: E402
+import io as _io_early  # noqa: E402
+from contextlib import redirect_stderr as _redirect_stderr_early  # noqa: E402
 import primary  # noqa: E402
 import targets  # noqa: E402
 
@@ -316,6 +318,40 @@ definition6 = {"common": {}, "nodes": {"vm1": {}}}
 env = lc.load_vm_vars(definition6, "vm1")
 check("load_vm_vars: no mynet_reverse when myip is absent", "mynet_reverse" not in env)
 
+# mydomain left out: the domain the node names share, else this host's own; names in different domains are fatal.
+_nd = primary.node_name_domain
+check("node_name_domain: FQDN names sharing a domain give that domain",
+      _nd({"nodes": {"a.sko.lab": {}, "b.sko.lab": {}}}) == "sko.lab")
+check("node_name_domain: only the first label is the host name",
+      _nd({"nodes": {"a.east.sko.lab": {}}}) == "east.sko.lab")
+check("node_name_domain: short names give no domain", _nd({"nodes": {"a": {}, "b": {}}}) == "")
+check("node_name_domain: a node with its own mydomain is left out",
+      _nd({"nodes": {"a.sko.lab": {}, "b.other.lab": {"mydomain": "other.lab"}}}) == "sko.lab")
+for _label, _nodes in (("different domains", {"a.sko.lab": {}, "b.other.lab": {}}),
+                       ("an FQDN mixed with a short name", {"a.sko.lab": {}, "b": {}})):
+    try:
+        _nd({"nodes": _nodes})
+        _msg = ""
+    except ValueError as e:
+        _msg = str(e)
+    check("node_name_domain: {} raise, asking for mydomain".format(_label),
+          "cannot determine the default domain name" in _msg and "mydomain" in _msg)
+
+env = lc.load_vm_vars({"common": {}, "nodes": {"rodeo1.mydemosko.lab": {}}}, "rodeo1.mydemosko.lab")
+check("load_vm_vars: no mydomain takes the node names' shared domain, not this host's",
+      env["mydomain"] == "mydemosko.lab")
+env = lc.load_vm_vars({"common": {"mydomain": "set.lab"}, "nodes": {"r.mydemosko.lab": {}}}, "r.mydemosko.lab")
+check("load_vm_vars: an explicit mydomain wins over the node names", env["mydomain"] == "set.lab")
+env = lc.load_vm_vars({"common": {}, "nodes": {"vm1": {}}}, "vm1")
+check("load_vm_vars: short names still fall back to this host's domain", env["mydomain"] == "mydemo.lab")
+try:
+    with _redirect_stderr_early(_io_early.StringIO()):
+        lc.load_vm_vars({"common": {}, "nodes": {"a.sko.lab": {}, "b.other.lab": {}}}, "a.sko.lab")
+    _died = False
+except SystemExit:
+    _died = True
+check("load_vm_vars: node names in different domains with no mydomain are fatal", _died)
+
 
 # ── validate_lab_definition: preflight checks ────────────────────────────────
 # subprocess.run is mocked throughout (no virsh/ping/jq in the test
@@ -394,6 +430,20 @@ lc.run_libvirt_tool = lambda *a, **kw: _virsh_calls.append(a) or FakeCompleted(r
 check("validate_lab_definition: host_checks=False still validates the definition",
       lc.validate_lab_definition(good, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 check("validate_lab_definition: host_checks=False runs no libvirt call", _virsh_calls == [])
+_mixed = _lab_def({"common": dict(base_common),
+                   "nodes": {"a.sko.lab": {"myip": "192.168.1.52", "mymac": "aa:bb:cc:dd:ee:0b",
+                                           "config_method": "virt_customize"},
+                             "b.other.lab": {"myip": "192.168.1.53", "mymac": "aa:bb:cc:dd:ee:0c",
+                                             "config_method": "virt_customize"}}})
+_issues = []
+check("validate_lab_definition: node names in different domains with no mydomain fail",
+      lc.validate_lab_definition(_mixed, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_issues) is False)
+check("validate_lab_definition: and the error asks for mydomain",
+      any("cannot determine the default domain name" in line for line in _issues))
+_mixed_set = _lab_def({"common": dict(base_common, mydomain="mydemo.lab"), "nodes": dict(_mixed["nodes"])})
+check("validate_lab_definition: the same names pass once mydomain is set",
+      lc.validate_lab_definition(_mixed_set, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 bad_no_ip = _lab_def({"common": dict(base_common),
                       "nodes": {"vm1": {"mymac": "aa:bb:cc:dd:ee:09", "config_method": "virt_customize"}}})
 check("validate_lab_definition: host_checks=False reports a missing myip",
@@ -852,6 +902,72 @@ _b = _io.StringIO()
 with _redirect_stdout(_b):
     lc.ssh_run("host1", "some command", check=False)
 check("ssh_run: a failing command's output is shown even without debug", "it broke" in _b.getvalue())
+
+import subprocess  # noqa: E402
+from contextlib import redirect_stderr as _redirect_stderr  # noqa: E402
+
+_fq = FakeRun()
+lc.subprocess.run = _fq
+lc.ssh_run("host1", "true", check=False)
+lc.scp_to("host1", "/tmp/a", "/tmp/b")
+check("ssh_run/scp_to: LogLevel=ERROR, not -q, when debug is off",
+      all("-o LogLevel=ERROR" in c and " -q " not in c for c, _ in _fq.calls))
+check("set_debug(False): LAB_DEBUG is not exported", "LAB_DEBUG" not in os.environ)
+
+lc.set_debug(True)
+_fd = FakeRun()
+lc.subprocess.run = _fd
+with _redirect_stdout(_io.StringIO()):
+    lc.ssh_run("host1", "true", check=False)
+lc.scp_to("host1", "/tmp/a", "/tmp/b")
+check("ssh_run/scp_to: no quieting options when debug is on",
+      not any(" -q " in c or "LogLevel" in c for c, _ in _fd.calls))
+check("set_debug(True): LAB_DEBUG=1 is exported for child processes", os.environ.get("LAB_DEBUG") == "1")
+check("set_debug(True): _SSH_BASE itself is left unchanged", "LogLevel=ERROR" in lc._SSH_BASE)
+check("_ssh_opts: debug also drops a caller's own -q",
+      lc._ssh_opts(["ssh", "-q", "-o", "ConnectTimeout=5"]) == ["ssh", "-o", "ConnectTimeout=5"])
+lc.set_debug(False)
+
+# ssh_run's failure message: whole command, and ssh's own error on rc=255
+_long = "echo " + "x" * 200
+lc.subprocess.run = FakeRun(responses=[("", FakeCompleted(returncode=255, stdout="",
+                                                          stderr="Could not resolve hostname h9"))])
+try:
+    lc.ssh_run("h9", _long, capture=True)
+    _msg = ""
+except RuntimeError as e:
+    _msg = str(e)
+check("ssh_run: failure message carries the whole command", _long in _msg)
+check("ssh_run: rc=255 failure quotes ssh's own error", "Could not resolve hostname h9" in _msg)
+
+# require_ssh(): dies with ssh's reason after ssh_reachable()'s retries; returns quietly when reachable
+_real_sleep = lc.time.sleep
+lc.time.sleep = lambda s: None
+lc.subprocess.run = FakeRun(responses=[("", FakeCompleted(returncode=255, stdout="",
+                                                          stderr="Could not resolve hostname h9"))])
+_e = _io.StringIO()
+try:
+    with _redirect_stderr(_e):
+        lc.require_ssh("h9")
+    _died = False
+except SystemExit:
+    _died = True
+check("require_ssh: dies when the host never answers", _died)
+check("require_ssh: names ssh's own error", "Could not resolve hostname h9" in _e.getvalue())
+lc.subprocess.run = FakeRun()
+try:
+    lc.require_ssh("h1")
+    _ok = True
+except SystemExit:
+    _ok = False
+check("require_ssh: returns when the host answers", _ok)
+lc.time.sleep = _real_sleep
+
+_child = _real_subprocess_run(
+    [sys.executable, "-c", "import sys; sys.path.insert(0, {!r}); import lab_creation; "
+                           "print(lab_creation.debug_enabled())".format(str(_REPO / "libs"))],
+    env=dict(os.environ, LAB_DEBUG="1"), stdout=subprocess.PIPE, universal_newlines=True)
+check("LAB_DEBUG=1 in the environment turns debug on at import", _child.stdout.strip() == "True")
 
 
 # ── prepare_cloud_init(): network_renderer defaulting/override ──────────────

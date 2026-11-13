@@ -142,6 +142,8 @@ check("_validate: a valid https install URL has no error", v.errors == [])
 
 # ── rodeo_cli_install_lab_in_a_box: the opt-in lab-in-a-box tie-in ──────────
 lic_calls = []
+reach_calls = []
+rc.require_ssh = lambda hostname: reach_calls.append(hostname)
 rc.install_lab_in_a_box = lambda hostname: lic_calls.append(hostname)
 rc.setup_rodeo_cli = lambda hostname, install_url: None
 
@@ -155,6 +157,26 @@ sys.argv = ["install_rodeo_cli", "/tmp/fake.json"]
 rc.main()
 check("main(): rodeo_cli_install_lab_in_a_box=true installs lab-in-a-box first when it's missing",
       lic_calls == ["sol.mydemo.lab"])
+check("main(): checks the node answers SSH before anything else", reach_calls == ["sol.mydemo.lab"])
+
+# An unreachable node stops the addon before the lab-in-a-box probe or install runs.
+lic_calls.clear()
+probed = []
+rc.lab_in_a_box_installed = lambda hostname: probed.append(hostname) or False
+
+
+def _unreachable(hostname):
+    raise SystemExit(1)
+
+
+rc.require_ssh = _unreachable
+try:
+    rc.main()
+except SystemExit:
+    pass
+check("main(): an unreachable node never reaches the lab-in-a-box probe or install",
+      probed == [] and lic_calls == [])
+rc.require_ssh = lambda hostname: reach_calls.append(hostname)
 
 lic_calls.clear()
 rc.lab_in_a_box_installed = lambda hostname: True

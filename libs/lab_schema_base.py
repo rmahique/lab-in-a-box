@@ -46,7 +46,7 @@ def base_lab_schema():
                     {"name": "mygw", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "Default gateway IP (default: auto-detected)"},
                     {"name": "mydns", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "DNS server IP (default: auto-detected)"},
                     {"name": "mynet_reverse", "required": False, "type": "string", "description": "Reverse DNS zone prefix e.g. 88.168.192 (default: derived from first node IP)"},
-                    {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: derived from automation VM hostname)"},
+                    {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: the domain every node name shares, e.g. mydemo.lab for node1.mydemo.lab; the automation node's own domain when the node names are short. Required when the node names use different domains)"},
                     {"name": "VM_BOOT", "required": False, "type": "string", "default": "uefi", "enum": ["uefi", "firmware=bios", "bios", "uefi=off", "hd"], "description": "virt-install boot mode"},
                     {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Disk bus type for the primary disk"},
                     {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "NIC device model"},

@@ -37,10 +37,14 @@ One entry per VM, keyed by its FQDN:
 ### `common`
 
 Shared defaults applied to every node unless overridden per-node: `mymask`, `mygw`,
-`mydns`, `mynet_reverse`, `ISO_IMAGE`, `VM_MEM`, `VM_DSK`, `VM_CPU`, `VM_BOOT`
+`mydns`, `mydomain`, `mynet_reverse`, `ISO_IMAGE`, `VM_MEM`, `VM_DSK`, `VM_CPU`, `VM_BOOT`
 (`uefi`/`bios`/...), `VM_DSK_BUS`, `VM_NET_MODEL`. Read `libs/lab_creation.py`'s
 `load_vm_vars` for the authoritative full list and current defaults — this file only
 covers the fields you'll touch routinely.
+
+`mydomain` left out: the domain every node name shares is used (`node1.mydemo.lab` gives
+`mydemo.lab`), or the automation node's own domain when the names are short. Node names in
+different domains (or FQDNs mixed with short names) are an error until `mydomain` is set.
 
 ### `kclusters` (preferred) vs. `cluster` (old format)
 

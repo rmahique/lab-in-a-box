@@ -161,7 +161,12 @@ def allocate(vm_name, definition, used=(), mydomain="", probe=True, zone_dir=NAM
     if network is None:
         return None
 
-    mydomain = mydomain or str(common.get("mydomain") or "")
+    if not mydomain:
+        from primary import node_name_domain
+        try:
+            mydomain = str(common.get("mydomain") or "") or node_name_domain(definition)
+        except ValueError:
+            mydomain = ""
 
     # This node's own record, if the lab DNS already has one, IS its address: a second run of a lab that never wrote
     # the address down must reach the same answer, and without this its own record would be read as a conflict and

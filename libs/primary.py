@@ -126,6 +126,23 @@ def try_load_definition(path):
     return LabDefinition(data, path, "yaml"), None
 
 
+def node_name_domain(definition) -> str:
+    """
+    The domain the lab's node names share, used as mydomain by a lab that sets none: the part of each name after its
+    first dot. Nodes that set their own mydomain are left out. Returns "" when no remaining name is an FQDN, so the
+    caller falls back to the automation node's own domain. Raises ValueError when the names do not all share one
+    domain, a mix of FQDNs and short names included.
+    """
+    names = [n for n, cfg in (definition.get("nodes") or {}).items() if not (cfg or {}).get("mydomain")]
+    domains = {n.split(".", 1)[1] if "." in n else "" for n in names}
+    if not domains - {""}:
+        return ""
+    if len(domains) == 1:
+        return domains.pop()
+    raise ValueError("cannot determine the default domain name: the node names use {}; please specify it with "
+                     "mydomain".format(", ".join(sorted(d or "short names" for d in domains))))
+
+
 def save_definition(definition):
     """
     Persist a change made to an in-memory `definition` (a LabDefinition, or

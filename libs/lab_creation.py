@@ -91,7 +91,10 @@ def die(msg):
     raise SystemExit(1)
 
 
-_DEBUG = False
+# LAB_DEBUG=1 in the environment turns debug on for this process. set_debug() keeps it in sync, so every child
+# process (addon installers, setup_vm.py) a debug run starts inherits the setting.
+_DEBUG_ENV = "LAB_DEBUG"
+_DEBUG = os.environ.get(_DEBUG_ENV) == "1"
 
 _NOISY_RE = re.compile(
     r"(?i)\b(warn|warning|error|errno|fail|failed|denied|refused|"
@@ -102,9 +105,31 @@ def set_debug(on):
     """Turn debug output on/off (default off). When OFF, ssh_run() runs remote
     commands quietly and only prints their output if the command fails or the
     output looks like it contains a warning/error. When ON, every remote command
-    streams its output live."""
+    streams its output live and ssh/scp run without -q, so their own connection
+    errors are shown. Exports LAB_DEBUG to this process's environment so child
+    processes inherit the setting."""
     global _DEBUG
     _DEBUG = bool(on)
+    if _DEBUG:
+        os.environ[_DEBUG_ENV] = "1"
+    else:
+        os.environ.pop(_DEBUG_ENV, None)
+
+
+def _ssh_opts(base):
+    """`base` (an ssh/scp argv prefix) without its quieting options (-q, -o LogLevel=ERROR) when debug is on,
+    unchanged otherwise."""
+    if not _DEBUG:
+        return list(base)
+    out = []
+    for a in base:
+        if a == "-q":
+            continue
+        if a == "LogLevel=ERROR" and out and out[-1] == "-o":
+            out.pop()
+            continue
+        out.append(a)
+    return out
 
 
 def debug_enabled():
@@ -359,6 +384,13 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     for req in ("VM_MEM", "VM_DSK", "VM_CPU"):
         if _empty(_jq_or(common.get(req))):
             err("common.{} is required".format(req))
+
+    if _empty(_jq_or(common.get("mydomain"))):
+        from primary import node_name_domain
+        try:
+            node_name_domain(definition)
+        except ValueError as e:
+            err(str(e))
 
     from backends import BACKENDS, CLOUD_BACKEND_NAMES
     from primary import try_load_cloud_account
@@ -894,7 +926,9 @@ def _generate_unused_mac(used_macs, vm_name=""):
 # default, around two minutes, and a step that touches several hosts in a loop, such as writing a DNS record
 # to every master, stalls for that long per host per record. It bounds reaching the host, not the command,
 # so a long-running remote command is unaffected. Same value as the preflight's own probes.
-_SSH_BASE = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-q"]
+# LogLevel=ERROR rather than -q: it hides host-key notices and login banners but keeps ssh's own errors
+# ("Could not resolve hostname", "Permission denied"), which -q would also hide. Debug drops it (_ssh_opts()).
+_SSH_BASE = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR"]
 
 
 def node_commands(definition: dict, vm_name: str, phase: str) -> list:
@@ -959,7 +993,7 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="roo
     Returns:
         subprocess.CompletedProcess
     """
-    args = _SSH_BASE + ["{}@{}".format(user, hostname), cmd]
+    args = _ssh_opts(_SSH_BASE) + ["{}@{}".format(user, hostname), cmd]
 
     # Quiet-by-default: when the caller isn't explicitly capturing and debug is
     # off, capture the output internally and only print it if the command fails
@@ -978,11 +1012,13 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="roo
         if out and (result.returncode != 0 or _looks_noisy(out)):
             print(out)
     if check and result.returncode != 0:
-        raise RuntimeError(
-            "SSH command failed (rc={}) on {}:\n  {}".format(
-                result.returncode, hostname, cmd[:120]
-            )
-        )
+        msg = "SSH command failed (rc={}) on {}:\n  {}".format(result.returncode, hostname, cmd)
+        if result.returncode == SSH_NO_CONNECTION:
+            msg += "\n  rc=255: ssh could not connect (name resolution, network, authentication or host key), " \
+                   "or the remote command itself exited 255"
+            if capture and (result.stderr or "").strip():
+                msg += "\n  ssh: {}".format(result.stderr.strip())
+        raise RuntimeError(msg)
     return result
 
 
@@ -1114,8 +1150,9 @@ def scp_to(hostname, local_path, remote_path, user="root"):
     returncode (no `check` param here — every current caller wants to
     handle a transfer failure with its own message, not a generic one).
     """
-    args = ["scp", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-q",
-            local_path, "{}@{}:{}".format(user, hostname, remote_path)]
+    args = _ssh_opts(["scp", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5",
+                      "-o", "LogLevel=ERROR"]) + [
+        local_path, "{}@{}:{}".format(user, hostname, remote_path)]
     return subprocess.run(args, capture_output=True, text=True)
 
 
@@ -1480,7 +1517,9 @@ def load_vm_vars(definition, vm_name, config=None):
     Load variables for a specific VM (mirrors load_vm_vars in bash).
 
     Merges 'common' keys with per-node keys, resolves kcluster → clu_name,
-    and auto-detects mydns, mygw, mydomain, mynet_reverse when absent.
+    and auto-detects mydns, mygw, mydomain, mynet_reverse when absent. An absent mydomain is the domain
+    the node names share (primary.node_name_domain()), else this host's own; names that do not share one
+    are fatal.
 
     Args:
         definition : Loaded lab definition dict.
@@ -1505,7 +1544,11 @@ def load_vm_vars(definition, vm_name, config=None):
     if not vars.get("mygw"):
         vars["mygw"] = _detect_gateway()
     if not vars.get("mydomain"):
-        vars["mydomain"] = _detect_domain()
+        from primary import node_name_domain
+        try:
+            vars["mydomain"] = node_name_domain(definition) or _detect_domain()
+        except ValueError as e:
+            die(str(e))
     if not vars.get("mynet_reverse") and vars.get("myip"):
         vars["mynet_reverse"] = _reverse_ip(vars["myip"])
     if not vars.get("mymask"):
@@ -1918,6 +1961,21 @@ def ssh_reachable(hostname, attempts=3, delay=2, user="root", probe=None):
         if attempt + 1 < max(1, attempts):
             time.sleep(delay)
     return False
+
+
+def require_ssh(hostname, user="root"):
+    """die() unless `hostname` answers SSH as `user` (ssh_reachable()'s retries), quoting ssh's own error."""
+    last = []
+
+    def probe(host):
+        result = ssh_run(host, "true", check=False, capture=True, user=user)
+        last[:] = [result]
+        return result
+
+    if ssh_reachable(hostname, user=user, probe=probe):
+        return
+    reason = ((last[0].stderr or last[0].stdout or "").strip() if last else "")
+    die("cannot reach '{}' over SSH as {}{}".format(hostname, user, ": " + reason if reason else ""))
 
 
 def clean_ssh_keys(vm_name, myip):
