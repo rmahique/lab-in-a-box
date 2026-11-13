@@ -1273,7 +1273,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>Installiert rodeo-cli, eine Terraform-artige CLI, die verschachtelte KVM-Labs bereitstellt (Harvester HCI, Rancher Prime oder beides), einsatzbereit auf dem Zielknoten — die eigenen Plan-/Secrets-Dateien von rodeo-cli sind nicht Aufgabe dieses Add-ons</td>
+<td>Installiert rodeo-cli, eine Terraform-artige CLI, die verschachtelte KVM-Labs bereitstellt (Harvester HCI, Rancher Prime oder beides), einsatzbereit auf dem Zielknoten — die eigenen Plan-/Secrets-Dateien von rodeo-cli sind nicht Aufgabe dieses Add-ons. Sein Rodeo Builder (Port 8678) antwortet auf den FQDN des Knotens und auf die Adresse, zu der er aufgelöst wird (auf einem Cloud-Knoten seine öffentliche IP); weitere Namen, die Clients verwenden, gehören in <code>rodeo_cli_builder_allow</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>
