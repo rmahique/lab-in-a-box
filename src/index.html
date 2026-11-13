@@ -208,7 +208,15 @@
 </tr>
 <tr>
 <td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1, bring your own subscription. <code>-byos</code> works on any <code>sles</code> or <code>slmicro</code> name: no AWS Marketplace subscription is needed, and the node is registered after its first boot with <code>SUSE_regcode</code> from <code>lab_creation.cfg</code>, without which it has no package repositories</td>
+<td>SUSE Linux Micro 6.1, explicitly BYOS (same as the default; <code>-byos</code> works on any <code>sles</code> or <code>slmicro</code> name and is kept for backward compatibility). Requires registration with <code>scc_regcode</code> or through <code>client_registration</code></td>
+</tr>
+<tr>
+<td><code>sles16-payg</code></td>
+<td>SUSE Linux Enterprise Server 16.x, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
+</tr>
+<tr>
+<td><code>slmicro6.1-payg</code></td>
+<td>SUSE Linux Micro 6.1, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
 </tr>
 <tr>
 <td><code>leap</code></td>
@@ -221,10 +229,6 @@
 <tr>
 <td><code>sles15.7-byos</code></td>
 <td>SUSE Linux Enterprise Server 15 SP7, bring your own subscription</td>
-</tr>
-<tr>
-<td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1, bring your own subscription</td>
 </tr>
 <tr>
 <td><code>ubuntu24.04</code></td>
@@ -260,7 +264,7 @@
 </tr>
 </tbody>
 </table>
-<p>A SUSE product name followed by <code>-byos</code> picks its bring-your-own-subscription image instead of the pay-as-you-go one. That image has no repositories until it is registered: a node registered to an SMLM server through <code>client_registration</code> gets its packages from there, and a node that needs packages before that, such as a Kubernetes node, sets <code>scc_regcode</code> (and optionally <code>scc_email</code>), in common or per node, so cloud-init registers it with <code>SUSEConnect</code> at first boot.</p>
+<p>SUSE product names (<code>sles</code>, <code>sles16</code>, <code>slmicro</code>, etc.) resolve to their BYOS (bring-your-own-subscription) image by default. Append <code>-payg</code> to pick the pay-as-you-go image instead — it auto-registers against AWS's own update infrastructure at first boot with no regcode needed, but carries a per-hour AWS subscription charge. Appending <code>-byos</code> explicitly still works and selects the same image as the bare name. A BYOS image has no repositories until it is registered: a node registered to an SMLM server through <code>client_registration</code> gets its packages from there, and a node that needs packages before that, such as a Kubernetes node, sets <code>scc_regcode</code> (and optionally <code>scc_email</code>), in common or per node, so cloud-init registers it with <code>SUSEConnect</code> at first boot.</p>
 <p>SUSE's own products come from SUSE's public image tracker, and the rest from each vendor's AWS Systems Manager public parameter or its own AWS account, never from a name search that another account could match. A value that is not a product name, an image ID or an image file name included, is passed through untouched.</p>
 <p>A cloud lab also needs its nodes to resolve each other. One small DNS VM per cloud account serves the lab domain, and the account's network is configured to hand that server to every instance in it, so a node joins its Kubernetes cluster by hostname with nothing configured inside the guest. On AWS that is a VPC DHCP option set: it applies to the whole VPC, an instance launched afterwards has it immediately, and one already running picks it up when its DHCP lease renews.</p>
 <h3 id="kubernetes-setup">Kubernetes setup</h3>

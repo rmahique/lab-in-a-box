@@ -208,7 +208,15 @@
 </tr>
 <tr>
 <td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1 mit eigenem Abonnement (BYOS). <code>-byos</code> lässt sich an jeden <code>sles</code>- oder <code>slmicro</code>-Namen anhängen: Es ist kein AWS-Marketplace-Abonnement nötig, und der Knoten wird nach dem ersten Start mit <code>SUSE_regcode</code> aus <code>lab_creation.cfg</code> registriert, ohne den er keine Paket-Repositorys hat</td>
+<td>SUSE Linux Micro 6.1, explizit BYOS (entspricht dem Standard; <code>-byos</code> lässt sich an jeden <code>sles</code>- oder <code>slmicro</code>-Namen anhängen und wird aus Rückwärtskompatibilität beibehalten). Erfordert die Registrierung mit <code>scc_regcode</code> oder über <code>client_registration</code></td>
+</tr>
+<tr>
+<td><code>sles16-payg</code></td>
+<td>SUSE Linux Enterprise Server 16.x, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
+</tr>
+<tr>
+<td><code>slmicro6.1-payg</code></td>
+<td>SUSE Linux Micro 6.1, pay-as-you-go. Auto-registers via AWS infrastructure at first boot; no regcode needed. Carries a per-hour AWS subscription charge</td>
 </tr>
 <tr>
 <td><code>leap</code></td>
@@ -221,10 +229,6 @@
 <tr>
 <td><code>sles15.7-byos</code></td>
 <td>SUSE Linux Enterprise Server 15 SP7, mit eigener Subscription (BYOS)</td>
-</tr>
-<tr>
-<td><code>slmicro6.1-byos</code></td>
-<td>SUSE Linux Micro 6.1, mit eigener Subscription (BYOS)</td>
 </tr>
 <tr>
 <td><code>ubuntu24.04</code></td>
@@ -260,7 +264,7 @@
 </tr>
 </tbody>
 </table>
-<p>Ein SUSE-Produktname mit angehängtem <code>-byos</code> wählt das Image mit eigener Subscription statt des Pay-as-you-go-Images. Dieses Image hat keine Repositories, bis es registriert ist: Ein Knoten, der über <code>client_registration</code> bei einem SMLM-Server registriert wird, erhält seine Pakete von dort, und ein Knoten, der vorher Pakete braucht, etwa ein Kubernetes-Knoten, setzt <code>scc_regcode</code> (und optional <code>scc_email</code>) in common oder pro Knoten, damit cloud-init ihn beim ersten Start mit <code>SUSEConnect</code> registriert.</p>
+<p>SUSE-Produktnamen (<code>sles</code>, <code>sles16</code>, <code>slmicro</code> usw.) lösen standardmäßig das BYOS-Image (Bring Your Own Subscription) auf. Hängen Sie <code>-payg</code> an, um stattdessen das Pay-as-you-go-Image zu verwenden — es registriert sich beim ersten Start automatisch bei der AWS-eigenen Update-Infrastruktur, ohne dass ein Regcode erforderlich ist, verursacht jedoch einen stündlichen AWS-Abonnementbeitrag. Das explizite Anhängen von <code>-byos</code> funktioniert weiterhin und wählt dasselbe Image wie der Basisname. Ein BYOS-Image hat keine Repositorys, bis es registriert ist: Ein Knoten, der über <code>client_registration</code> bei einem SMLM-Server registriert wird, erhält seine Pakete von dort, und ein Knoten, der vorher Pakete benötigt, etwa ein Kubernetes-Knoten, setzt <code>scc_regcode</code> (und optional <code>scc_email</code>) in common oder pro Knoten, damit cloud-init ihn beim ersten Start mit <code>SUSEConnect</code> registriert.</p>
 <p>SUSEs eigene Produkte kommen aus SUSEs öffentlichem Image-Tracker, die übrigen aus dem öffentlichen AWS-Systems-Manager-Parameter des jeweiligen Herstellers oder aus seinem eigenen AWS-Konto, niemals aus einer Namenssuche, die ein anderes Konto treffen könnte. Ein Wert, der kein Produktname ist, einschließlich einer Image-ID oder eines Image-Dateinamens, wird unverändert durchgereicht.</p>
 <p>Ein Cloud-Lab braucht außerdem, dass seine Knoten einander auflösen. Eine kleine DNS-VM pro Cloud-Konto bedient die Lab-Domain, und das Netzwerk des Kontos wird so konfiguriert, dass es diesen Server an jede Instanz darin ausgibt. So tritt ein Knoten seinem Kubernetes-Cluster über den Hostnamen bei, ohne dass im Gast etwas konfiguriert wird. Auf AWS ist das ein VPC-DHCP-Optionssatz: er gilt für die ganze VPC, eine danach gestartete Instanz hat ihn sofort, und eine bereits laufende übernimmt ihn bei der Erneuerung ihres DHCP-Lease.</p>
 <h3 id="kubernetes-setup">Kubernetes-Einrichtung</h3>
