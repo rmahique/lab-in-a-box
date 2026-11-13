@@ -56,12 +56,36 @@ results["test -e /dev/kvm"] = FakeResult(returncode=0)
 results["rodeo --version"] = FakeResult(returncode=0, stdout="rodeo-cli 0.7.0\n")
 rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh")
 check("setup_rodeo_cli: fetches and runs the install script on the target host",
-      any(h == "sol.mydemo.lab" and "curl" in c and "https://example.com/install.sh" in c and "| bash" in c
+      any(h == "sol.mydemo.lab" and "curl" in c and "https://example.com/install.sh" in c and c.endswith(" bash")
           for h, c, _ in calls))
 check("setup_rodeo_cli: checks for /dev/kvm", any("test -e /dev/kvm" in c for _, c, _ in calls))
 check("setup_rodeo_cli: confirms the install with rodeo --version",
       any("rodeo --version" in c for _, c, _ in calls))
 check("setup_rodeo_cli: no death on a clean install", died == [])
+
+calls.clear()
+rc.setup_rodeo_cli("sol.mydemo.lab", "https://example.com/install.sh", "sol.mydemo.lab 3.1.2.3")
+check("setup_rodeo_cli: passes the builder's allowed names to the installer as RODEO_BUILDER_ALLOW",
+      any("| RODEO_BUILDER_ALLOW='sol.mydemo.lab 3.1.2.3' bash" in c for _, c, _ in calls))
+
+# ── builder_allow(): the node's FQDN, its resolved address, and the extra field ──
+rc.socket.gethostbyname = lambda name: "3.1.2.3"
+check("builder_allow: the FQDN and the address it resolves to, with no extra field",
+      rc.builder_allow("sol.mydemo.lab", None) == "sol.mydemo.lab 3.1.2.3")
+check("builder_allow: extra names, space- or comma-separated, duplicates dropped",
+      rc.builder_allow("sol.mydemo.lab", "alias.lab, 3.1.2.3 other.lab") ==
+      "sol.mydemo.lab 3.1.2.3 alias.lab other.lab")
+check("builder_allow: a list of extra names works too",
+      rc.builder_allow("sol.mydemo.lab", ["alias.lab"]) == "sol.mydemo.lab 3.1.2.3 alias.lab")
+
+
+def _no_dns(name):
+    raise OSError("not found")
+
+
+rc.socket.gethostbyname = _no_dns
+check("builder_allow: a name that does not resolve still allows the FQDN",
+      rc.builder_allow("sol.mydemo.lab", "") == "sol.mydemo.lab")
 
 # Missing /dev/kvm: a warning, not a failure — install still completes.
 calls.clear()
@@ -145,7 +169,7 @@ lic_calls = []
 reach_calls = []
 rc.require_ssh = lambda hostname: reach_calls.append(hostname)
 rc.install_lab_in_a_box = lambda hostname: lic_calls.append(hostname)
-rc.setup_rodeo_cli = lambda hostname, install_url: None
+rc.setup_rodeo_cli = lambda hostname, install_url, allow="": None
 
 rc.lab_in_a_box_installed = lambda hostname: False
 definition_tiein = primary.LabDefinition({
@@ -205,7 +229,7 @@ definition = primary.LabDefinition({
 }, source_path="/tmp/fake.json", fmt="json")
 
 setup_calls = []
-rc.setup_rodeo_cli = lambda hostname, install_url: setup_calls.append((hostname, install_url))
+rc.setup_rodeo_cli = lambda hostname, install_url, allow="": setup_calls.append((hostname, install_url))
 sys.argv = ["install_rodeo_cli", "/tmp/fake.json"]
 primary.load_definition = lambda path: definition
 rc.main()

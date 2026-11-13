@@ -1364,7 +1364,7 @@ install_longhorn --schema yaml      # ...or YAML
 </tr>
 <tr>
 <td><a href="https://github.com/avaleror/rodeo-cli"><code>rodeo_cli</code></a></td>
-<td>rodeo-cli（ネストされた KVM ラボ、Harvester HCI や Rancher Prime、またはその両方をデプロイする Terraform 風 CLI）をターゲットノードにインストールし、すぐ使える状態にする — rodeo-cli 自身の plan/secrets ファイルはこのアドオンの関心事ではない</td>
+<td>rodeo-cli（ネストされた KVM ラボ、Harvester HCI や Rancher Prime、またはその両方をデプロイする Terraform 風 CLI）をターゲットノードにインストールし、すぐ使える状態にする — rodeo-cli 自身の plan/secrets ファイルはこのアドオンの関心事ではない。Rodeo Builder（ポート 8678）はノードの FQDN と、その名前が解決されるアドレス（クラウドノードではパブリック IP）に応答する。クライアントが使うそれ以外の名前は <code>rodeo_cli_builder_allow</code> に列挙する</td>
 </tr>
 <tr>
 <td><a href="https://github.com/SUSE-Technical-Marketing/lab-in-a-box"><code>lab_in_a_box</code></a></td>

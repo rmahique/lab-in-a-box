@@ -260,7 +260,8 @@
   ],
   "addon:rodeo_cli": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
-   {"version": "1.1", "breaking": false, "changes": "rodeo_cli_install_lab_in_a_box opts in to installing lab-in-a-box itself on the node first, if not already present, since rodeo-cli needs something to deploy nested KVM labs into."}
+   {"version": "1.1", "breaking": false, "changes": "rodeo_cli_install_lab_in_a_box opts in to installing lab-in-a-box itself on the node first, if not already present, since rodeo-cli needs something to deploy nested KVM labs into."},
+   {"version": "1.2", "breaking": false, "changes": "rodeo_cli_builder_allow adds Host names the Rodeo Builder answers to; the node's FQDN and its resolved address are now always allowed."}
   ],
   "addon:run_command": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}

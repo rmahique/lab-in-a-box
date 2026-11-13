@@ -4,7 +4,7 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.1
+# Schema version: 1.2
 #
 # JSON section: "rodeo_cli" — Installs rodeo-cli
 #   rodeo_cli_install_url : [OPTIONAL] URL of the install script to fetch and run on the
@@ -14,6 +14,10 @@
 #                            this node first, if it isn't already there, since rodeo-cli deploys
 #                            nested KVM labs and needs something to deploy (see install_lab_in_a_box;
 #                            same libs/lab_in_a_box_common.py the two addons share) (default: "false")
+#   rodeo_cli_builder_allow : [OPTIONAL] extra Host names or addresses, space- or comma-separated, that
+#                            rodeo-cli's Rodeo Builder (port 8678) answers to. The node's FQDN and the
+#                            address this automation node resolves it to (its public IP on a cloud node)
+#                            are always allowed; list here any other name clients use, such as a DNS alias
 #
 # Target node(s): any node listing "rodeo_cli" in its own addons[] list — same dispatch shape
 # as install_client_registration.py. This only installs the tool; rodeo-cli's own
@@ -35,7 +39,9 @@ PLUGIN = {
 }
 
 import os
+import re
 import shlex
+import socket
 import sys
 from pathlib import Path
 
@@ -57,9 +63,28 @@ def _validate(v):
     v.vbool("rodeo_cli", "rodeo_cli_install_lab_in_a_box")
 
 
-def setup_rodeo_cli(hostname, install_url):
+def builder_allow(hostname: str, extra) -> str:
+    """
+    RODEO_BUILDER_ALLOW for `hostname`: the Host names rodeo-cli's builder answers to besides the ones it finds on
+    the node itself. These are the node's FQDN, which the node may not know as its own name, the address this
+    automation node resolves it to, which on a cloud node is a public IP on none of its interfaces, and `extra`
+    (rodeo_cli_builder_allow: a space- or comma-separated string, or a list). Space-separated, duplicates dropped.
+    """
+    names = [hostname]
+    try:
+        names.append(socket.gethostbyname(hostname))
+    except OSError:
+        pass
+    if isinstance(extra, (list, tuple)):
+        extra = " ".join(str(x) for x in extra)
+    names += re.split(r"[\s,]+", str(extra or ""))
+    return " ".join(dict.fromkeys(n for n in names if n))
+
+
+def setup_rodeo_cli(hostname: str, install_url: str, allow: str = "") -> None:
     print("- Installing rodeo-cli on '{}' from {}".format(hostname, install_url))
-    ssh_run(hostname, "curl -fsSL {} | bash".format(shlex.quote(install_url)))
+    ssh_run(hostname, "curl -fsSL {} | RODEO_BUILDER_ALLOW={} bash".format(shlex.quote(install_url),
+                                                                          shlex.quote(allow)))
 
     kvm = ssh_run(hostname, "test -e /dev/kvm", check=False)
     if kvm.returncode != 0:
@@ -98,7 +123,7 @@ def main():
         if want_lab_in_a_box and not lab_in_a_box_installed(vm_name):
             install_lab_in_a_box(vm_name)
         install_url = cfg.get("rodeo_cli_install_url") or DEFAULT_INSTALL_URL
-        setup_rodeo_cli(vm_name, install_url)
+        setup_rodeo_cli(vm_name, install_url, builder_allow(vm_name, cfg.get("rodeo_cli_builder_allow")))
 
 
 if __name__ == "__main__":
