@@ -477,6 +477,12 @@ vim /etc/lab_creation.cfg
 </tbody>
 </table>
 <p><strong>HTTP 和 HTTPS。</strong>自动化 VM 同时在端口 80（HTTP）和端口 443（HTTPS，自签名证书位于 <code>/etc/lab_creation/tls/</code>）上提供文件。安装程序（AutoYaST、kickstart、preseed）和 Helm 通过 HTTPS 获取文件，并接受自签名证书。设置 <code>PROVISIONING_TLS_VERIFY=1</code> 可改为验证证书；设置 <code>PROVISIONING_BASE_URL</code>（例如 <code>http://192.168.88.250</code>）可使用其他地址或改回 HTTP。Harvester 的 iPXE 网络启动始终使用 HTTP，因为 iPXE 无法接受自签名证书。</p>
+<h3 id="upgrading-lab-in-a-box">升级 lab-in-a-box</h3>
+<p>要将自动化节点升级到最新版本，请以 root 身份运行：</p>
+<pre><code class="language-shell">upgrade_lab_in_a_box                                      # latest main, official repository
+upgrade_lab_in_a_box --repo https://github.com/&lt;you&gt;/lab-in-a-box.git --branch dev
+</code></pre>
+<p>它会部署官方仓库最新的 <code>main</code>；<code>--repo</code> 和 <code>--branch</code> 可选择其他仓库或分支，例如某个 fork。在通过 <code>lab-in-a-box</code> RPM/DEB 软件包安装的主机上，它会改为通过 zypper、dnf 或 apt 安装 GitHub 最新发布版本的软件包，此时 <code>--branch</code> 不适用。</p>
 <h3 id="step-5--point-your-client-dns-at-the-automation-vm">步骤 5：将客户端 DNS 指向自动化虚拟机</h3>
 <p>要在桌面上解析主机名：</p>
 <pre><code class="language-shell"># Linux (NetworkManager):

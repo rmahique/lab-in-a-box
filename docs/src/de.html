@@ -408,6 +408,12 @@ vim /etc/lab_creation.cfg
 </tbody>
 </table>
 <p><strong>HTTP und HTTPS.</strong> Die Automatisierungs-VM stellt ihre Dateien auf Port 80 (HTTP) und Port 443 (HTTPS, selbstsigniertes Zertifikat in <code>/etc/lab_creation/tls/</code>) bereit. Installer (AutoYaST, Kickstart, Preseed) und Helm laden sie über HTTPS und akzeptieren das selbstsignierte Zertifikat. Mit <code>PROVISIONING_TLS_VERIFY=1</code> wird es stattdessen geprüft; <code>PROVISIONING_BASE_URL</code> (z. B. <code>http://192.168.88.250</code>) legt eine andere Adresse fest oder wechselt zurück zu HTTP. Der iPXE-Netzwerkstart von Harvester verwendet immer HTTP, da iPXE keine selbstsignierten Zertifikate akzeptiert.</p>
+<h3 id="upgrading-lab-in-a-box">lab-in-a-box aktualisieren</h3>
+<p>Um einen Automatisierungsknoten auf die neueste Version zu bringen, als root ausführen:</p>
+<pre><code class="language-shell">upgrade_lab_in_a_box                                      # latest main, official repository
+upgrade_lab_in_a_box --repo https://github.com/&lt;you&gt;/lab-in-a-box.git --branch dev
+</code></pre>
+<p>Es wird der neueste Stand von <code>main</code> aus dem offiziellen Repository bereitgestellt; <code>--repo</code> und <code>--branch</code> wählen ein anderes, etwa einen Fork. Auf einem Host, der aus dem RPM/DEB-Paket <code>lab-in-a-box</code> installiert wurde, wird stattdessen das Paket des neuesten GitHub-Releases über zypper, dnf oder apt installiert, und <code>--branch</code> gilt dort nicht.</p>
 <h3 id="step-5--point-your-client-dns-at-the-automation-vm">Schritt 5 — Client-DNS auf die Automatisierungs-VM zeigen lassen</h3>
 <p>Damit Hostnamen von Ihrem Desktop aus aufgelöst werden:</p>
 <pre><code class="language-shell"># Linux (NetworkManager):

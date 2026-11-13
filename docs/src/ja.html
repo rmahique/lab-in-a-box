@@ -477,6 +477,12 @@ vim /etc/lab_creation.cfg
 </tbody>
 </table>
 <p><strong>HTTPとHTTPS。</strong>オートメーションVMは、ファイルをポート80（HTTP）とポート443（HTTPS、自己署名証明書は<code>/etc/lab_creation/tls/</code>）の両方で提供します。インストーラー（AutoYaST、kickstart、preseed）とHelmはHTTPSで取得し、自己署名証明書を受け入れます。証明書を検証するには<code>PROVISIONING_TLS_VERIFY=1</code>を、別のアドレスを使うかHTTPに戻すには<code>PROVISIONING_BASE_URL</code>（例：<code>http://192.168.88.250</code>）を設定します。HarvesterのiPXEネットワークブートは常にHTTPを使用します。iPXEは自己署名証明書を受け入れられないためです。</p>
+<h3 id="upgrading-lab-in-a-box">lab-in-a-box のアップグレード</h3>
+<p>オートメーションノードを最新バージョンにするには、root で次を実行する:</p>
+<pre><code class="language-shell">upgrade_lab_in_a_box                                      # latest main, official repository
+upgrade_lab_in_a_box --repo https://github.com/&lt;you&gt;/lab-in-a-box.git --branch dev
+</code></pre>
+<p>公式リポジトリの最新の <code>main</code> をデプロイする。<code>--repo</code> と <code>--branch</code> でフォークなど別のものを選べる。<code>lab-in-a-box</code> の RPM/DEB パッケージからインストールしたホストでは、代わりに GitHub の最新リリースのパッケージを zypper、dnf または apt でインストールし、<code>--branch</code> は適用されない。</p>
 <h3 id="step-5--point-your-client-dns-at-the-automation-vm">ステップ 5：クライアントの DNS をオートメーション VM に向ける</h3>
 <p>デスクトップからホスト名を解決するには：</p>
 <pre><code class="language-shell"># Linux (NetworkManager):

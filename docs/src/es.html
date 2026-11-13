@@ -477,6 +477,12 @@ vim /etc/lab_creation.cfg
 </tbody>
 </table>
 <p><strong>HTTP y HTTPS.</strong> La VM de automatización sirve sus archivos en el puerto 80 (HTTP) y en el 443 (HTTPS, con un certificado autofirmado en <code>/etc/lab_creation/tls/</code>). Los instaladores (AutoYaST, kickstart, preseed) y Helm los descargan por HTTPS y aceptan el certificado autofirmado. Establezca <code>PROVISIONING_TLS_VERIFY=1</code> para verificarlo, o <code>PROVISIONING_BASE_URL</code> (p. ej. <code>http://192.168.88.250</code>) para usar otra dirección o volver a HTTP. El arranque iPXE de Harvester usa siempre HTTP: iPXE no acepta certificados autofirmados.</p>
+<h3 id="upgrading-lab-in-a-box">Actualizar lab-in-a-box</h3>
+<p>Para llevar un nodo de automatización a la última versión, ejecuta como root:</p>
+<pre><code class="language-shell">upgrade_lab_in_a_box                                      # latest main, official repository
+upgrade_lab_in_a_box --repo https://github.com/&lt;you&gt;/lab-in-a-box.git --branch dev
+</code></pre>
+<p>Despliega lo último de <code>main</code> del repositorio oficial; <code>--repo</code> y <code>--branch</code> eligen otro, como un fork. En un host instalado desde el paquete RPM/DEB <code>lab-in-a-box</code>, instala en su lugar el paquete de la última versión publicada en GitHub con zypper, dnf o apt, y <code>--branch</code> no se aplica.</p>
 <h3 id="step-5--point-your-client-dns-at-the-automation-vm">Paso 5: apuntar el DNS del cliente a la VM de automatización</h3>
 <p>Para que los nombres de host se resuelvan desde su escritorio:</p>
 <pre><code class="language-shell"># Linux (NetworkManager):
