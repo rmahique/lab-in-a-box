@@ -302,6 +302,10 @@ def _template_state(path):
 # Fields the preflight checks itself, with context the schema cannot carry, so schema_validate.py leaves them to it
 # and one bad value is reported once: backend and cloud_account against the installed backends and credential files,
 # config_method and install_type as the effective value a node ends up with after common's default.
+# subprocess.run() keyword arguments that capture stdout and stderr as text. Not capture_output=/text=, which need
+# Python 3.7: the lab-builder CGI runs this library under the host's own python3, which can be 3.6.
+_CAPTURE_TEXT = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "universal_newlines": True}
+
 _PREFLIGHT_OWN_FIELDS = ("backend", "cloud_account", "config_method", "install_type")
 
 
@@ -695,7 +699,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         exe = addon_installer(addon)
         if not exe:
             continue
-        result = subprocess.run([exe, "--validate", str(definition.source_path)], capture_output=True, text=True)
+        result = subprocess.run([exe, "--validate", str(definition.source_path)], **_CAPTURE_TEXT)
         if result.returncode != 0:
             combined = (result.stdout or "") + (result.stderr or "")
             # [WARNING] lines are version-matrix warnings, reported by section 4 with their placement.
@@ -729,7 +733,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                 ssh_test = subprocess.run(
                     ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
                      "-o", "ConnectTimeout=5", "-q", "root@{}".format(host), "echo ok"],
-                    capture_output=True, text=True,
+                    **_CAPTURE_TEXT,
                 )
                 ok = (ssh_test.stdout or "").strip() == "ok"
                 if not ok:
@@ -756,7 +760,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                     ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-q",
                      "root@{}".format(host),
                      "ls '{}/'*.qcow2 2>/dev/null | xargs -n1 basename".format(iso_loc)],
-                    capture_output=True, text=True,
+                    **_CAPTURE_TEXT,
                 )
                 avail = "  ".join((avail_proc.stdout or "").splitlines()[:10])
                 suffix = " — available: {}".format(avail) if avail else ""
@@ -808,7 +812,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                 ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
                  "-o", "ConnectTimeout=5", "-q", "root@{}".format(host),
                  "qemu-img info --output=json '{}/{}'".format(iso_loc, img)],
-                capture_output=True, text=True,
+                **_CAPTURE_TEXT,
             )
             if info.returncode != 0:
                 return  # can't introspect it (no qemu-img, odd format) — best-effort only
@@ -1164,7 +1168,7 @@ def scp_to(hostname, local_path, remote_path, user="root"):
     args = _ssh_opts(["scp", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5",
                       "-o", "LogLevel=ERROR"]) + [
         local_path, "{}@{}:{}".format(user, hostname, remote_path)]
-    return subprocess.run(args, capture_output=True, text=True)
+    return subprocess.run(args, **_CAPTURE_TEXT)
 
 
 def purge_known_host(*names):

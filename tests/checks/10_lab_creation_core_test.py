@@ -455,6 +455,32 @@ _keys_ok = _lab_def({"common": dict(base_common, ssh_authorized_keys=[
                                        "config_method": "virt_customize"}}})
 check("validate_lab_definition: a key line and a file path pass without host checks",
       lc.validate_lab_definition(_keys_ok, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
+# An add-on's --validate runs through the REAL subprocess.run: this container's python3 is 3.6, as the lab-builder
+# CGI's can be, so a keyword argument newer than 3.6 (capture_output=, text=) fails here as it does there.
+import apps  # noqa: E402
+_fake_addon = os.path.join(tempfile.mkdtemp(), "install_fakeaddon")
+with open(_fake_addon, "w") as _fh:
+    _fh.write("#!/bin/sh\necho '[ERROR] fakeaddon.fake_field is required'\nexit 1\n")
+os.chmod(_fake_addon, 0o755)
+_orig_installer, _orig_run = apps.addon_installer, lc.subprocess.run
+apps.addon_installer = lambda name: _fake_addon if name == "fakeaddon" else None
+lc.subprocess.run = _real_subprocess_run
+_with_addon = _lab_def({"common": dict(base_common),
+                        "nodes": {"vm1": {"myip": "192.168.1.56", "mymac": "aa:bb:cc:dd:ee:0f",
+                                          "config_method": "virt_customize", "addons": ["fakeaddon"]}}})
+_issues = []
+try:
+    _ok = lc.validate_lab_definition(_with_addon, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                     issues_out=_issues)
+    _crash = ""
+except TypeError as e:
+    _ok, _crash = None, str(e)
+check("validate_lab_definition: an add-on's --validate runs under this python3 ({})".format(_crash or "ok"),
+      _crash == "")
+check("validate_lab_definition: the add-on's own error is reported",
+      _ok is False and any("fakeaddon.fake_field is required" in line for line in _issues))
+apps.addon_installer, lc.subprocess.run = _orig_installer, _orig_run
+
 _mixed_set = _lab_def({"common": dict(base_common, mydomain="mydemo.lab"), "nodes": dict(_mixed["nodes"])})
 check("validate_lab_definition: the same names pass once mydomain is set",
       lc.validate_lab_definition(_mixed_set, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
