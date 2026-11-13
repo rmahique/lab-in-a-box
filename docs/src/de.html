@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">Der Automatisierungsknoten in einer Cloud</h3>
-<p>Der Automatisierungsknoten ist die Maschine, auf der die Befehle laufen. Das kann die VM auf einem KVM-Host sein, die <code>setup_kvm_node.py</code> baut, ein Container oder ein Pod (<code>_automation_node</code> in <code>lab.cfg</code>), oder eine Cloud-Instanz. In einer Cloud wird er mit <code>setup_automation_node.py &lt;lab.json&gt; &lt;knoten&gt;</code> gebaut, wobei der Knoten ein gewöhnlicher Knoten einer Lab-Definition auf einem Cloud-Backend ist: Er wird über denselben Weg erstellt wie jeder andere Knoten, und danach läuft dasselbe <code>automation-node-lib.sh configure</code> darauf über SSH, das auch eine VM als Automatisierungsknoten erhält.</p>
+<p>Der Automatisierungsknoten ist die Maschine, auf der die Befehle laufen. Das kann die VM auf einem KVM-Host sein, die <code>setup_kvm_node.py</code> baut, ein Container oder ein Pod (<code>_automation_node</code> in <code>lab.cfg</code>), oder eine Cloud-Instanz. In einer Cloud wird er mit <code>setup_automation_node.py &lt;lab.json&gt; &lt;knoten&gt;</code> gebaut, wobei der Knoten ein gewöhnlicher Knoten einer Lab-Definition auf einem Cloud-Backend ist: Er wird über denselben Weg erstellt wie jeder andere Knoten, und danach läuft dasselbe <code>automation-node-lib.sh configure</code> darauf über SSH, das auch eine VM als Automatisierungsknoten erhält. Eine Instanz, die unter diesem Namen bereits existiert, wird nur konfiguriert, nicht neu erstellt; ein erneuter Aufruf ist daher sicher. Ein Container auf einem Host ohne Bridge, der nicht als KVM-Host eingerichtet ist, teilt Netzwerk und Adresse des Hosts: Er betreibt keinen eigenen SSH-Server, der Host erhält Wrapper für die Lab-Befehle (<code>setup_lab.py</code>, <code>setup_vm.py</code>, …), die sie im Container ausführen, und die an diese Befehle übergebenen Lab-Dateien müssen unter <code>/var/lib/lab-in-a-box/labs</code> liegen, das der Container mitbenutzt.</p>
 <p>Der Grund dafür ist die Namensauflösung. Ein Lab in einem Cloud-Konto löst seine eigenen Knoten über den DNS-Server in genau diesem Konto auf, und ein Automatisierungsknoten dort bedient die Zone des Labs selbst. Damit hängt nichts am Lab davon ab, dass eine Maschine zu Hause erreichbar ist. Sein BIND antwortet für die Lab-Domain von überall autoritativ und löst nur für die privaten Bereiche rekursiv auf. Eine Instanz, deren Port 53 aus dem Internet erreichbar ist, ist damit kein offener Resolver: Eine Lab-VM über den Namen zu finden braucht eine autoritative Antwort, niemals Rekursion. Port 53 ist nur erreichbar, wenn die Portliste des Knotens das sagt, zum Beispiel <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>.</p>
 <p>Etwas auf diesen Server auszurichten bleibt Ihnen überlassen: Tragen Sie seine Adresse als Nameserver dort ein, wo die Namen des Labs auflösbar sein sollen. Der Befehl gibt die zu verwendende Adresse am Ende aus.</p>
 <h3 id="naming-an-image-instead-of-an-id">Ein Image benennen statt einer ID</h3>
@@ -373,7 +373,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p>Wichtige Einstellungen in <code>lab_creation.cfg</code>:</p>
@@ -1384,7 +1383,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>Systemweite Standardwerte, die jedes Skript lädt. Sie legen Pfade, Standard-Verzögerungen und Paketlisten fest. <strong>Nicht ändern</strong>, außer Sie wissen genau, was Sie tun.</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>Knotenspezifische Konfiguration der Automatisierungs-VM. Wird beim Setup aus <code>/etc/lab_creation.cfg.example</code> kopiert. Wichtige Variablen:</p>
+<p>Knotenspezifische Konfiguration der Automatisierungs-VM. Das Setup des Automatisierungsknotens schreibt sie aus <code>/etc/lab_creation.cfg.example</code> mit den Werten des Knotens, wenn sie noch nicht existiert; eine vorhandene wird nie überschrieben. Wichtige Variablen:</p>
 <table>
 <thead>
 <tr>

@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">The automation node in a cloud</h3>
-<p>The automation node is the machine the commands run on. It can be the VM on a KVM host that <code>setup_kvm_node.py</code> builds, a container or a pod (<code>_automation_node</code> in <code>lab.cfg</code>), or a cloud instance. In a cloud it is built by <code>setup_automation_node.py &lt;lab.json&gt; &lt;node&gt;</code>, where the node is an ordinary node of a lab definition on a cloud backend: it is created by the same provisioning path every other node uses, and then the same <code>automation-node-lib.sh configure</code> that a VM automation node gets runs on it over SSH.</p>
+<p>The automation node is the machine the commands run on. It can be the VM on a KVM host that <code>setup_kvm_node.py</code> builds, a container or a pod (<code>_automation_node</code> in <code>lab.cfg</code>), or a cloud instance. In a cloud it is built by <code>setup_automation_node.py &lt;lab.json&gt; &lt;node&gt;</code>, where the node is an ordinary node of a lab definition on a cloud backend: it is created by the same provisioning path every other node uses, and then the same <code>automation-node-lib.sh configure</code> that a VM automation node gets runs on it over SSH. An instance that already exists under that name is only configured, not created again, so running it again is safe. A container on a host that has no bridge and is not set up as a KVM host shares the host's network and address: it runs no SSH server of its own, the host gets wrappers for the lab commands (<code>setup_lab.py</code>, <code>setup_vm.py</code>, …) that run them inside it, and the lab files given to those commands must be under <code>/var/lib/lab-in-a-box/labs</code>, which the container shares.</p>
 <p>The reason to want one is name resolution. A lab in a cloud account resolves its own nodes through the DNS server in that same account, and an automation node there serves the lab's zone itself, so nothing about the lab depends on a machine at home being reachable. Its BIND answers authoritatively for the lab domain from anywhere and recurses only for the private ranges, so an instance whose port 53 is reachable from the internet is not an open resolver: resolving a lab VM by name needs an authoritative answer, never recursion. Port 53 is only reachable if the node's own open-ports list says so, for example <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>.</p>
 <p>Pointing anything at that server is left to you: add its address as a nameserver wherever the lab's names should resolve. The command prints the address to use when it finishes.</p>
 <h3 id="naming-an-image-instead-of-an-id">Naming an image instead of an ID</h3>
@@ -441,7 +441,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p>Key settings in <code>lab_creation.cfg</code>:</p>
@@ -1542,7 +1541,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>System-wide defaults loaded by every script. Defines paths, default delay timers, and package lists. <strong>Do not edit</strong> unless you know what you are doing.</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>Node-specific configuration for the automation VM. Copied from <code>/etc/lab_creation.cfg.example</code> during setup. Key variables:</p>
+<p>Node-specific configuration for the automation VM. The automation node setup writes it from <code>/etc/lab_creation.cfg.example</code>, filled in with the node's own values, when it does not exist yet; an existing one is never overwritten. Key variables:</p>
 <table>
 <thead>
 <tr>

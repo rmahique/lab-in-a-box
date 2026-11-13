@@ -125,9 +125,12 @@ function configure_image() {
 
 
 
-# Prints this host's IPv4 address on the lab network: the bridge's address, or the NAT network's gateway.
+# Prints this host's IPv4 address on the lab network: _myip for a container on the host's network, the bridge's address,
+# or the NAT network's gateway.
 function host_lab_ip() {
-    if [[ "${_network_mode:-bridge}" == "nat" ]]; then
+    if _automation_on_host_network; then
+        echo "${_myip}"
+    elif [[ "${_network_mode:-bridge}" == "nat" ]]; then
         echo "${_mygw}"
     else
         ip -4 -br addr show "${_bridge_name}" | awk '{split($3, a, "/"); print a[1]; exit}'
@@ -157,10 +160,13 @@ function derive_node_settings() {
     # script the container image is built with, so the version is pinned in libs/kvm_host_profiles.py alone.
     # shellcheck disable=SC2034  # read through NODE_SETTINGS by write_node_settings
     _kubectl_install="${LAB_KUBECTL_INSTALL:-}"
+    # shellcheck disable=SC2034  # read through NODE_SETTINGS by write_node_settings
+    _node_network=""
+    _automation_on_host_network && _node_network=host
 }
 
-# Copies the tracked files of this lab-in-a-box tree (lab.cfg is not tracked) to directory $1, with .lab-versions:
-# the last commit of every file and directory, for install_automation_node_scripts.sh's version stamps. A setup tree
+# Copies the tracked files of this lab-in-a-box tree (lab.cfg is not tracked) to directory $1, with .lab-versions
+# (write_lab_versions.sh) for install_automation_node_scripts.sh's version stamps. A setup tree
 # that is not a git checkout is replaced by a clone of the GitHub repository.
 function stage_lab_tree() {
     local _dest="$1" _src _clone=""
@@ -174,17 +180,7 @@ function stage_lab_tree() {
     ( set -o pipefail
       git -C "${_src}" ls-files -z | tar -C "${_src}" --null --ignore-failed-read -T - -cf - | tar -C "${_dest}" -xf - ) \
         || return 1
-    # One "git log -1" per tracked file and per directory holding one: the same value
-    # install_automation_node_scripts.sh's lab_version() reads from git. A single --name-only walk cannot reproduce
-    # it, because such a walk lists no paths for a merge commit and a merge that resolves a conflict is the last
-    # commit to change that file.
-    ( cd "${_src}" && git ls-files | awk '{
-          print
-          n = split($0, part, "/"); dir = part[1]
-          for (i = 1; i < n; i++) { if (i > 1) dir = dir "/" part[i]; print dir }
-      }' | sort -u | while IFS= read -r _path; do
-          printf '%s %s\n' "$(git log -1 --format=%h -- "${_path}")" "${_path}"
-      done ) > "${_dest}/.lab-versions"
+    "${_SLA_DIR}/write_lab_versions.sh" "${_src}" > "${_dest}/.lab-versions" || return 1
     [[ -z "${_clone}" ]] || rm -rf "${_clone}"
 }
 
@@ -352,7 +348,7 @@ portforward.apply_forwarded_ports({'${_myip}': '${_nat_forwarded_ports:-22:22/TC
 function wait_for_vm() {
     _msg="Waiting for ${AUTOMATION_HOSTNAME} to come online" show_nicer_messages
     local _count=0
-    while ! nc -z -w 2 "${_myip}" 22 &>/dev/null; do
+    while ! _node_answers; do
         ((_count++))
         if [[ $_count -gt 60 ]]; then
             echo -e "\033[1;31mERROR\033[0m: Timeout waiting for ${AUTOMATION_HOSTNAME} (${_myip})"
@@ -361,6 +357,16 @@ function wait_for_vm() {
         sleep 5
     done
     echo "${AUTOMATION_HOSTNAME} is online"
+}
+
+# True when the automation node answers: on SSH at _myip, or, for a container on the host's network (whose port 22 is
+# the host's own), to podman exec.
+function _node_answers() {
+    if _automation_on_host_network; then
+        podman exec "${AUTOMATION_HOSTNAME}" true &>/dev/null
+    else
+        nc -z -w 2 "${_myip}" 22 &>/dev/null
+    fi
 }
 
 function configure_host_dns() {
@@ -383,7 +389,9 @@ function configure_host_dns() {
 #
 # _automation_node=container: a privileged openSUSE Leap container with systemd as init, built from
 # automation-node.Containerfile. It has no podman network: lab-automation.service connects it to the lab bridge with
-# a veth pair, so it gets _myip, _automation_mac and the default route _mygw, like the automation VM.
+# a veth pair, so it gets _myip, _automation_mac and the default route _mygw, like the automation VM. With
+# _automation_network=host (a host without a bridge) it shares the host's network and address instead, runs no sshd,
+# and the host gets wrappers that run the lab commands in it (install_host_wrappers).
 # _automation_node=kubernetes: the same image as a StatefulSet in the cluster _k8s_kubeconfig points to, reachable at
 # _myip through a LoadBalancer Service (_k8s_network=loadbalancer, default; spec.loadBalancerIP, which MetalLB,
 # kube-vip and most cloud load balancers honour) or a Multus macvlan interface on the lab
@@ -397,12 +405,25 @@ _AUTOMATION_POD="lab-automation-0"
 _AUTOMATION_DATA="etc-lab-creation:/etc/lab_creation etc-lab-builder:/etc/lab-builder etc-lab-mcp:/etc/lab-mcp
 etc-ssh:/etc/ssh named:/var/lib/named root:/root provisioning:/srv/www/htdocs/lab_creation helm:/srv/www/htdocs/helm"
 
+# The host directory a container node on the host's network (_automation_network=host) shares at the same path: the
+# lab files given to the host's wrappers (install_host_wrappers) must be under it.
+_LABS_DIR=/var/lib/lab-in-a-box/labs
+# The lab commands the host gets a wrapper for in that mode, and the line that marks a file as one of those wrappers.
+_HOST_WRAPPED="setup_lab.py setup_vm.py destroy_vm.py destroy_lab.py check_lab.py check_addon.py vm_power.py
+migrate_config.py setup_credentials.py overlay_ctl.py build_lab_usb.py upgrade_lab_in_a_box lab-builder-passwd"
+_WRAPPER_MARK="# lab-in-a-box host wrapper"
+
 function _automation_is_container() {
     [[ "${_automation_node}" == container ]]
 }
 
 function _automation_is_kubernetes() {
     [[ "${_automation_node}" == kubernetes ]]
+}
+
+# True when the automation node is a container on this host's own network (automation.cfg's _automation_network).
+function _automation_on_host_network() {
+    _automation_is_container && [[ "${_automation_network:-bridge}" == host ]]
 }
 
 # Runs kubectl against _k8s_kubeconfig (empty: kubectl's default).
@@ -434,11 +455,17 @@ function build_automation_image() {
         || { echo -e "\033[1;31mERROR\033[0m: building the automation node image failed" >&2; exit 1; }
 }
 
-# Writes /usr/local/sbin/lab-automation-net and lab-automation.service, which starts the container at boot and
-# connects it to the bridge.
+# Writes lab-automation.service, which starts the container at boot, and /usr/local/sbin/lab-automation-net, which the
+# unit runs to connect it to the bridge. A container on the host's network needs no connecting: its unit only starts
+# and stops it.
 function install_automation_unit() {
     _msg="Install lab-automation.service" show_nicer_messages
     local _bridge
+    if _automation_on_host_network; then
+        rm -f /usr/local/sbin/lab-automation-net
+        write_automation_unit "" ""
+        return
+    fi
     _bridge="$(container_bridge)"
     [[ -n "${_bridge}" ]] || { echo -e "\033[1;31mERROR\033[0m: no bridge found for the automation node" >&2; exit 1; }
     cat > /usr/local/sbin/lab-automation-net <<'EOF'
@@ -458,32 +485,75 @@ nsenter -t "${_pid}" -n ip addr add "$3" dev eth0
 nsenter -t "${_pid}" -n ip route add default via "$5"
 EOF
     chmod 0755 /usr/local/sbin/lab-automation-net
-    cat > /etc/systemd/system/lab-automation.service <<EOF
-[Unit]
-Description=lab-in-a-box automation node container (${AUTOMATION_HOSTNAME})
-Wants=network-online.target
-After=network-online.target libvirtd.service
+    write_automation_unit \
+        "ExecStart=/usr/local/sbin/lab-automation-net ${AUTOMATION_HOSTNAME} ${_bridge} ${_myip}/${_mymask_cidr} ${_automation_mac} ${_mygw}" \
+        "ExecStopPost=-ip link del labauto0"
+}
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/bin/podman start ${AUTOMATION_HOSTNAME}
-ExecStart=/usr/local/sbin/lab-automation-net ${AUTOMATION_HOSTNAME} ${_bridge} ${_myip}/${_mymask_cidr} ${_automation_mac} ${_mygw}
-ExecStop=/usr/bin/podman stop -t 30 ${AUTOMATION_HOSTNAME}
-ExecStopPost=-ip link del labauto0
-
-[Install]
-WantedBy=multi-user.target
-EOF
+# Writes lab-automation.service. $1: the unit's line that connects the started container (empty: none); $2: the line
+# that disconnects it after it stops (empty: none).
+function write_automation_unit() {
+    {
+        printf '%s\n' "[Unit]" "Description=lab-in-a-box automation node container (${AUTOMATION_HOSTNAME})" \
+            "Wants=network-online.target" "After=network-online.target libvirtd.service" "" \
+            "[Service]" "Type=oneshot" "RemainAfterExit=yes" "ExecStart=/usr/bin/podman start ${AUTOMATION_HOSTNAME}"
+        [[ -z "$1" ]] || printf '%s\n' "$1"
+        printf '%s\n' "ExecStop=/usr/bin/podman stop -t 30 ${AUTOMATION_HOSTNAME}"
+        [[ -z "$2" ]] || printf '%s\n' "$2"
+        printf '%s\n' "" "[Install]" "WantedBy=multi-user.target"
+    } > /etc/systemd/system/lab-automation.service
     systemctl daemon-reload
 }
 
-# Removes the automation node container and its unit, if present. Its volumes are kept.
+# Removes the automation node container, its unit and the host's wrappers (install_host_wrappers), if present. Its
+# volumes and _LABS_DIR are kept.
 function remove_automation_container() {
+    local _cmd
     if systemctl cat lab-automation.service &>/dev/null; then
         systemctl disable --now lab-automation.service
     fi
     podman rm -f --ignore "${AUTOMATION_HOSTNAME}" >/dev/null
+    for _cmd in ${_HOST_WRAPPED}; do
+        grep -qxF "${_WRAPPER_MARK}" "/usr/local/bin/${_cmd}" 2>/dev/null && rm -f "/usr/local/bin/${_cmd}"
+    done
+    return 0
+}
+
+# Writes /usr/local/bin/<command> on the host for each _HOST_WRAPPED command: it runs that command in the automation
+# node container with podman exec, in the same directory when that is under _LABS_DIR (else in _LABS_DIR), and refuses
+# a file argument outside _LABS_DIR, which is the only host directory the container sees. A file that is not one of
+# these wrappers (lab-in-a-box installed on the host itself) is left alone.
+function install_host_wrappers() {
+    _msg="Install the lab command wrappers on this host" show_nicer_messages
+    local _cmd _dst
+    for _cmd in ${_HOST_WRAPPED}; do
+        _dst="/usr/local/bin/${_cmd}"
+        if [[ -e "${_dst}" ]] && ! grep -qxF "${_WRAPPER_MARK}" "${_dst}"; then
+            echo "WARNING: ${_dst} exists and is not a lab-in-a-box host wrapper; left as it is" >&2
+            continue
+        fi
+        cat > "${_dst}" <<EOF
+#!/bin/bash
+${_WRAPPER_MARK}
+# Runs ${_cmd} in the automation node container ${AUTOMATION_HOSTNAME}. Lab files must be under ${_LABS_DIR}.
+_dir=${_LABS_DIR}
+for _a in "\$@"; do
+    [[ -e "\${_a}" ]] || continue
+    case "\$(realpath "\${_a}")/" in
+        "\${_dir}"/*) ;;
+        *) echo "ERROR: \${_a} is outside \${_dir}, the only host directory the automation node sees; move it there" >&2
+           exit 1 ;;
+    esac
+done
+_wd="\${PWD}"
+case "\${_wd}/" in "\${_dir}"/*) ;; *) _wd="\${_dir}" ;; esac
+_tty=()
+[[ -t 0 && -t 1 ]] && _tty=(-t)
+exec podman exec -i "\${_tty[@]}" -w "\${_wd}" ${AUTOMATION_HOSTNAME} ${_cmd} "\$@"
+EOF
+        chmod 0755 "${_dst}"
+    done
+    echo "Lab commands on this host (${_HOST_WRAPPED//$'\n'/ }) run in ${AUTOMATION_HOSTNAME}; keep lab files under ${_LABS_DIR}"
 }
 
 # Creates the container with one named volume (lab-automation-<name>) per _AUTOMATION_DATA entry; podman fills a new,
@@ -494,8 +564,14 @@ function create_automation_container() {
     for _d in ${_AUTOMATION_DATA}; do
         _vols+=(-v "lab-automation-${_d%%:*}:${_d#*:}")
     done
+    # On the host's network: --uts private keeps the container's own hostname, and _LABS_DIR is shared at its path.
+    local _net=(--network none)
+    if _automation_on_host_network; then
+        mkdir -p "${_LABS_DIR}"
+        _net=(--network host --uts private -v "${_LABS_DIR}:${_LABS_DIR}")
+    fi
     podman create --name "${AUTOMATION_HOSTNAME}" --hostname "${AUTOMATION_HOSTNAME}" --privileged \
-        --network none --systemd always "${_vols[@]}" "${_AUTOMATION_IMAGE}" >/dev/null \
+        "${_net[@]}" --systemd always "${_vols[@]}" "${_AUTOMATION_IMAGE}" >/dev/null \
         || { echo -e "\033[1;31mERROR\033[0m: creating the automation node container failed" >&2; exit 1; }
     systemctl enable --now lab-automation.service \
         || { echo -e "\033[1;31mERROR\033[0m: lab-automation.service failed to start" >&2; exit 1; }
@@ -658,8 +734,11 @@ _msg="Delete automation node \"${AUTOMATION_HOSTNAME}\" if it exists" show_nicer
 remove_automation_vm
 remove_automation_container
 
-detect_bridge
-configure_bridge
+# A container on the host's network attaches to no bridge.
+if ! _automation_on_host_network; then
+    detect_bridge
+    configure_bridge
+fi
 generate_mac
 derive_node_settings
 _stage="$(mktemp -d)"
@@ -672,6 +751,9 @@ case "${_automation_node}" in
         create_automation_container
         wait_for_vm
         _node_transport=podman configure_node_from "${_stage}"
+        if _automation_on_host_network; then
+            install_host_wrappers
+        fi
         ;;
     kubernetes)
         deploy_automation_k8s

@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">云端的自动化节点</h3>
-<p>自动化节点就是运行命令的那台机器。它可以是 <code>setup_kvm_node.py</code> 在 KVM 主机上构建的虚拟机，可以是容器或 Pod（<code>lab.cfg</code> 中的 <code>_automation_node</code>），也可以是一个云实例。在云上，它由 <code>setup_automation_node.py &lt;lab.json&gt; &lt;节点&gt;</code> 构建，其中该节点就是云后端上实验室定义里的一个普通节点：它经由与其他任何节点相同的路径创建，随后在其上通过 SSH 执行与虚拟机自动化节点相同的 <code>automation-node-lib.sh configure</code>。</p>
+<p>自动化节点就是运行命令的那台机器。它可以是 <code>setup_kvm_node.py</code> 在 KVM 主机上构建的虚拟机，可以是容器或 Pod（<code>lab.cfg</code> 中的 <code>_automation_node</code>），也可以是一个云实例。在云上，它由 <code>setup_automation_node.py &lt;lab.json&gt; &lt;节点&gt;</code> 构建，其中该节点就是云后端上实验室定义里的一个普通节点：它经由与其他任何节点相同的路径创建，随后在其上通过 SSH 执行与虚拟机自动化节点相同的 <code>automation-node-lib.sh configure</code>。 如果同名实例已经存在，则只对其进行配置而不会重新创建，因此再次运行是安全的。 在没有网桥且未设置为 KVM 主机的主机上，容器共享主机的网络和地址：它不运行自己的 SSH 服务器，主机会获得在容器内运行实验室命令（<code>setup_lab.py</code>, <code>setup_vm.py</code> 等）的包装脚本，传给这些命令的实验室文件必须位于容器共享的 <code>/var/lib/lab-in-a-box/labs</code> 下。</p>
 <p>需要它的理由是名称解析。云账户中的实验室通过同一账户内的 DNS 服务器解析自己的节点，而那里的自动化节点自己提供实验室的区域，于是实验室的任何部分都不再依赖家中某台机器可达。它的 BIND 对实验室域名在任何位置都给出权威应答，而仅对私有地址段做递归解析，因此即使实例的 53 端口可从互联网访问，也不会成为开放解析器：按名称解析实验室虚拟机需要的是权威应答，而非递归。只有在节点自己的开放端口列表中写明时，53 端口才可达，例如 <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>。</p>
 <p>把什么指向这台服务器由您决定：在希望解析实验室名称的地方，将它的地址添加为 nameserver。命令结束时会打印应当使用的地址。</p>
 <h3 id="naming-an-image-instead-of-an-id">用名称而非 ID 指定镜像</h3>
@@ -442,7 +442,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p><code>lab_creation.cfg</code> 中的主要设置：</p>
@@ -1472,7 +1471,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>所有脚本都会加载的系统级默认值。定义路径、默认等待时间和软件包列表。除非清楚自己在做什么，否则<strong>请勿编辑</strong>。</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>自动化虚拟机的节点特定配置。设置时从 <code>/etc/lab_creation.cfg.example</code> 复制。主要变量：</p>
+<p>自动化虚拟机的节点特定配置。当该文件尚不存在时，自动化节点的设置会根据 <code>/etc/lab_creation.cfg.example</code> 用节点自身的值写入它；已有的文件永远不会被覆盖。主要变量：</p>
 <table>
 <thead>
 <tr>

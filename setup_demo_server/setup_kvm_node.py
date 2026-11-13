@@ -45,6 +45,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -454,6 +455,16 @@ def prepare_kvm_host(cfg, script_dir, share_storage_from=None, copy_storage_from
         configure_nat_network(nat_name, nat_cidr)
 
 
+def ensure_podman() -> None:
+    """Installs podman with this host's package manager when it is missing: a container automation node runs on it,
+    and on a host that is not set up as a KVM host nothing else installs it. Dies when it cannot."""
+    if shutil.which("podman"):
+        return
+    profile = kvm_host_profiles.detect_profile()
+    if profile is None or not profile.install_packages(["podman"]):
+        die("podman is missing and could not be installed; install it and run this again")
+
+
 def deploy_automation_node(cfg, script_dir):
     """
     Builds the automation node itself (vm/container/kubernetes, cfg's _automation_node) via
@@ -476,12 +487,15 @@ def deploy_automation_node(cfg, script_dir):
                  "instead".format(e))
             node_mode, fallback = "container", True
 
+    if node_mode == "container":
+        ensure_podman()
     log("Start setup_lab_automation.sh script to create the automation node ({})".format(node_mode))
     rc = run_lab_automation(lab_automation_script, node_mode)
     if rc != 0 and node_mode == "vm" and rc != 130:
         warn("the automation VM could not be built (exit {}); creating the automation node as a container "
              "instead".format(rc))
         node_mode, fallback = "container", True
+        ensure_podman()
         rc = run_lab_automation(lab_automation_script, node_mode)
     if rc == 0 and fallback:
         cfg_path = _find("automation.cfg")

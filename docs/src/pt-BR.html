@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">O nó de automação em uma nuvem</h3>
-<p>O nó de automação é a máquina onde os comandos são executados. Pode ser a VM em um host KVM que o <code>setup_kvm_node.py</code> constrói, um contêiner ou um pod (<code>_automation_node</code> no <code>lab.cfg</code>), ou uma instância de nuvem. Em uma nuvem ele é construído por <code>setup_automation_node.py &lt;lab.json&gt; &lt;nó&gt;</code>, onde o nó é um nó comum de uma definição de laboratório em um backend de nuvem: ele é criado pelo mesmo caminho que qualquer outro nó, e depois o mesmo <code>automation-node-lib.sh configure</code> que uma VM de automação recebe é executado nele por SSH.</p>
+<p>O nó de automação é a máquina onde os comandos são executados. Pode ser a VM em um host KVM que o <code>setup_kvm_node.py</code> constrói, um contêiner ou um pod (<code>_automation_node</code> no <code>lab.cfg</code>), ou uma instância de nuvem. Em uma nuvem ele é construído por <code>setup_automation_node.py &lt;lab.json&gt; &lt;nó&gt;</code>, onde o nó é um nó comum de uma definição de laboratório em um backend de nuvem: ele é criado pelo mesmo caminho que qualquer outro nó, e depois o mesmo <code>automation-node-lib.sh configure</code> que uma VM de automação recebe é executado nele por SSH. Uma instância que já existe com esse nome é apenas configurada, não criada de novo, então executá-lo outra vez é seguro. Um contêiner em um host sem bridge e não configurado como host KVM compartilha a rede e o endereço do host: ele não executa um servidor SSH próprio, o host recebe wrappers para os comandos do laboratório (<code>setup_lab.py</code>, <code>setup_vm.py</code>, …) que os executam dentro dele, e os arquivos de laboratório passados a esses comandos devem ficar em <code>/var/lib/lab-in-a-box/labs</code>, que o contêiner compartilha.</p>
 <p>O motivo para querer um é a resolução de nomes. Um laboratório em uma conta de nuvem resolve os próprios nós pelo servidor DNS dessa mesma conta, e um nó de automação ali serve a zona do laboratório por conta própria, de modo que nada no laboratório depende de uma máquina em casa estar acessível. Seu BIND responde de forma autoritativa para o domínio do laboratório de qualquer lugar e só resolve recursivamente para as faixas privadas, então uma instância com a porta 53 acessível pela internet não é um resolvedor aberto: resolver uma VM do laboratório pelo nome precisa de uma resposta autoritativa, nunca de recursão. A porta 53 só fica acessível se a lista de portas do nó disser isso, por exemplo <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>.</p>
 <p>Apontar algo para esse servidor é com você: adicione o endereço dele como nameserver onde quiser que os nomes do laboratório sejam resolvidos. O comando imprime o endereço a usar ao terminar.</p>
 <h3 id="naming-an-image-instead-of-an-id">Nomear uma imagem em vez de um ID</h3>
@@ -442,7 +442,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p>Principais configurações do <code>lab_creation.cfg</code>:</p>
@@ -1477,7 +1476,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>Padrões de todo o sistema carregados por todos os scripts. Define caminhos, temporizadores de espera padrão e listas de pacotes. <strong>Não edite</strong> a menos que saiba o que está fazendo.</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>Configuração específica do nó para a VM de automação. Copiada de <code>/etc/lab_creation.cfg.example</code> durante a configuração. Variáveis principais:</p>
+<p>Configuração específica do nó para a VM de automação. A configuração do nó de automação a escreve a partir de <code>/etc/lab_creation.cfg.example</code>, com os valores do próprio nó, quando ela ainda não existe; um arquivo existente nunca é sobrescrito. Variáveis principais:</p>
 <table>
 <thead>
 <tr>

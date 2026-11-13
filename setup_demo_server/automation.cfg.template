@@ -1,4 +1,4 @@
-# Schema version: 1.0
+# Schema version: 1.1
 #
 # The automation node's own identity: what it's called, how it's reached, and what shape it
 # takes (vm/container/kubernetes). Meaningful regardless of whether a KVM host is involved at
@@ -45,6 +45,13 @@ _timezone=Europe/Zurich
 # (setup_demo_server/automation-node.Containerfile) attached to the same network with the same
 # _myip, its data on podman volumes lab-automation-*; or "kubernetes" (see below).
 _automation_node="vm"
+
+# Only used when _automation_node="container": "bridge" (default), the container has its own _myip on the host's
+# bridge; "host", it shares this host's network and _myip is the host's own address. setup_automation.py sets "host"
+# when the host has no bridge and is not set up as a KVM host. On the host's network the container runs no sshd: the
+# host gets wrappers for the lab commands (setup_lab.py, setup_vm.py, ...) that run them in the container, and lab
+# files given to them must be under /var/lib/lab-in-a-box/labs, which the container shares.
+_automation_network=""
 
 # Only used when _automation_node="kubernetes". The automation node runs as a StatefulSet with its configuration and
 # user data on a persistent volume; the lab reaches it at _myip.

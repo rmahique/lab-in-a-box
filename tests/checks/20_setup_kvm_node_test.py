@@ -156,6 +156,9 @@ class _FakeProfile:
         self.installed_packages = list(self.packages)
         return []
 
+    def install_packages(self, pkgs):
+        return True
+
 
 def _run_do_it_all(cfg, fake_profile, nat_calls=None, fusermount_compat_calls=None, downloads=None,
                    download_error=None, build_automation_node=True):
@@ -951,6 +954,28 @@ check("main() offers to add another KVM node in interactive mode, and shares sto
 check("main() offers to add cloud credentials in interactive mode",
       cred_calls == ["/etc/lab_creation/credentials"])
 
+
+# ── ensure_podman(): a container automation node gets podman from the package manager ─────────
+_profile = mock.Mock()
+_profile.install_packages.return_value = True
+with mock.patch.object(skn.shutil, "which", return_value=None), \
+     mock.patch.object(skn.kvm_host_profiles, "detect_profile", return_value=_profile):
+    skn.ensure_podman()
+check("ensure_podman installs podman with the host's package manager when it is missing",
+      _profile.install_packages.call_args == mock.call(["podman"]))
+_profile = mock.Mock()
+with mock.patch.object(skn.shutil, "which", return_value="/usr/bin/podman"), \
+     mock.patch.object(skn.kvm_host_profiles, "detect_profile", return_value=_profile):
+    skn.ensure_podman()
+check("ensure_podman installs nothing when podman is there", not _profile.install_packages.called)
+_profile = mock.Mock()
+_profile.install_packages.return_value = False
+_died = []
+with mock.patch.object(skn.shutil, "which", return_value=None), \
+     mock.patch.object(skn.kvm_host_profiles, "detect_profile", return_value=_profile), \
+     mock.patch.object(skn, "die", side_effect=lambda m: _died.append(m)):
+    skn.ensure_podman()
+check("ensure_podman stops with a message when podman cannot be installed", _died and "podman" in _died[0])
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

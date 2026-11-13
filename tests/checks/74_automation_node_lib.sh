@@ -112,8 +112,22 @@ grep -q '^root:\$6\$salt\$abc/def.ghi:' /etc/shadow || fail "the root password h
 [[ "$(cat /srv/www/htdocs/id_rsa.pub)" == "ssh-rsa NODEKEY root@automation" ]] || fail "the node's public key is not published"
 [[ -x /usr/local/bin/setup_lab.py ]] || fail "the lab scripts are not installed"
 grep -q "abc1234" /usr/local/bin/setup_lab.py || fail "setup_lab.py is not stamped with its version from .lab-versions"
+for _s in check_lab.py overlay_ctl.py migrate_config.py setup_lab.py; do
+    [[ "$(head -1 "/usr/local/bin/${_s}")" == "#!/usr/bin/env python3.11" ]] || fail "${_s} does not run with the node's _python_bin"
+done
 grep -q "^systemctl restart named apache2 sshd$" "${_log}" || fail "the services are not restarted"
 grep -q "^zypper" "${_log}" && fail "a container node installed packages"
+_cfg=/etc/lab_creation.cfg
+[[ -f "${_cfg}" && "$(stat -c %a "${_cfg}")" == 600 ]] || fail "lab_creation.cfg is not written with mode 0600"
+grep -qxF "ROOT_SSH_KEY='ssh-ed25519 OPERATORKEY op@laptop'" "${_cfg}" || fail "lab_creation.cfg lacks the operator key"
+grep -qx "REMOTE_HOST='kvmhost.example.com'" "${_cfg}" && grep -q '^VIRT_SRV=' "${_cfg}" \
+    || fail "lab_creation.cfg does not name the KVM host"
+grep -qxF "ROOT_PWD_HASH='\$6\$salt\$abc/def.ghi'" "${_cfg}" || fail "lab_creation.cfg lacks the node's password hash"
+grep -qx "MYREG='registry.mydemo.lab'" "${_cfg}" && grep -qx "mysource='automation.mydemo.lab'" "${_cfg}" \
+    || fail "lab_creation.cfg lacks the registry or the automation node's name"
+grep -qx "SUSE_regcode=''" "${_cfg}" && grep -qx "SUSE_email=''" "${_cfg}" || fail "lab_creation.cfg keeps the example's SUSE values"
+grep -q '^# Schema version: ' "${_cfg}" || fail "lab_creation.cfg lacks its schema version"
+sed -i 's/^MYREG=.*/MYREG=\x27operator.edit\x27/' "${_cfg}"
 
 # A re-run keeps the zones and the key, and adds nothing twice.
 echo "custom IN A 192.0.2.99" >> "${_zone}"
@@ -121,12 +135,29 @@ run_configure
 grep -q "^custom IN A 192.0.2.99$" "${_zone}" || fail "a re-run overwrote an existing zone"
 [[ "$(grep -c OPERATORKEY /root/.ssh/authorized_keys)" == 1 ]] || fail "a re-run authorized a key twice"
 grep -q "^ssh-keygen" "${_log}" && fail "a re-run created a new node key"
+grep -qx "MYREG='operator.edit'" /etc/lab_creation.cfg || fail "a re-run overwrote the operator's lab_creation.cfg"
+
+# A node without a KVM host or a password hash: REMOTE_HOST/VIRT_SRV and ROOT_PWD_HASH are commented out.
+_bare="${_t}/bare"
+mkdir -p "${_bare}/etc"
+cp /etc/lab_creation.cfg.example "${_bare}/etc/"
+( _host_fqdn="" _host_ip="" ROOT_PWD_HASH="" write_lab_creation_cfg "${_bare}" )
+grep -q "^#REMOTE_HOST=''" "${_bare}/etc/lab_creation.cfg" && grep -q '^#VIRT_SRV=' "${_bare}/etc/lab_creation.cfg" \
+    || fail "a node without a KVM host keeps REMOTE_HOST/VIRT_SRV active"
+grep -q '^ROOT_PWD_HASH=' "${_bare}/etc/lab_creation.cfg" && fail "a node without a password hash keeps the example's hash"
 
 # At boot: nothing is downloaded and the restart does not wait.
 rm -f /srv/www/htdocs/helm/KEYS
 run_configure --boot
 grep -q "^curl" "${_log}" && fail "configure --boot downloaded files"
 grep -q "^systemctl restart --no-block named apache2 sshd$" "${_log}" || fail "configure --boot restarts the services blocking"
+
+# A container on its host's network shares the host's port 22: its sshd is disabled, not restarted.
+_node_network=host write_node_settings /
+run_configure
+grep -q "^systemctl disable --now sshd.service$" "${_log}" || fail "a host-network container keeps its sshd"
+grep -q "^systemctl reset-failed sshd.service$" "${_log}" || fail "a host-network container keeps its sshd's failed state"
+grep -q "^systemctl restart named apache2$" "${_log}" || fail "a host-network container does not restart named and apache2 only"
 
 # ── a VM node ─────────────────────────────────────────────────────────────────
 vm_settings() {

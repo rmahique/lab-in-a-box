@@ -135,6 +135,11 @@ def is_bridge(dev: str) -> bool:
     return Path("/sys/class/net/{}/bridge".format(dev)).is_dir()
 
 
+def bridges() -> List[str]:
+    """The names of this host's bridge devices, sorted."""
+    return sorted(p.parent.name for p in Path("/sys/class/net").glob("*/bridge") if p.is_dir())
+
+
 def _netplan_defines(nic: str) -> bool:
     if not shutil.which("netplan") or not list(Path("/etc/netplan").glob("*.yaml")):
         return False

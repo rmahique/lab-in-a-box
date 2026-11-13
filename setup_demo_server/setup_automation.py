@@ -37,6 +37,7 @@ __version__ = "__LABVERSION__"
 
 import sys
 from pathlib import Path
+from typing import Dict
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 for _candidate in ("/usr/local/lib/lab_creation", str(_SCRIPT_DIR.parent / "libs"),
@@ -44,6 +45,7 @@ for _candidate in ("/usr/local/lib/lab_creation", str(_SCRIPT_DIR.parent / "libs
     if Path(_candidate).is_dir() and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
+import host_network  # noqa: E402
 import primary  # noqa: E402
 import kvm_host_profiles  # noqa: E402
 import setup_credentials  # noqa: E402
@@ -68,6 +70,21 @@ def parse_args(argv):
                        help="never prepare this host as a KVM hypervisor, even for vm mode "
                             "(fails if vm mode actually needs one and it isn't ready already)")
     return skn._finish_parse(p, argv)
+
+
+def host_network_values(automation_cfg: Dict[str, str], kvm_cfg: Dict[str, str]) -> Dict[str, str]:
+    """
+    The automation.cfg values that put a container automation node on this host's own network
+    (_automation_network="host", _myip the host's address): when the host has no bridge for it and the
+    lab network is not nat, a container cannot get an address of its own here, and a cloud provider
+    would drop one anyway. {} for any other node, or one already on the host's network.
+    """
+    if (automation_cfg.get("_automation_node") != "container"
+            or automation_cfg.get("_automation_network") == "host"
+            or kvm_cfg.get("_network_mode") == "nat" or host_network.bridges()):
+        return {}
+    return {"_automation_network": "host",
+            "_myip": host_network.current_settings().address.split("/")[0]}
 
 
 def main(argv=None):
@@ -106,6 +123,13 @@ def main(argv=None):
         kvm_cfg = primary.load_shell_vars(kvm_path)
     else:
         kvm_cfg = {}
+    on_host = host_network_values(automation_cfg, kvm_cfg)
+    if on_host:
+        skn._write_cfg(automation_path, "automation.cfg.template", False, {}, on_host)
+        automation_cfg = primary.load_shell_vars(automation_path)
+        print("- This host has no bridge and is not set up as a KVM host: the automation container shares its "
+              "network, at {}. Lab commands run on this host through wrappers; keep lab files under "
+              "/var/lib/lab-in-a-box/labs.".format(on_host["_myip"]))
     cfg = dict(kvm_cfg, **automation_cfg)
 
     print("\nautomation node {} ({}) at {}, gateway {}, DNS {}{}".format(

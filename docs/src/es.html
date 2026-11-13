@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">El nodo de automatización en una nube</h3>
-<p>El nodo de automatización es la máquina en la que se ejecutan los comandos. Puede ser la VM en un host KVM que construye <code>setup_kvm_node.py</code>, un contenedor o un pod (<code>_automation_node</code> en <code>lab.cfg</code>), o una instancia en la nube. En una nube se construye con <code>setup_automation_node.py &lt;lab.json&gt; &lt;nodo&gt;</code>, donde el nodo es un nodo corriente de una definición de laboratorio en un backend de nube: se crea por la misma vía que cualquier otro nodo, y después se ejecuta sobre él por SSH el mismo <code>automation-node-lib.sh configure</code> que recibe una VM de automatización.</p>
+<p>El nodo de automatización es la máquina en la que se ejecutan los comandos. Puede ser la VM en un host KVM que construye <code>setup_kvm_node.py</code>, un contenedor o un pod (<code>_automation_node</code> en <code>lab.cfg</code>), o una instancia en la nube. En una nube se construye con <code>setup_automation_node.py &lt;lab.json&gt; &lt;nodo&gt;</code>, donde el nodo es un nodo corriente de una definición de laboratorio en un backend de nube: se crea por la misma vía que cualquier otro nodo, y después se ejecuta sobre él por SSH el mismo <code>automation-node-lib.sh configure</code> que recibe una VM de automatización. Una instancia que ya existe con ese nombre solo se configura, no se vuelve a crear, así que ejecutarlo de nuevo es seguro. Un contenedor en un host sin bridge y no configurado como host KVM comparte la red y la dirección del host: no ejecuta un servidor SSH propio, el host recibe envoltorios para los comandos del laboratorio (<code>setup_lab.py</code>, <code>setup_vm.py</code>, …) que los ejecutan dentro de él, y los archivos de laboratorio que se les pasan deben estar bajo <code>/var/lib/lab-in-a-box/labs</code>, que el contenedor comparte.</p>
 <p>La razón para querer uno es la resolución de nombres. Un laboratorio en una cuenta de nube resuelve sus propios nodos a través del servidor DNS de esa misma cuenta, y un nodo de automatización allí sirve la zona del laboratorio por sí mismo, así que nada del laboratorio depende de que una máquina en casa sea alcanzable. Su BIND responde de forma autoritativa para el dominio del laboratorio desde cualquier sitio y solo resuelve de forma recursiva para los rangos privados, de modo que una instancia con el puerto 53 alcanzable desde internet no es un resolver abierto: resolver una VM del laboratorio por nombre necesita una respuesta autoritativa, nunca recursión. El puerto 53 solo es alcanzable si la lista de puertos del nodo lo dice, por ejemplo <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>.</p>
 <p>Apuntar algo a ese servidor queda en sus manos: añada su dirección como nameserver donde quiera que los nombres del laboratorio se resuelvan. El comando imprime la dirección a usar al terminar.</p>
 <h3 id="naming-an-image-instead-of-an-id">Nombrar una imagen en lugar de un ID</h3>
@@ -442,7 +442,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p>Ajustes principales de <code>lab_creation.cfg</code>:</p>
@@ -1477,7 +1476,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>Valores predeterminados de todo el sistema que carga cada script. Define rutas, temporizadores de espera predeterminados y listas de paquetes. <strong>No lo edite</strong> salvo que sepa lo que hace.</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>Configuración específica del nodo para la VM de automatización. Se copia de <code>/etc/lab_creation.cfg.example</code> durante la configuración. Variables principales:</p>
+<p>Configuración específica del nodo para la VM de automatización. La configuración del nodo de automatización la escribe a partir de <code>/etc/lab_creation.cfg.example</code>, con los valores del propio nodo, cuando aún no existe; nunca sobrescribe una existente. Variables principales:</p>
 <table>
 <thead>
 <tr>
