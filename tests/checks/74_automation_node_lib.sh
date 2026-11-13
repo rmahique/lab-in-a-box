@@ -155,4 +155,27 @@ grep -q "^IPADDR='192.0.2.10'$" /etc/sysconfig/network/ifcfg-eth0 && grep -q "^d
     || fail "the VM's wicked configuration is not written"
 [[ "$(grep -c "/srv/www/htdocs/sources fuse.sshfs" /etc/fstab)" == 1 ]] || fail "a re-run added the fstab entry twice"
 
+# ── SLES products ─────────────────────────────────────────────────────────────
+# A registered SLES node activates PackageHub (salt-ssh, sshfs) before installing; Leap and an unregistered SLES do not.
+cat > "${_bin}/SUSEConnect" <<'EOF'
+#!/bin/bash
+echo "SUSEConnect $*" >> "${STUB_LOG}"
+[[ "$1" == --status ]] && echo "[{\"identifier\":\"SLES\",\"status\":\"${STUB_SCC_STATUS:-Registered}\"}]"
+exit 0
+EOF
+chmod 0755 "${_bin}/SUSEConnect"
+printf 'ID="sles"\nVERSION_ID="16.1"\n' > "${_t}/os-sles"
+printf 'ID="opensuse-leap"\nVERSION_ID="16.0"\n' > "${_t}/os-leap"
+: > "${_log}"
+node_enable_products "${_t}/os-sles" 2>/dev/null
+grep -qx "SUSEConnect --product PackageHub/16.1/$(uname -m)" "${_log}" || fail "a registered SLES node does not activate PackageHub"
+: > "${_log}"
+node_enable_products "${_t}/os-leap" 2>/dev/null
+grep -q "SUSEConnect" "${_log}" && fail "a Leap node calls SUSEConnect"
+: > "${_log}"
+[[ "$(STUB_SCC_STATUS="Not Registered" node_enable_products "${_t}/os-sles" 2>&1)" == *"not registered"* ]] \
+    || fail "an unregistered SLES node is not reported"
+grep -q "SUSEConnect --product" "${_log}" && fail "an unregistered SLES node tries to activate a product"
+rm -f "${_bin}/SUSEConnect"
+
 exit "${_fail}"

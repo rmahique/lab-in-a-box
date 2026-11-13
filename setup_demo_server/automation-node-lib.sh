@@ -36,6 +36,10 @@ _LEAP15_PYTHON="python3.11"
 _LEAP16_PACKAGES="python313 python313-cryptography python313-PyYAML"
 _LEAP16_PYTHON="python3.13"
 
+# Products a registered SLES node activates before installing _VM_PACKAGES: SLES ships salt-ssh and sshfs only in
+# PackageHub (as libs/kvm_host_profiles.py's SLES profiles also activate); openSUSE Leap has them in its own repositories.
+_SLES_PRODUCTS="PackageHub"
+
 # Writes NODE_DIR/settings (mode 0600) under ROOT from the current values of NODE_SETTINGS. A setting that is unset
 # is written empty: every optional one, such as _kubectl_install, is absent on the nodes that do not need it.
 function write_node_settings() {
@@ -308,9 +312,28 @@ function write_authorized_keys() {
     chmod 0600 "${_f}"
 }
 
+# Activates _SLES_PRODUCTS on a registered SLES node, best effort: a product that cannot be activated leaves the
+# package installation to name what is missing. Does nothing on other distributions or an unregistered SLES.
+# $1: the os-release file to read (default /etc/os-release).
+function node_enable_products() {
+    local _os_release="${1:-/etc/os-release}" _id="" _ver="" _p
+    _id="$(. "${_os_release}" && echo "${ID}")"
+    [[ "${_id}" == sles ]] || return 0
+    if ! command -v SUSEConnect >/dev/null || ! SUSEConnect --status 2>/dev/null | grep -q '"status":"Registered"'; then
+        echo "WARNING: this SLES node is not registered; ${_SLES_PRODUCTS} cannot be activated" >&2
+        return 0
+    fi
+    _ver="$(. "${_os_release}" && echo "${VERSION_ID}")"
+    for _p in ${_SLES_PRODUCTS}; do
+        SUSEConnect --product "${_p}/${_ver}/$(uname -m)" \
+            || echo "WARNING: activating ${_p}/${_ver} failed; the packages only it provides will be missing" >&2
+    done
+}
+
 # Installs the VM's packages and sets which services start at boot.
 function node_install_packages() {
     local _pkgs="${_VM_PACKAGES}" _version=""
+    node_enable_products
     _version="$(. /etc/os-release && echo "${VERSION_ID%%.*}")"
     case "${_version}" in
         16) _pkgs+=" ${_LEAP16_PACKAGES}"; _python_bin="${_python_bin:-${_LEAP16_PYTHON}}" ;;
