@@ -1851,10 +1851,74 @@ async function refreshPreviewAddresses() {
 }
 
 // ---- lab actions -----------------------------------------------------------
+// How many wrong passphrases a credential Validate accepts before it gives up.
+const PASSPHRASE_TRIES = 3;
+
+/* Whether lab definition `lab` names a cloud account, whose credentials only a logged-in Validate can check. */
+function usesCloudAccount(lab) {
+  return Boolean(((lab || {}).common || {}).cloud_account)
+    || Object.values((lab || {}).nodes || {}).some((n) => Boolean((n || {}).cloud_account));
+}
+
+/* The logged-in Validate: `call(passphrase)` runs it on the server (lab-builder-helper, as root, the credentials
+ * read); `ask(failed)` asks for the passphrase, `failed` being how many were wrong so far, and resolves null when
+ * cancelled. A wrong passphrase is asked again, PASSPHRASE_TRIES wrong ones end it. Resolves the server's answer, or
+ * {ok: false, output} when it was cancelled or ended. */
+async function validateWithCredentials(call, ask) {
+  let passphrase = "";
+  let failed = 0;
+  for (;;) {
+    const r = await call(passphrase);
+    if (!r.need_passphrase && !r.wrong_passphrase) return r;
+    if (r.wrong_passphrase) failed++;
+    if (failed >= PASSPHRASE_TRIES) {
+      return { ok: false, output: `Validation failed: the credential passphrase was wrong ${failed} times.` };
+    }
+    passphrase = await ask(failed);
+    if (passphrase === null) return { ok: false, output: "Validation cancelled: no credential passphrase given." };
+  }
+}
+
+/* The passphrase dialog; resolves the passphrase typed, or null when cancelled. */
+function askPassphrase(failed) {
+  return new Promise((resolve) => {
+    const input = $("#passInput");
+    const msg = $("#passMsg");
+    input.value = "";
+    msg.hidden = !failed;
+    msg.textContent = failed
+      ? `Wrong passphrase (${failed} of ${PASSPHRASE_TRIES} attempts used). Try again.` : "";
+    const dlg = $("#passDialog");
+    const done = (value) => {
+      $("#passOk").onclick = $("#passCancel").onclick = input.onkeydown = dlg.oncancel = null;
+      input.value = "";
+      closeDialog("#passDialog");
+      resolve(value);
+    };
+    $("#passOk").onclick = () => done(input.value);
+    $("#passCancel").onclick = () => done(null);
+    input.onkeydown = (e) => { if (e.key === "Enter") done(input.value); };
+    dlg.oncancel = (e) => { e.preventDefault(); done(null); };   // Escape closes it as Cancel does
+    showDialog("#passDialog");
+    input.focus();
+  });
+}
+
 async function validateLab() {
   const box = $("#validateResult");
   try {
-    const r = await apiPost("validate", { config: state.lab });
+    // A lab with a cloud account is validated with its credentials when the server actions can be used: through the
+    // login, as root. Without a login (cancelled, or none set up), the public Validate checks everything else.
+    let r = null;
+    if (usesCloudAccount(state.lab) && !serverLock()) {
+      try {
+        r = await validateWithCredentials(
+          (passphrase) => adminCall("validate-credentials", { config: state.lab, passphrase }), askPassphrase);
+      } catch (e) {
+        if (!/log in/.test(e.message)) throw e;
+      }
+    }
+    if (!r) r = await apiPost("validate", { config: state.lab });
     box.hidden = false;
     box.className = "validate-result " + (r.ok ? "ok" : "err");
     // A valid lab can still carry warnings, so the report is shown either way.

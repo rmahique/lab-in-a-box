@@ -310,7 +310,7 @@ _PREFLIGHT_OWN_FIELDS = ("backend", "cloud_account", "config_method", "install_t
 
 
 def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None,
-                            vm_img_loc=None, issues_out=None, host_checks=True):
+                            vm_img_loc=None, issues_out=None, host_checks=True, read_credentials=True):
     """
     Preflight-validate an already loaded lab definition. Prints a full report of errors and warnings, and returns True when
     there are no errors. Warnings never block.
@@ -329,6 +329,9 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                          "existing" nodes, the VM-name collision and resource probes on the host, the informational IP
                          ping, and the source-image checks. Only the definition's own contents are then validated, so
                          callers without SSH access to the hypervisors (the lab-builder's CGI) can validate a lab.
+        read_credentials : when False, cloud accounts are never read or decrypted: an account is only looked for, and its
+                         type is taken from its <type>-<account> file name. For a caller that may not read the credential
+                         files and cannot ask for a passphrase (the lab-builder's public Validate).
 
     The function validates the definition's contents and does not re-read the file. Empty collections are skipped, so an empty
     nodes object is not reported as an error.
@@ -408,7 +411,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                 err("{}.{}[{}]: {}".format(where, ssh_keys.FIELD, i, problem))
 
     from backends import BACKENDS, CLOUD_BACKEND_NAMES
-    from primary import try_load_cloud_account
+    from primary import cloud_account_not_found, cloud_account_path, credentials_dirs, try_load_cloud_account
     common_backend = _jq_or(common.get("backend"))
     if not _empty(common_backend) and common_backend not in BACKENDS:
         err("common.backend '{}' is invalid — must be one of: {}".format(
@@ -419,6 +422,27 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     # here so section 6's libvirt-vs-cloud split can reuse it.
     node_account_cloudtype = {}
 
+    def _account_type(acct_name):
+        """
+        (cloudtype, error, note) for cloud account `acct_name`. With read_credentials, its file is loaded, which
+        decrypts it. Without (the lab-builder's public Validate, whose user may not read the files), the file is
+        only looked for and the cloudtype is the <type> of its <type>-<account> name; a name not of that form gives
+        a note rather than a type.
+        """
+        if read_credentials:
+            data, e = try_load_cloud_account(acct_name, config=config)
+            return (data or {}).get("CLOUDTYPE") or "", e, ""
+        if cloud_account_path(acct_name, config) is None:
+            if any(os.path.isdir(d) and not os.access(d, os.X_OK) for d in credentials_dirs(config)):
+                return None, None, ("cloud_account '{}': the credential files are not visible to this user; log in "
+                                    "to validate it with its credentials".format(acct_name))
+            return None, cloud_account_not_found(acct_name, config), ""
+        prefix = acct_name.split("-", 1)[0]
+        if prefix in CLOUD_BACKEND_NAMES:
+            return prefix, None, ""
+        return None, None, ("cloud_account '{}': its type cannot be told from its name (<type>-<account>) and its "
+                            "file is not read here; log in to validate it with its credentials".format(acct_name))
+
     def _account_cloudtype_for(node):
         """The cloudtype a node's cloud_account resolves to, or None. Errors are
         reported once, in the per-node loop below — this only returns the type."""
@@ -427,9 +451,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         acct_name = _jq_or((nodes.get(node) or {}).get("cloud_account")) or _jq_or(common.get("cloud_account"))
         ct = None
         if not _empty(acct_name):
-            data, _e = try_load_cloud_account(acct_name, config=config)
-            if data:
-                ct = data.get("CLOUDTYPE") or None
+            ct = _account_type(acct_name)[0] or None
         node_account_cloudtype[node] = ct
         return ct
 
@@ -468,11 +490,12 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         cloud_account = _jq_or(node_cfg.get("cloud_account")) or _jq_or(common.get("cloud_account"))
         account_cloudtype = None
         if not _empty(cloud_account):
-            acct_data, acct_err = try_load_cloud_account(cloud_account, config=config)
+            account_cloudtype, acct_err, acct_note = _account_type(cloud_account)
             if acct_err:
                 err("nodes.{}: {}".format(node, acct_err))
+            elif acct_note:
+                warn("nodes.{}: {}".format(node, acct_note))
             else:
-                account_cloudtype = acct_data.get("CLOUDTYPE") or ""
                 if account_cloudtype not in CLOUD_BACKEND_NAMES:
                     err("nodes.{}: cloud_account '{}' has cloudtype '{}' — must be one of: {}".format(
                         node, cloud_account, account_cloudtype, ", ".join(sorted(CLOUD_BACKEND_NAMES))))

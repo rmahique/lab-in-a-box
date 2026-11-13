@@ -481,6 +481,53 @@ check("validate_lab_definition: the add-on's own error is reported",
       _ok is False and any("fakeaddon.fake_field is required" in line for line in _issues))
 apps.addon_installer, lc.subprocess.run = _orig_installer, _orig_run
 
+# read_credentials=False (the lab-builder's public Validate): an account is only looked for, never read, and its type
+# comes from its <type>-<account> name.
+_cred_dir = tempfile.mkdtemp()
+with open(os.path.join(_cred_dir, "aws-team.yaml"), "w") as _fh:
+    _fh.write("{this is not: [valid yaml\n")          # would be a parse error if it were read
+open(os.path.join(_cred_dir, "corp.yaml"), "w").close()
+_cred_cfg = dict(single_host_cfg, CREDENTIALS_PATH=_cred_dir)
+
+
+def _cloud_lab(account):
+    return _lab_def({"common": dict(base_common, cloud_account=account), "nodes": {"c1.mydemo.lab": {}}})
+
+
+_issues = []
+lc.validate_lab_definition(_cloud_lab("aws-team"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                           read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: without read_credentials an account file is not read",
+      not any("aws-team" in line for line in _issues))
+_issues = []
+check("validate_lab_definition: ...but read with it (the default), where its parse error shows",
+      lc.validate_lab_definition(_cloud_lab("aws-team"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_issues) is False
+      and any("aws-team" in line for line in _issues))
+_issues = []
+check("validate_lab_definition: without read_credentials a missing account is still an error",
+      lc.validate_lab_definition(_cloud_lab("aws-nope"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                                 read_credentials=False, issues_out=_issues) is False
+      and any("not found" in line for line in _issues))
+_issues = []
+_ok = lc.validate_lab_definition(_cloud_lab("corp"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                                 read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: an account name without its type is a warning asking to log in",
+      any("WARN" in line and "log in" in line for line in _issues))
+_conflict = _lab_def({"common": dict(base_common, cloud_account="aws-team", backend="gcp"), "nodes": {"c1.mydemo.lab": {}}})
+_issues = []
+check("validate_lab_definition: a type from the name that contradicts backend is an error",
+      lc.validate_lab_definition(_conflict, _cred_cfg, "/iso", "/lab", host_checks=False, read_credentials=False,
+                                 issues_out=_issues) is False
+      and any("backend is set to 'gcp'" in line for line in _issues))
+
+# A credential file that cannot be read is an error returned, not an exception (a directory stands in for an unreadable
+# file: this container runs as root, which reads any file).
+os.mkdir(os.path.join(_cred_dir, "aws-dir.yaml"))
+_data, _err = primary.try_load_cloud_account("aws-dir", config=_cred_cfg)
+check("try_load_cloud_account: an unreadable file is returned as an error",
+      _data is None and "cannot be read" in (_err or ""))
+
 _mixed_set = _lab_def({"common": dict(base_common, mydomain="mydemo.lab"), "nodes": dict(_mixed["nodes"])})
 check("validate_lab_definition: the same names pass once mydomain is set",
       lc.validate_lab_definition(_mixed_set, single_host_cfg, "/iso", "/lab", host_checks=False) is True)

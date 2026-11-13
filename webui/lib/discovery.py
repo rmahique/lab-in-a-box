@@ -508,7 +508,9 @@ def validate_lab(definition):
     Validate a full lab definition with the same preflight setup_lab.py runs (lab_creation.validate_lab_definition),
     so what this reports and what a deploy accepts cannot drift apart. Its host checks are off: this runs as the web
     server's user, which has no SSH access to the hypervisors, so a node's reachability and the source image on the
-    host are not checked here.
+    host are not checked here. Nor are credentials read: they are root-only and may need a passphrase, so a cloud
+    account is only looked for and its type taken from its <type>-<account> name. A logged-in Validate checks them
+    through lab-builder-helper instead (admin.py's "validate").
 
     The definition is written to a temporary file first, because the preflight reads source_path for its report and
     passes that path to each referenced add-on's own --validate. The file is removed before returning.
@@ -529,7 +531,8 @@ def validate_lab(definition):
         # credentials, so this never reads them: the web server's user has no business doing so, and the host checks
         # those settings drive are off here anyway.
         snapshot = status().get("config", {})
-        config = {k: v for k, v in snapshot.items() if k in ("REMOTE_HOST", "KVM_HOSTS", "VIRT_SRV", "BACKEND")}
+        config = {k: v for k, v in snapshot.items()
+                  if k in ("REMOTE_HOST", "KVM_HOSTS", "VIRT_SRV", "BACKEND", "CREDENTIALS_PATH")}
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             try:
                 loaded = primary.load_definition(path)
@@ -538,7 +541,7 @@ def validate_lab(definition):
                     snapshot.get("ISO_LOC") or "/var/lib/libvirt/images/sources",
                     os.environ.get("LABBUILDER_LAB_SETUP_PATH") or "/srv/www/htdocs/lab_creation",
                     vm_img_loc=(snapshot.get("VM_IMG_LOC") or "/var/lib/libvirt/images/").rstrip("/"),
-                    host_checks=False,
+                    host_checks=False, read_credentials=False,
                 )
             except SystemExit:
                 ok = False

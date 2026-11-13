@@ -265,6 +265,12 @@ def cloud_account_path(name, config=None):
     return None
 
 
+def cloud_account_not_found(name, config=None) -> str:
+    """The message for cloud account `name` having no file in any of credentials_dirs(config)."""
+    return "cloud account '{}' not found — looked for <name>.{{{}}} in: {}".format(
+        name, ",".join(e.lstrip(".") for e in _CLOUD_ACCOUNT_EXTS), ", ".join(credentials_dirs(config)))
+
+
 def list_cloud_accounts(config=None):
     """
     Return every parseable credentials file under credentials_dirs(config), as (name, cloudtype) pairs. cloudtype is always a
@@ -467,11 +473,12 @@ def try_load_cloud_account(name, config=None, passphrase_prompt=None):
     """
     p = cloud_account_path(name, config)
     if p is None:
-        return None, ("cloud account '{}' not found — looked for <name>.{{{}}} in: {}".format(
-            name, ",".join(e.lstrip(".") for e in _CLOUD_ACCOUNT_EXTS),
-            ", ".join(credentials_dirs(config))))
+        return None, cloud_account_not_found(name, config)
 
-    text = p.read_text()
+    try:
+        text = p.read_text()
+    except OSError as e:
+        return None, "cloud account '{}' ({}) cannot be read: {}".format(name, p, e.strerror or e)
     try:
         if p.suffix.lower() == ".json":
             data = json.loads(text)
