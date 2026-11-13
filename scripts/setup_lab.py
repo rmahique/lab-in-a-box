@@ -45,6 +45,7 @@ import spacecmd_common as sc  # noqa: E402
 import services  # noqa: E402
 import backends  # noqa: E402
 import harvester  # noqa: E402
+import ssh_keys  # noqa: E402
 from destroy_vm import destroy_vm  # noqa: E402
 from setup_vm import provision_vm, refresh_kept_node_dns  # noqa: E402
 
@@ -892,6 +893,19 @@ def phase_vm_addons(definition, lab_file):
         lc._level -= 1
 
 
+def phase_ssh_keys(definition):
+    """
+    Add every node's ssh_authorized_keys (libs/ssh_keys.py) to it, for the nodes this run created or reused: an
+    existing host is not the lab's to change, and a clu_type harvester node has no root SSH. A key that cannot be
+    added is a warning in the run summary.
+    """
+    for vm_name, status in list(_report.nodes):
+        if status not in ("created", "reused") or harvester.cluster_of(definition, vm_name):
+            continue
+        for msg in ssh_keys.install_node_keys(definition, vm_name):
+            _report.add_warning(msg)
+
+
 def phase_post_commands(definition):
     """
     Run every node's post_commands, now that its Kubernetes join and its own add-ons are done. A node whose VM
@@ -927,6 +941,7 @@ def setup_lab(definition, config, defaults, lab_file, keep=False, fresh=True, pa
         phase_dns(definition, remote_dns_servers)
 
     phase_create_vms(definition, config, defaults, lab_file, keep, parallel=parallel)
+    phase_ssh_keys(definition)
 
     if has_k8s:
         phase_reboot_and_wait_kept_nodes(definition, config, keep)

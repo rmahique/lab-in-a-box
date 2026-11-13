@@ -66,6 +66,26 @@ check("pattern mismatch rejected",
 check("pattern match accepted",
   sandbox.validateFieldValue({ type: "string", pattern: "^\\d+\\.\\d+\\.\\d+\\.\\d+$" }, "10.0.0.1") === null);
 
+// -- list-of-items widget (item_fields): rows <-> items --------------------
+{
+  const field = { name: "ssh_authorized_keys", type: "array", item_shorthand: "key",
+    item_fields: [{ name: "key", required: true }, { name: "user" }] };
+  const rows = sandbox.itemsToRows(["ssh-ed25519 AAAA a@b", { key: "https://github.com/bob.keys", user: "bob" }], field);
+  check("items: a plain string becomes a row with only the shorthand field",
+    rows[0].key === "ssh-ed25519 AAAA a@b" && rows[0].user === undefined);
+  check("items: a mapping keeps its fields", rows[1].key === "https://github.com/bob.keys" && rows[1].user === "bob");
+  const items = sandbox.rowsToItems([{ key: " ssh-ed25519 AAAA a@b ", user: "" },
+    { key: "/root/team.pub", user: "alice" }, { key: "", user: "carol" }], field);
+  check("items: a row with only the key is written as the plain string", items[0] === "ssh-ed25519 AAAA a@b");
+  check("items: a row with a user is written as a mapping",
+    items[1].key === "/root/team.pub" && items[1].user === "alice");
+  check("items: a row missing its required key is dropped", items.length === 2);
+  check("items: no rows is no value", sandbox.rowsToItems([], field) === undefined);
+  check("readWidget: an items widget reads its rows back as items",
+    JSON.stringify(sandbox.readWidget({ value: JSON.stringify([{ key: "/k.pub", user: "" }]),
+      dataset: { ftype: "items" }, _field: field })) === JSON.stringify(["/k.pub"]));
+}
+
 // -- applyFieldDefault: plain input placeholder --------------------------
 {
   const field = { name: "VM_MEM", type: "integer", default: 24576 };

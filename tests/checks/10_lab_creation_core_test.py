@@ -441,6 +441,20 @@ check("validate_lab_definition: node names in different domains with no mydomain
                                  issues_out=_issues) is False)
 check("validate_lab_definition: and the error asks for mydomain",
       any("cannot determine the default domain name" in line for line in _issues))
+_keys_bad = _lab_def({"common": dict(base_common, ssh_authorized_keys=["http://example.com/keys"]),
+                      "nodes": {"vm1": {"myip": "192.168.1.54", "mymac": "aa:bb:cc:dd:ee:0d",
+                                        "config_method": "virt_customize"}}})
+_issues = []
+check("validate_lab_definition: an ssh_authorized_keys entry over http fails",
+      lc.validate_lab_definition(_keys_bad, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_issues) is False
+      and any("common.ssh_authorized_keys[0]" in line and "https" in line for line in _issues))
+_keys_ok = _lab_def({"common": dict(base_common, ssh_authorized_keys=[
+                        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaaaa a@b", {"key": "/not/here.pub", "user": "bob"}]),
+                     "nodes": {"vm1": {"myip": "192.168.1.55", "mymac": "aa:bb:cc:dd:ee:0e",
+                                       "config_method": "virt_customize"}}})
+check("validate_lab_definition: a key line and a file path pass without host checks",
+      lc.validate_lab_definition(_keys_ok, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 _mixed_set = _lab_def({"common": dict(base_common, mydomain="mydemo.lab"), "nodes": dict(_mixed["nodes"])})
 check("validate_lab_definition: the same names pass once mydomain is set",
       lc.validate_lab_definition(_mixed_set, single_host_cfg, "/iso", "/lab", host_checks=False) is True)

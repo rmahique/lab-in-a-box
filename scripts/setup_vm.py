@@ -42,6 +42,7 @@ from targets import is_existing_node  # noqa: E402
 import backends  # noqa: E402
 import harvester  # noqa: E402
 import overlay  # noqa: E402
+import ssh_keys  # noqa: E402
 from destroy_vm import destroy_vm  # noqa: E402
 
 
@@ -490,6 +491,9 @@ def main():
         die("destroy before recreate failed for '{}': {}".format(vm_name, e))
 
     failures = provision_vm(definition, config, defaults, vm_name)
+    # A key that cannot be added is a warning, printed by install_node_keys(), and does not fail the VM.
+    if not harvester.cluster_of(definition, vm_name):
+        ssh_keys.install_node_keys(definition, vm_name)
     # Provisioning one VM on its own has no later phase, so its post_commands run here. Under setup_lab.py they run
     # after this node's Kubernetes join and its own add-ons instead (phase_post_commands).
     failures += run_node_commands(definition, vm_name, "post")

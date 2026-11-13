@@ -136,6 +136,8 @@ def value_finding(field: dict, value, where: str = ""):
     if kind == "array":
         if not isinstance(value, (list, tuple)):
             return Finding("error", where, "'{}' is not a list".format(value))
+        if field.get("item_fields"):
+            return _items_finding(field, value, where)
         return None
     if kind == "object":
         if not isinstance(value, dict):
@@ -151,6 +153,28 @@ def value_finding(field: dict, value, where: str = ""):
     pattern = field.get("pattern")
     if pattern and not re.match(pattern, str(value)):
         return Finding("error", where, "'{}' does not match the form this field takes ({})".format(value, pattern))
+    return None
+
+
+def _items_finding(field: dict, items, where: str):
+    """
+    The first Finding among the items of array field `field`, which declares "item_fields": each item is a mapping of
+    those fields, or, when the field declares "item_shorthand", a string standing for that one field.
+    """
+    shorthand = field.get("item_shorthand")
+    for i, item in enumerate(items):
+        at = "{}[{}]".format(where, i)
+        if shorthand and isinstance(item, str):
+            item = {shorthand: item}
+        if not isinstance(item, dict):
+            return Finding("error", at, "'{}' is not a mapping{}".format(
+                item, " or a string" if shorthand else ""))
+        for sub in field["item_fields"]:
+            if sub.get("required") and _absent(item.get(sub["name"])):
+                return Finding("error", at, "'{}' is required".format(sub["name"]))
+        found = section_findings(field["item_fields"], item, at)
+        if found:
+            return found[0]
     return None
 
 

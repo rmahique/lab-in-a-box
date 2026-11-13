@@ -995,6 +995,7 @@ function renderCanvas() {
 // build the form, serializeForm()/readWidget() read it back.
 function setWidgetValue(input, val) {
   if (val === undefined || val === null) return;
+  if (typeof input._setItems === "function") { input._setItems(Array.isArray(val) ? val : [val]); return; }
   const s = Array.isArray(val) ? val.join(",") : String(val);
   if (typeof input._setFromValue === "function") input._setFromValue(s);
   if (input.tagName === "SELECT") {
@@ -1147,7 +1148,9 @@ function fieldRow(field, outPath, repeatMode) {
   // Special hybrid control for SOURCE_IMAGE: the images really present on the KVM hosts (field.enum, injected by
   // discovery.image_choices() as {value: file name, label: "<host> - <file name>"}) plus a free-text URL or path. The
   // list is empty where no host can be read, such as the published static build, leaving only the free-text input.
-  if (field.name === "SOURCE_IMAGE") {
+  if (field.type === "array" && Array.isArray(field.item_fields)) {
+    input = itemsWidget(field, row);
+  } else if (field.name === "SOURCE_IMAGE") {
     const container = el("div", "source-image-container");
 
     const select = el("select");
@@ -1261,7 +1264,7 @@ function fieldRow(field, outPath, repeatMode) {
 
   if (repeatMode) input.dataset.field = field.name;         // serialized per-instance
   else input.dataset.outpath = JSON.stringify(outPath.concat(field.name));
-  input.dataset.ftype = field.type;
+  input.dataset.ftype = Array.isArray(field.item_fields) ? "items" : field.type;
   row.appendChild(input);
 
   // Fields under `common` feed their live value forward as the effective
@@ -1441,6 +1444,82 @@ function instanceBox(fields, keyLabel) {
   return inst;
 }
 
+/* An array field whose schema declares "item_fields" (each item a mapping of those fields, e.g. ssh_authorized_keys'
+ * {key, user}): one row of inputs per item, side by side, with add/remove buttons. Its value lives in a hidden input
+ * as the JSON list of rows, which readWidget() turns back into items. Rendered into `row`; returns the hidden input. */
+function itemsWidget(field, row) {
+  const subs = field.item_fields;
+  const list = el("div", "items-list");
+  const input = el("input");
+  input.type = "hidden";
+  const sync = () => {
+    input.value = JSON.stringify(Array.from(list.childNodes).map((r) => {
+      const obj = {};
+      r.querySelectorAll("input").forEach((i) => { obj[i.dataset.sub] = i.value.trim(); });
+      return obj;
+    }));
+  };
+  const addRow = (values) => {
+    const r = el("div", "items-row");
+    subs.forEach((sub) => {
+      const i = el("input");
+      i.type = "text";
+      i.dataset.sub = sub.name;
+      i.placeholder = sub.name + (sub.required ? " *" : "");
+      i.title = sub.description || sub.name;
+      i.value = (values && values[sub.name]) || "";
+      i.addEventListener("input", () => {
+        i.classList.toggle("invalid", !!validateFieldValue(sub, i.value.trim()));
+        sync();
+      });
+      r.appendChild(i);
+    });
+    const rm = el("button", "btn rm-item", "remove");
+    rm.type = "button";
+    rm.addEventListener("click", () => { r.remove(); sync(); });
+    r.appendChild(rm);
+    list.appendChild(r);
+    sync();
+  };
+  const add = el("button", "btn add-item", "+ add");
+  add.type = "button";
+  add.addEventListener("click", () => addRow(null));
+  input._setItems = (items) => {
+    Array.from(list.childNodes).forEach((r) => r.remove());
+    itemsToRows(items, field).forEach(addRow);
+    sync();
+  };
+  row.appendChild(list);
+  row.appendChild(add);
+  sync();
+  return input;
+}
+
+/* Items as written in a lab (a string stands for the field's "item_shorthand" sub-field) -> one {sub: value} per row. */
+function itemsToRows(items, field) {
+  const short = field.item_shorthand;
+  return (items || []).map((it) => {
+    if (it && typeof it === "object") return Object.assign({}, it);
+    return short ? { [short]: String(it) } : {};
+  });
+}
+
+/* Rows -> items as a lab holds them: empty sub-fields left out, a row without its required sub-fields dropped, and
+ * a row holding only the "item_shorthand" sub-field written as that plain string. */
+function rowsToItems(rows, field) {
+  const short = field.item_shorthand;
+  const required = field.item_fields.filter((s) => s.required).map((s) => s.name);
+  const out = [];
+  (rows || []).forEach((r) => {
+    const obj = {};
+    Object.keys(r).forEach((k) => { const v = String(r[k] || "").trim(); if (v) obj[k] = v; });
+    if (required.some((k) => !obj[k])) return;
+    const keys = Object.keys(obj);
+    out.push(short && keys.length === 1 && keys[0] === short ? obj[short] : obj);
+  });
+  return out.length ? out : undefined;
+}
+
 // ---- serialize form -> fragment -------------------------------------------
 function readWidget(elm) {
   const raw = elm.value.trim();
@@ -1449,6 +1528,7 @@ function readWidget(elm) {
     case "boolean": return raw === "true";
     case "integer": case "port": { const n = Number(raw); return Number.isNaN(n) ? raw : n; }
     case "array": return raw.split(",").map((s) => s.trim()).filter(Boolean);
+    case "items": return rowsToItems(JSON.parse(raw), elm._field);
     default: return raw;
   }
 }

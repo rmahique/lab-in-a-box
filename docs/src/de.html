@@ -564,6 +564,10 @@ rancher:
 <td>Shell-Befehle, die diese VM selbst als root ausführt: <code>pre_commands</code>, sobald sie läuft und bevor irgendeine Kubernetes- oder Add-on-Arbeit beginnt, <code>post_commands</code> nach all dem. Auch in <code>common</code> für jede VM setzbar; die eigene Liste eines Knotens ersetzt sie, und <code>[]</code> nimmt diesen Knoten aus</td>
 </tr>
 <tr>
+<td><code>ssh_authorized_keys</code></td>
+<td>Zusätzliche SSH-Schlüssel, die dieser VM hinzugefügt werden, sobald sie läuft. Jeder Eintrag ist eine Public-Key-Zeile, eine https-URL mit Schlüsseln (etwa <code>https://github.com/&lt;user&gt;.keys</code>) oder ein Dateipfad auf dem Automatisierungsknoten, als einfacher String für root oder als <code>{"key": ..., "user": "alice"}</code> für ein anderes Konto. Auch in <code>common</code> setzbar; die Einträge eines Knotens kommen zu denen aus common hinzu. Ein Benutzer, den es auf der VM nicht gibt, oder eine nicht lesbare Schlüsselquelle ist eine Warnung in der Zusammenfassung des Laufs</td>
+</tr>
+<tr>
 <td><code>extra_dsk</code></td>
 <td>Zusätzliche Festplatte(n), die angehängt werden: <code>"/dev/sdb"</code> oder <code>"/dev/sdb,bus=scsi"</code>, um den Standardbus pro Festplatte zu überschreiben</td>
 </tr>

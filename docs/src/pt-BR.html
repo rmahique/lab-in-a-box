@@ -633,6 +633,10 @@ rancher:
 <td>Comandos de shell que esta VM executa por si mesma, como root: <code>pre_commands</code> assim que ela está no ar e antes de qualquer trabalho de Kubernetes ou de add-ons, <code>post_commands</code> depois de tudo isso. Também podem ser definidos em <code>common</code> para todas as VMs; a lista própria de um nó a substitui, e <code>[]</code> exclui aquele nó</td>
 </tr>
 <tr>
+<td><code>ssh_authorized_keys</code></td>
+<td>Chaves SSH extras adicionadas a esta VM assim que ela estiver no ar. Cada entrada é uma linha de chave pública, uma URL https com chaves (como <code>https://github.com/&lt;user&gt;.keys</code>) ou um caminho de arquivo no nó de automação, como string simples para root ou como <code>{"key": ..., "user": "alice"}</code> para outra conta. Também pode ser definido em <code>common</code>; as entradas próprias de um nó somam-se às de common. Um usuário que não existe na VM, ou uma fonte de chaves que não pode ser lida, é um aviso no resumo da execução</td>
+</tr>
+<tr>
 <td><code>extra_dsk</code></td>
 <td>Discos adicionais a anexar: <code>"/dev/sdb"</code>, ou <code>"/dev/sdb,bus=scsi"</code> para mudar o barramento padrão de um disco</td>
 </tr>

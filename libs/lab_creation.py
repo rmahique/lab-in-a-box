@@ -392,6 +392,17 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         except ValueError as e:
             err(str(e))
 
+    # ssh_authorized_keys: the schema check above covers each entry's shape and user name; this covers its key. A file
+    # is looked for only with host_checks, since the web UI's CGI may not read where the keys are kept.
+    import ssh_keys
+    for where, cfg in [("common", common)] + [("nodes." + n, c or {}) for n, c in nodes.items()]:
+        listed = cfg.get(ssh_keys.FIELD) if isinstance(cfg, dict) else None
+        for i, entry in enumerate(listed if isinstance(listed, list) else []):
+            key = entry if isinstance(entry, str) else (entry.get("key") if isinstance(entry, dict) else None)
+            problem = ssh_keys.source_problem(key.strip(), check_files=host_checks) if isinstance(key, str) else ""
+            if problem:
+                err("{}.{}[{}]: {}".format(where, ssh_keys.FIELD, i, problem))
+
     from backends import BACKENDS, CLOUD_BACKEND_NAMES
     from primary import try_load_cloud_account
     common_backend = _jq_or(common.get("backend"))

@@ -633,6 +633,10 @@ rancher:
 <td>この VM が root として自分で実行するシェルコマンド。<code>pre_commands</code> は起動して到達可能になった直後、Kubernetes やアドオンの作業より前に、<code>post_commands</code> はそのすべてのあとに実行されます。<code>common</code> に書けばすべての VM が対象になり、ノード自身のリストがそれを置き換え、<code>[]</code> はそのノードを除外します</td>
 </tr>
 <tr>
+<td><code>ssh_authorized_keys</code></td>
+<td>VM の起動後に追加する SSH 鍵。各エントリは公開鍵の行、鍵を含む https URL（<code>https://github.com/&lt;user&gt;.keys</code> など）、またはオートメーションノード上のファイルパスで、root 用には文字列のまま、別のアカウント用には <code>{"key": ..., "user": "alice"}</code> と書く。<code>common</code> にも設定でき、ノード自身のエントリは common のものに追加される。VM に存在しないユーザーや読めない鍵の取得元は、実行サマリーの警告になる</td>
+</tr>
+<tr>
 <td><code>extra_dsk</code></td>
 <td>追加で接続するディスク。<code>"/dev/sdb"</code>、またはディスクごとにデフォルトのバスを変える場合は <code>"/dev/sdb,bus=scsi"</code></td>
 </tr>
