@@ -477,6 +477,12 @@ vim /etc/lab_creation.cfg
 </tbody>
 </table>
 <p><strong>HTTP و HTTPS.</strong> تقدّم آلة الأتمتة الافتراضية ملفاتها على المنفذ 80 (HTTP) والمنفذ 443 (HTTPS، بشهادة موقّعة ذاتيًا في <code>/etc/lab_creation/tls/</code>). تنزّل برامج التثبيت (AutoYaST وkickstart وpreseed) وHelm الملفات عبر HTTPS وتقبل الشهادة الموقّعة ذاتيًا. اضبط <code>PROVISIONING_TLS_VERIFY=1</code> للتحقق منها، أو <code>PROVISIONING_BASE_URL</code> (مثل <code>http://192.168.88.250</code>) لاستخدام عنوان آخر أو للعودة إلى HTTP. يستخدم إقلاع iPXE الشبكي في Harvester بروتوكول HTTP دائمًا، لأن iPXE لا يقبل الشهادات الموقّعة ذاتيًا.</p>
+<h3 id="upgrading-lab-in-a-box">ترقية lab-in-a-box</h3>
+<p>لنقل عقدة الأتمتة إلى أحدث إصدار، شغّل بصلاحيات root:</p>
+<pre><code class="language-shell">upgrade_lab_in_a_box                                      # latest main, official repository
+upgrade_lab_in_a_box --repo https://github.com/&lt;you&gt;/lab-in-a-box.git --branch dev
+</code></pre>
+<p>يقوم بنشر أحدث نسخة من <code>main</code> في المستودع الرسمي؛ ويختار <code>--repo</code> و<code>--branch</code> غيرهما، مثل نسخة متفرعة. على مضيف مثبّت من حزمة RPM/DEB المسماة <code>lab-in-a-box</code>، يثبّت بدلاً من ذلك حزمة أحدث إصدار على GitHub عبر zypper أو dnf أو apt، ولا ينطبق <code>--branch</code>.</p>
 <h3 id="step-5--point-your-client-dns-at-the-automation-vm">الخطوة 5: توجيه DNS العميل إلى آلة الأتمتة الافتراضية</h3>
 <p>لكي تُحل أسماء المضيفات من حاسوبك:</p>
 <pre><code class="language-shell"># Linux (NetworkManager):
