@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">عقدة الأتمتة في السحابة</h3>
-<p>عقدة الأتمتة هي الجهاز الذي تعمل عليه الأوامر. وقد تكون الجهاز الظاهري الذي يبنيه <code>setup_kvm_node.py</code> على مضيف KVM، أو حاوية أو جُريبة (<code>_automation_node</code> في <code>lab.cfg</code>)، أو نسخة سحابية. وفي السحابة تُبنى بـ <code>setup_automation_node.py &lt;lab.json&gt; &lt;العقدة&gt;</code>، حيث تكون العقدة عقدةً عادية من تعريف مختبر على خادم خلفي سحابي: تُنشأ بالمسار نفسه الذي تُنشأ به أي عقدة أخرى، ثم يعمل عليها عبر SSH نفس <code>automation-node-lib.sh configure</code> الذي يحصل عليه جهاز أتمتة ظاهري.</p>
+<p>عقدة الأتمتة هي الجهاز الذي تعمل عليه الأوامر. وقد تكون الجهاز الظاهري الذي يبنيه <code>setup_kvm_node.py</code> على مضيف KVM، أو حاوية أو جُريبة (<code>_automation_node</code> في <code>lab.cfg</code>)، أو نسخة سحابية. وفي السحابة تُبنى بـ <code>setup_automation_node.py &lt;lab.json&gt; &lt;العقدة&gt;</code>، حيث تكون العقدة عقدةً عادية من تعريف مختبر على خادم خلفي سحابي: تُنشأ بالمسار نفسه الذي تُنشأ به أي عقدة أخرى، ثم يعمل عليها عبر SSH نفس <code>automation-node-lib.sh configure</code> الذي يحصل عليه جهاز أتمتة ظاهري. المثيل الموجود بالفعل بهذا الاسم يُهيَّأ فقط ولا يُنشأ من جديد، لذا فإن تشغيله مرة أخرى آمن. الحاوية على مضيف بلا جسر شبكي وغير مُعَدّ كمضيف KVM تتشارك شبكة المضيف وعنوانه: لا تشغّل خادم SSH خاصًا بها، ويحصل المضيف على أغلفة لأوامر المختبر (<code>setup_lab.py</code>, <code>setup_vm.py</code>، …) تشغّلها داخلها، ويجب أن تكون ملفات المختبر المُمرَّرة إلى هذه الأوامر تحت <code>/var/lib/lab-in-a-box/labs</code>، الذي تتشاركه الحاوية.</p>
 <p>وسبب الحاجة إليها هو حلّ الأسماء. فالمختبر في حساب سحابي يحلّ أسماء عقده عبر خادم DNS في الحساب نفسه، وعقدة الأتمتة هناك تخدم منطقة المختبر بذاتها، فلا يعتمد أي شيء في المختبر على إمكانية الوصول إلى جهاز في المنزل. ويجيب BIND الخاص بها إجابةً مرجعية لنطاق المختبر من أي مكان، ولا يحلّ تعاوديًا إلا للنطاقات الخاصة، فلا تكون النسخة التي يمكن الوصول إلى منفذها 53 من الإنترنت خادمَ حلٍّ مفتوحًا: فحلّ اسم جهاز ظاهري في المختبر يحتاج إجابة مرجعية، لا تعاودًا. ولا يكون المنفذ 53 قابلًا للوصول إلا إذا نصّت قائمة منافذ العقدة على ذلك، مثل <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>.</p>
 <p>وتوجيه أي شيء إلى ذلك الخادم متروك لك: أضِف عنوانه كخادم أسماء في كل موضع ينبغي أن تُحلّ فيه أسماء المختبر. ويطبع الأمر العنوان الذي يجب استخدامه عند انتهائه.</p>
 <h3 id="naming-an-image-instead-of-an-id">تسمية صورة بدلاً من استخدام مُعرّف</h3>
@@ -442,7 +442,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p>أهم الإعدادات في <code>lab_creation.cfg</code>:</p>
@@ -1477,7 +1476,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>قيم افتراضية على مستوى النظام يحمّلها كل سكربت. تحدد المسارات ومؤقتات الانتظار الافتراضية وقوائم الحزم. <strong>لا تعدّله</strong> إلا إذا كنت تعرف ما تفعل.</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>إعدادات خاصة بالعقدة لآلة الأتمتة الافتراضية. تُنسخ من <code>/etc/lab_creation.cfg.example</code> أثناء الإعداد. أهم المتغيرات:</p>
+<p>إعدادات خاصة بالعقدة لآلة الأتمتة الافتراضية. يكتبها إعداد عقدة الأتمتة من <code>/etc/lab_creation.cfg.example</code> بقيم العقدة نفسها عندما لا تكون موجودة بعد؛ ولا يستبدل أبدًا ملفًا موجودًا. أهم المتغيرات:</p>
 <table>
 <thead>
 <tr>

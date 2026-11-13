@@ -173,7 +173,7 @@
     CB --&gt; CL[&quot;cloud instances&lt;br/&gt;in the account's own network&quot;]
 </pre>
 <h3 id="the-automation-node-in-a-cloud">Le nœud d'automatisation dans un cloud</h3>
-<p>Le nœud d'automatisation est la machine sur laquelle les commandes s'exécutent. Ce peut être la VM sur un hôte KVM que <code>setup_kvm_node.py</code> construit, un conteneur ou un pod (<code>_automation_node</code> dans <code>lab.cfg</code>), ou une instance cloud. Dans un cloud il est construit par <code>setup_automation_node.py &lt;lab.json&gt; &lt;nœud&gt;</code>, où le nœud est un nœud ordinaire d'une définition de lab sur un backend cloud : il est créé par le même chemin que tout autre nœud, puis le même <code>automation-node-lib.sh configure</code> qu'une VM d'automatisation reçoit s'exécute dessus par SSH.</p>
+<p>Le nœud d'automatisation est la machine sur laquelle les commandes s'exécutent. Ce peut être la VM sur un hôte KVM que <code>setup_kvm_node.py</code> construit, un conteneur ou un pod (<code>_automation_node</code> dans <code>lab.cfg</code>), ou une instance cloud. Dans un cloud il est construit par <code>setup_automation_node.py &lt;lab.json&gt; &lt;nœud&gt;</code>, où le nœud est un nœud ordinaire d'une définition de lab sur un backend cloud : il est créé par le même chemin que tout autre nœud, puis le même <code>automation-node-lib.sh configure</code> qu'une VM d'automatisation reçoit s'exécute dessus par SSH. Une instance qui existe déjà sous ce nom est seulement configurée, pas recréée : le relancer est donc sans risque. Un conteneur sur un hôte sans pont et non configuré comme hôte KVM partage le réseau et l'adresse de l'hôte : il n'exécute pas son propre serveur SSH, l'hôte reçoit des enveloppes pour les commandes du laboratoire (<code>setup_lab.py</code>, <code>setup_vm.py</code>, …) qui les exécutent dans le conteneur, et les fichiers de laboratoire qui leur sont passés doivent se trouver sous <code>/var/lib/lab-in-a-box/labs</code>, que le conteneur partage.</p>
 <p>La raison d'en vouloir un est la résolution de noms. Un lab dans un compte cloud résout ses propres nœuds via le serveur DNS de ce même compte, et un nœud d'automatisation là-bas sert lui-même la zone du lab, si bien que rien dans le lab ne dépend de l'accessibilité d'une machine à la maison. Son BIND répond de façon autoritative pour le domaine du lab depuis n'importe où et ne résout récursivement que pour les plages privées : une instance dont le port 53 est joignable depuis internet n'est donc pas un résolveur ouvert, car résoudre une VM du lab par son nom demande une réponse autoritative, jamais de la récursion. Le port 53 n'est joignable que si la liste de ports du nœud le dit, par exemple <code>"aws_open_ports": ["53", "53/udp", "80", "443"]</code>.</p>
 <p>Diriger quoi que ce soit vers ce serveur vous revient : ajoutez son adresse comme nameserver partout où les noms du lab doivent se résoudre. La commande affiche l'adresse à utiliser quand elle termine.</p>
 <h3 id="naming-an-image-instead-of-an-id">Nommer une image au lieu d'un identifiant</h3>
@@ -442,7 +442,6 @@ dd if=SLE-15-SP6-Online-x86_64-GM-Media1.iso of=/dev/sdX bs=4k &amp;&amp; sync
 <pre><code class="language-shell">ssh &lt;AUTOMATION_HOSTNAME&gt;
 ./install_automation_node_scripts.sh
 
-cp /etc/lab_creation.cfg.example /etc/lab_creation.cfg
 vim /etc/lab_creation.cfg
 </code></pre>
 <p>Principaux paramètres de <code>lab_creation.cfg</code> :</p>
@@ -1477,7 +1476,7 @@ install_longhorn --schema yaml      # ...or YAML
 <h3 id="etclab_creationdefaults"><code>/etc/lab_creation.defaults</code></h3>
 <p>Valeurs par défaut du système chargées par chaque script. Définit les chemins, les temporisations par défaut et les listes de paquets. <strong>Ne le modifiez pas</strong> à moins de savoir ce que vous faites.</p>
 <h3 id="etclab_creationcfg"><code>/etc/lab_creation.cfg</code></h3>
-<p>Configuration propre au nœud pour la VM d'automatisation. Copiée depuis <code>/etc/lab_creation.cfg.example</code> pendant l'installation. Variables principales :</p>
+<p>Configuration propre au nœud pour la VM d'automatisation. L'installation du nœud d'automatisation l'écrit à partir de <code>/etc/lab_creation.cfg.example</code>, avec les valeurs du nœud, lorsqu'elle n'existe pas encore ; un fichier existant n'est jamais écrasé. Variables principales :</p>
 <table>
 <thead>
 <tr>
