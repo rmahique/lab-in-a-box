@@ -201,6 +201,48 @@ check("--list-examples is documented in the help",
       "--list-examples" in subprocess.run([sys.executable, str(setup_lab), "--help"],
                                           stdout=subprocess.PIPE, env=env).stdout.decode())
 
+# ── --example: one example, materialised for the run and nothing kept ─────────
+with mock.patch.dict(os.environ, {lab_examples.SHIPPED_DIR_ENV: str(shipped)}):
+    written = lab_examples.materialise("shipped-one.json", {})
+    check("materialise writes the definition as a .json file, the .template suffix dropped",
+          Path(written).name == "shipped-one.json" and Path(written).is_file())
+    check("what it wrote is the example's own definition",
+          json.loads(Path(written).read_text()) == lab_examples.load("shipped-one.json", {}))
+    into = Path(tempfile.mkdtemp())
+    check("a caller can say where it goes",
+          Path(lab_examples.materialise("shipped-one.json", {}, str(into))).parent == into)
+
+check("the option takes its name as a separate argument or with =",
+      lab_examples.take_example_option(["--keep", "--example", "a.json", "x"]) == (["--keep", "x"], "a.json")
+      and lab_examples.take_example_option(["--example=b.json"]) == ([], "b.json"))
+check("without the option nothing is taken and no name is reported",
+      lab_examples.take_example_option(["--keep"]) == (["--keep"], ""))
+for bad in (["--example"], ["--example="], ["--keep", "--example"]):
+    try:
+        lab_examples.take_example_option(bad)
+        check("--example without a name is refused: {}".format(bad), False)
+    except ValueError:
+        pass
+
+# Both commands refuse what cannot be run, before they touch a hypervisor or a cloud.
+for script, args, expected in (
+        ("setup_lab.py", ["--example", "nope.json"], "no such example"),
+        ("setup_lab.py", ["--example", "../etc/passwd"], "invalid example name"),
+        ("setup_lab.py", ["--example", "shipped-one.json", "mylab.json"], "not both"),
+        ("setup_lab.py", ["--example"], "--example needs the name"),
+        ("destroy_lab.py", ["--example", "nope.json"], "no such example"),
+        ("destroy_lab.py", ["--example"], "--example needs the name")):
+    out = subprocess.run([sys.executable, str(_REPO / "scripts" / script)] + args,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    text = out.stdout.decode()
+    check("{} {}: refused with '{}'".format(script, " ".join(args), expected),
+          out.returncode != 0 and expected in text)
+
+check("--example is documented in both commands' help",
+      all("--example" in subprocess.run([sys.executable, str(_REPO / "scripts" / s), "--help"],
+                                        stdout=subprocess.PIPE, env=env).stdout.decode()
+          for s in ("setup_lab.py", "destroy_lab.py")))
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)

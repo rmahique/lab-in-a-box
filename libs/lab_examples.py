@@ -13,8 +13,10 @@ others with it.
 Read by scripts/setup_lab.py (--list-examples) and by the lab-builder's examples/example actions
 (webui/lib/discovery.py). Kept Python 3.6 compatible: the lab-builder CGI runs under the host's own python3.
 """
+import json
 import os
 import re
+import tempfile
 
 import apps
 import primary
@@ -124,6 +126,46 @@ def path_of(name: str, config: dict = None) -> str:
         if entry["name"] == name:
             return entry["path"]
     raise FileNotFoundError("no such example: %s" % name)
+
+
+def take_example_option(args: list) -> tuple:
+    """
+    (args without the option, example name) for "--example <name>" or "--example=<name>" in `args`; the name is ""
+    when the option is absent. Shared by setup_lab.py and destroy_lab.py so the option reads the same on both.
+    Raises ValueError when the option is given without a name.
+    """
+    rest, name = [], ""
+    pending = False
+    for arg in args:
+        if pending:
+            name, pending = arg, False
+        elif arg == "--example":
+            pending = True
+        elif arg.startswith("--example="):
+            name = arg.split("=", 1)[1]
+        else:
+            rest.append(arg)
+    if pending or (name == "" and len(rest) != len(args)):
+        raise ValueError("--example needs the name of an example lab (setup_lab.py --list-examples lists them)")
+    return rest, name
+
+
+def materialise(name: str, config: dict = None, directory: str = None) -> str:
+    """
+    Write example lab `name` out as a JSON lab definition and return the file's path.
+
+    A run needs the definition on disk: it carries its own source path, which every add-on of the run re-reads and
+    beside which an allocated address is saved. `directory` says where the file goes; without one it is a new
+    temporary directory, which the caller removes (setup_lab.py --example, destroy_lab.py --example), so running an
+    example leaves nothing behind. The file is named after the example with its .template suffix dropped, so the
+    name in a log or an error reads as a lab, not as a template.
+    """
+    definition = load(name, config)
+    stem = _SUFFIX_RE.sub("", name)
+    path = os.path.join(directory or tempfile.mkdtemp(prefix="lab-example-"), stem + ".json")
+    with open(path, "w") as f:
+        json.dump(definition, f, indent=2)
+    return path
 
 
 def load(name: str, config: dict = None) -> dict:

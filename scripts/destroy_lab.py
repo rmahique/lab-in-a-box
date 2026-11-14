@@ -11,6 +11,7 @@ destroy_lab.py — destroy every VM defined in a lab definition.
 
 Usage:
     destroy_lab.py [--cloud-account <name>] <lab.json>
+    destroy_lab.py [--cloud-account <name>] --example <name>
 
 Options:
     --cloud-account <name>   use cloud account <name> (a credentials file under
@@ -18,11 +19,18 @@ Options:
                              run, taking precedence over "cloud_account" in the lab
                              definition. Required when several credentials files match a
                              node's backend.
+    --example <name>         destroy the lab built by setup_lab.py --example <name>
+                             (setup_lab.py --list-examples names them), for which no lab
+                             file of your own exists. The definition is written to a
+                             temporary file for this run and removed afterwards.
 """
 
 __version__ = "__LABVERSION__"
 
+import atexit
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().parent.parent / "libs")):
@@ -31,6 +39,7 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 
 import primary  # noqa: E402
 import lab_creation  # noqa: E402
+import lab_examples  # noqa: E402
 import backends  # noqa: E402
 from destroy_vm import destroy_vm  # noqa: E402
 
@@ -68,11 +77,25 @@ def main():
     # command that creates or destroys a cloud node.
     sys.argv[1:] = backends.take_cloud_account_option(sys.argv[1:])
 
-    if len(sys.argv) < 2:
+    try:
+        sys.argv[1:], example = lab_examples.take_example_option(sys.argv[1:])
+    except ValueError as e:
+        lab_creation.die(str(e))
+
+    if example:
+        # The same definition setup_lab.py --example built from: an example is a fixed file, and an address it did
+        # not name is allocated from the node's own name, so what is written here is what was created.
+        example_dir = tempfile.mkdtemp(prefix="lab-example-")
+        atexit.register(shutil.rmtree, example_dir, True)
+        try:
+            lab_file = lab_examples.materialise(example, directory=example_dir)
+        except (ValueError, FileNotFoundError) as e:
+            lab_creation.die("{} — setup_lab.py --list-examples lists the example labs".format(e))
+    elif len(sys.argv) < 2:
         print("Usage:\n{} <configuration file>".format(sys.argv[0]))
         sys.exit(1)
-
-    lab_file = sys.argv[1]
+    else:
+        lab_file = sys.argv[1]
 
     defaults = primary.load_defaults()
     config = primary.load_config()

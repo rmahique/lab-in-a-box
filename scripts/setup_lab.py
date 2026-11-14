@@ -17,17 +17,21 @@ Kubernetes clusters, and install cluster-level and VM-level addons in order.
 
 Usage:
     setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>
+    setup_lab.py [options] --example <name>
     setup_lab.py --list-examples [--json]
 """
 
 __version__ = "__LABVERSION__"
 
+import atexit
 import concurrent.futures
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -54,6 +58,7 @@ from setup_vm import provision_vm, refresh_kept_node_dns  # noqa: E402
 
 _HELP_TEXT = """\
 Usage: setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>
+       setup_lab.py [same options] --example <name>
        setup_lab.py --list-examples [--json]
 
 Provisions all VMs defined in the lab definition file, sets up Kubernetes
@@ -72,6 +77,15 @@ Options:
             /etc/lab_creation/examples), where a file of the same name
             replaces a shipped one. --json prints the same list as JSON,
             including the file each one was read from.
+  --example <name>
+            Build one of the example labs (--list-examples names them)
+            instead of a file of your own. The definition is written to a
+            temporary file for the run and removed afterwards, so nothing is
+            left behind; tear the lab down again with destroy_lab.py
+            --example <name>. An example that names a cloud account of its
+            own, or none at all, follows the same rules as any lab:
+            --cloud-account decides for this run, and with neither it is the
+            one credentials file that matches the backend.
   --keep    Skip VMs that already exist, are running, match the defined IP and
             MAC address, and are accessible via SSH with default credentials.
             Without this flag (default) every VM is destroyed and recreated.
@@ -1037,6 +1051,11 @@ def main():
     # that creates or destroys a cloud node.
     args = backends.take_cloud_account_option(args)
 
+    try:
+        args, example = lab_examples.take_example_option(args)
+    except ValueError as e:
+        lc.die(str(e))
+
     keep = "--keep" in args
     debug = _debug_wanted(args)
     lc.set_debug(debug)
@@ -1064,9 +1083,23 @@ def main():
                "setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>".format(
             " ".join(unknown)))
     positional = [a for a in args if not a.startswith("-")]
-    if not positional:
+    if example and positional:
+        lc.die("--example {} builds that example — pass it or a lab file, not both ('{}')".format(
+            example, positional[0]))
+    if not example and not positional:
         lc.die("Usage: setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>")
-    lab_file = positional[0]
+    if example:
+        # The run needs the definition on disk (every add-on re-reads it). Nothing of it is kept: the directory
+        # goes when this process ends, however it ends, and destroy_lab.py --example writes the same file again.
+        example_dir = tempfile.mkdtemp(prefix="lab-example-")
+        atexit.register(shutil.rmtree, example_dir, True)
+        try:
+            lab_file = lab_examples.materialise(example, directory=example_dir)
+        except (ValueError, FileNotFoundError) as e:
+            lc.die("{} — setup_lab.py --list-examples lists the example labs".format(e))
+        lc.log("Example lab '{}' — building it from '{}'".format(example, lab_file))
+    else:
+        lab_file = positional[0]
 
     defaults = primary.load_defaults()
     config = primary.load_config()
@@ -1096,8 +1129,10 @@ def main():
     lab_file = phase_allocate_ips(definition, config, lab_file)
 
     preflight_issues = []
+    # An example is a file the operator did not write, so advice about fields in it is left out.
     ok = lc.validate_lab_definition(definition, config, iso_loc, lab_setup_path,
-                                    vm_img_loc=vm_img_loc, issues_out=preflight_issues)
+                                    vm_img_loc=vm_img_loc, issues_out=preflight_issues,
+                                    warn_unused_fields=not example)
     _fold_issues_into_report(preflight_issues)
     if not ok:
         print_summary(definition)
