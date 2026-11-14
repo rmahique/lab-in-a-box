@@ -144,8 +144,8 @@ check("...and the state in between is not reported as the answer", result["x.lab
 # The order the lab is acted on: agents out first, then servers, then the VMs the lab brought up for itself.
 lab = {"nodes": {"srv1": {"KUBERNETES_NODE_TYPE": "server"}, "agent1": {"KUBERNETES_NODE_TYPE": "agent"},
                  "agent2": {"KUBERNETES_NODE_TYPE": "agent"}}}
-_real_infra_vms = vm_power.infra_vms
-vm_power.infra_vms = lambda definition: ["lab-dns-aws"]
+_real_infra_backends = vm_power.infra_backends
+vm_power.infra_backends = lambda definition: {"lab-dns-aws": fake}
 stop_groups = vm_power.lab_groups(lab, "stop")
 check("stopping takes the agents first, then the servers, then the lab's own VMs",
       stop_groups == [["agent1", "agent2"], ["srv1"], ["lab-dns-aws"]])
@@ -156,14 +156,30 @@ fake = Fake()
 vm_power.backends.get_backend = lambda definition, config, vm, for_existing=False: fake
 refreshed = []
 vm_power._refresh_dns = lambda definition, config, started, result: refreshed.extend(started)
-result = vm_power.power(lab, {}, "start", vm_power.lab_groups(lab, "start"))
+# A VM the lab brought up for itself is acted on through the backend that comes with it: its name is not in
+# the definition, so resolving it like a node would land on the lab's default backend and report "not found"
+# while the provider still charges for it.
+infra = {"lab-dns-aws": fake}
+def _only_nodes(definition, config, vm, for_existing=False):
+    """What get_backend() really does with a name that is not in the definition: resolves it to the lab's
+    default backend, which knows nothing about it."""
+    if vm not in (definition.get("nodes") or {}):
+        raise SystemExit("no VM '{}' on this hypervisor".format(vm))
+    return fake
+
+
+vm_power.backends.get_backend = _only_nodes
+result = vm_power.power(lab, {}, "start", vm_power.lab_groups(lab, "start", infra), infra=infra)
+check("the lab's own VM is not resolved like a node",
+      not str(result.get("lab-dns-aws", "")).startswith("error:"))
+vm_power.backends.get_backend = lambda definition, config, vm, for_existing=False: fake
 check("every group is acted on, in order",
       [vm for _action, vm in fake.acted] == ["lab-dns-aws", "srv1", "agent2", "agent1"])
 check("a started node's DNS is written again, because its address may have changed",
       refreshed == ["lab-dns-aws", "srv1", "agent2", "agent1"])
 check("status neither waits nor touches anything",
       vm_power.power(lab, {}, "status", ["srv1"])["srv1"] in ("running", "shut off"))
-vm_power.infra_vms = _real_infra_vms
+vm_power.infra_backends = _real_infra_backends
 
 # Each backend says what stopping does to the bill, and the lab-wide stop prints it once.
 check("a hypervisor of your own says nothing about billing",

@@ -86,9 +86,10 @@ def _arrived(action: str, state: str) -> bool:
     return any(low.startswith(prefix) for prefix in _ARRIVED.get(action, ()))
 
 
-def lab_groups(definition: dict, action: str) -> list:
+def lab_groups(definition: dict, action: str, infra=None) -> list:
     """
-    The lab's own VMs as the groups to act on in order, for `action`.
+    The lab's own VMs as the groups to act on in order, for `action`. `infra` is infra_backends()' own answer,
+    passed in so the provider is asked once per run rather than once per caller.
 
     Stopping goes from the outside in — Kubernetes agents, then servers, then the VMs the lab brought up for itself
     (each site's cloud DNS VM, each site's overlay gateway) — so a cluster loses its workers before its control
@@ -98,26 +99,37 @@ def lab_groups(definition: dict, action: str) -> list:
     nodes = definition.get("nodes") or {}
     agents = [n for n, cfg in nodes.items() if k8s.node_role(cfg) != "server"]
     servers = [n for n in nodes if n not in agents]
-    groups = [agents, servers, infra_vms(definition)]
+    groups = [agents, servers, list(infra if infra is not None else infra_backends(definition))]
     groups = [g for g in groups if g]
     return groups if action == "stop" else [list(reversed(g)) for g in reversed(groups)]
 
 
-def infra_vms(definition: dict) -> list:
+def infra_backends(definition: dict) -> dict:
     """
-    The VMs this lab brought up for itself rather than declaring: each cloud site's DNS VM
+    {vm name: backend} for the VMs this lab brought up for itself rather than declaring: each cloud site's DNS VM
     (backends.cloud_dns_vm_name()) and, for a lab with the overlay on, that site's gateway VM
-    (overlay.hub_vm_name()). Named per account, since each account is its own cloud network, and reported once
-    each however many nodes share them.
+    (overlay.hub_vm_name()). Named per account, since each account is its own cloud network, and listed once each
+    however many nodes share them.
+
+    The backend comes with the name because it cannot be found from the name: these VMs are not in the definition,
+    so resolving one the way a node is resolved lands on whatever the lab's default backend is (libvirt), which
+    would report every one of them as "not found" while the provider is still charging for it.
     """
-    found = []
+    found = {}
     uses_overlay = bool((definition.get("common") or {}).get("overlay"))
-    for vm_name, backend, backend_name in _cloud_backends(definition):
+    for _vm_name, backend, backend_name in _cloud_backends(definition):
         for name in ([backends.cloud_dns_vm_name(backend, backend_name)]
                      + ([overlay.hub_vm_name(backend_name, getattr(backend, "account", ""))]
                         if uses_overlay else [])):
-            if name not in found and backend.vm_exists(name):
-                found.append(name)
+            if name in found:
+                continue
+            try:
+                if backend.vm_exists(name):
+                    found[name] = backend
+            except (RuntimeError, SystemExit) as e:
+                # Asking the provider failed (expired credentials, a region that is unreachable). That is the
+                # lab's own nodes' problem to report, one line each, rather than this list's to die on.
+                print("- cannot tell whether '{}' exists: {}".format(name, e), file=sys.stderr)
     return found
 
 
@@ -135,7 +147,7 @@ def _cloud_backends(definition: dict) -> list:
             continue
         try:
             backend = backends.get_backend(definition, config, vm_name, for_existing=True)
-        except SystemExit:
+        except (RuntimeError, SystemExit):
             continue
         key = (backend_name, getattr(backend, "account", ""))
         if key in seen:
@@ -155,13 +167,15 @@ def _wait(backend, vm_name: str, action: str) -> str:
     return state
 
 
-def power(definition, config, action, vm_names, wait=True, refresh_dns=True):
+def power(definition, config, action, vm_names, wait=True, refresh_dns=True, infra=None):
     """
     {vm: state-or-message} for `action` on each VM of `vm_names`, which is a flat list of names or, from
     lab_groups(), a list of groups acted on one after another. `wait` holds each group until its VMs have reached
     the state asked for; `refresh_dns` writes a started node's DNS records again, since a cloud provider that
-    released its public address on stop hands back a different one.
+    released its public address on stop hands back a different one. `infra` is infra_backends()' answer: a VM the
+    lab brought up for itself is acted on through the backend that owns it, since its name resolves to nothing.
     """
+    infra = infra or {}
     groups = vm_names if vm_names and isinstance(vm_names[0], list) else [list(vm_names)]
     result = {}
     noted = set()
@@ -169,7 +183,8 @@ def power(definition, config, action, vm_names, wait=True, refresh_dns=True):
     for group in groups:
         for vm_name in group:
             try:
-                backend = backends.get_backend(definition, config, vm_name, for_existing=True)
+                backend = infra.get(vm_name) or backends.get_backend(definition, config, vm_name,
+                                                                      for_existing=True)
                 if action == "start":
                     backend.start_vm(vm_name)
                 elif action == "stop":
@@ -247,16 +262,17 @@ def main():
 
     definition = primary.load_definition(lab_file)
     config = primary.load_config()
+    infra = infra_backends(definition)
     if rest:
         vm_names = rest
     elif action == "status":
         # The lab's own VMs too: a DNS VM left running is exactly the cost this command exists to find.
-        vm_names = list(definition.get("nodes", {})) + infra_vms(definition)
+        vm_names = list(definition.get("nodes", {})) + list(infra)
     elif wait:
-        vm_names = lab_groups(definition, action)
+        vm_names = lab_groups(definition, action, infra)
     else:
-        vm_names = list(definition.get("nodes", {}))
-    result = power(definition, config, action, vm_names, wait=wait, refresh_dns=refresh_dns)
+        vm_names = list(definition.get("nodes", {})) + list(infra)
+    result = power(definition, config, action, vm_names, wait=wait, refresh_dns=refresh_dns, infra=infra)
     print(json.dumps(result, indent=1, sort_keys=True))
     sys.exit(1 if any(str(v).startswith("error:") for v in result.values()) else 0)
 
