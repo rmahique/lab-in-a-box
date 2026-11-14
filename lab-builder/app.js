@@ -2075,6 +2075,9 @@ async function openExamplesDialog() {
       const parts = [ex.nodes + (ex.nodes === 1 ? " VM" : " VMs")];
       if (ex.kclusters) parts.push(ex.kclusters + (ex.kclusters === 1 ? " Kubernetes cluster" : " Kubernetes clusters"));
       if (ex.addons.length) parts.push(ex.addons.join(", "));
+      // Only this operator's own examples are marked: the shipped ones are the norm, and labelling both would
+      // put a tag on every row for no information.
+      if (ex.source === "operator") parts.push("your own");
       text.appendChild(el("div", "muted", parts.join(" · ")));
       if (ex.description) text.appendChild(el("p", "example-desc", ex.description));
       li.appendChild(text);
