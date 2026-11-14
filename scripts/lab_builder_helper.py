@@ -22,8 +22,15 @@ Usage: lab-builder-helper <command> [argument]
                               secret-looking fields encrypted; stdin:
                               {"passphrase": "..."}
   credentials-delete FILE     delete credential file FILE
-  lab-create FILE [--keep]    start setup_lab.py on saved lab FILE in the
-                              background (--keep: keep VMs that already exist);
+  lab-create FILE [--keep] [--cloud-account NAME]
+  lab-create --example NAME [--keep] [--cloud-account NAME]
+                              start setup_lab.py on saved lab FILE, or on
+                              example lab NAME (libs/lab_examples.py, which
+                              setup_lab.py --example materialises for the run
+                              and removes afterwards), in the
+                              background (--keep: keep VMs that already exist;
+                              --cloud-account: the cloud account this run uses,
+                              outranking the one the definition names);
                               prints the job id, a public live-status page URL
                               (job id + a random token, needing no login — see
                               pub-status below) and that page's QR code as SVG
@@ -83,6 +90,7 @@ for _candidate in ("/usr/local/bin", str(Path(__file__).resolve().parent)):
         sys.path.append(_candidate)
 
 import crypto_store  # noqa: E402
+import lab_examples  # noqa: E402
 import primary  # noqa: E402
 import qr_util  # noqa: E402
 import setup_credentials  # noqa: E402
@@ -281,24 +289,38 @@ def status_url(job: str, token: str) -> str:
     return "https://{}/lab-builder/status.html?job={}&token={}".format(socket.getfqdn(), job, token)
 
 
-def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
+def lab_create(name: str, keep: bool, passphrase: str = "", example: str = "",
+               cloud_account: str = "") -> dict:
     """
-    Start setup_lab.py on saved lab `name` as a background job; refuse while one runs for that lab.
+    Start setup_lab.py as a background job, on saved lab `name` or on example lab `example`; refuse while one runs
+    for that same lab. An example is not copied anywhere: setup_lab.py --example writes it to a temporary file for
+    the run and removes it afterwards, so launching one leaves nothing on the server.
+
+    `cloud_account` becomes --cloud-account, which outranks the account the definition names.
 
     `passphrase` decrypts the lab's credential files (libs/crypto_store.py). It is handed to the job in its own
     environment and nowhere else: not in job.json, not in the log, not on a command line other processes can read.
     """
-    lab = LABS_DIR / safe_name(name, "lab file")
-    if lab.suffix != ".json" or not lab.is_file():
-        raise Refused("no saved lab {}".format(name))
+    if example:
+        # Checked against the catalogue, not just the name's shape: the value reaches a command line.
+        if safe_name(example, "example lab") not in [e["name"] for e in lab_examples.catalogue()]:
+            raise Refused("no example lab {}".format(example))
+        label, lab_args = example, ["--example", example]
+    else:
+        lab = LABS_DIR / safe_name(name, "lab file")
+        if lab.suffix != ".json" or not lab.is_file():
+            raise Refused("no saved lab {}".format(name))
+        label, lab_args = lab.name, [str(lab)]
+    if cloud_account:
+        lab_args = ["--cloud-account", safe_name(cloud_account, "cloud account")] + lab_args
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     for d in JOBS_DIR.iterdir():
         if (d / "job.json").is_file():
             st = job_state(d)
-            if st["lab"] == lab.name and st["state"] == "running":
-                raise Refused("lab {} is already being created (job {})".format(lab.name, d.name))
+            if st["lab"] == label and st["state"] == "running":
+                raise Refused("lab {} is already being created (job {})".format(label, d.name))
     # The id carries the lab and the time; two runs within the same second get -2, -3, … rather than colliding.
-    stamp = "{}-{}".format(lab.stem, time.strftime("%Y%m%d-%H%M%S"))
+    stamp = "{}-{}".format(Path(label).stem, time.strftime("%Y%m%d-%H%M%S"))
     job, attempt = stamp, 1
     while True:
         d = JOBS_DIR / job
@@ -311,7 +333,7 @@ def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
     # The token makes the public status page unguessable: the job id alone is a predictable
     # <lab>-<timestamp>, but holding the id AND this token is what pub_status() actually checks.
     token = secrets.token_urlsafe(32)
-    cmd = [SETUP_LAB] + (["--keep"] if keep else []) + [str(lab)]
+    cmd = [SETUP_LAB] + (["--keep"] if keep else []) + lab_args
     env = dict(os.environ)
     if passphrase:
         env[crypto_store.PASSPHRASE_ENV] = passphrase
@@ -324,8 +346,8 @@ def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
             ["/bin/sh", "-c", '"$@"; echo $? > "$0"', str(d / "rc")] + cmd,
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             cwd=str(JOBS_DIR), env=env, start_new_session=True, close_fds=True)
-    (d / "job.json").write_text(json.dumps({"lab": lab.name, "started": int(time.time()), "pid": proc.pid,
-                                            "keep": keep, "token": token}))
+    (d / "job.json").write_text(json.dumps({"lab": label, "started": int(time.time()), "pid": proc.pid,
+                                            "keep": keep, "example": bool(example), "token": token}))
     url = status_url(job, token)
     return {"job": job, "status_url": url, "qr_svg": qr_util.render_svg(url)}
 
@@ -443,6 +465,37 @@ def lab_jobs() -> dict:
     return {"jobs": sorted(jobs, key=lambda j: j.get("started", 0), reverse=True)}
 
 
+def lab_create_from_args(args: list) -> dict:
+    """
+    lab-create's own arguments: a saved lab's FILE or --example NAME, in any order with --keep and
+    --cloud-account NAME. The passphrase comes from stdin, never from here.
+    """
+    name = example = cloud_account = ""
+    keep = False
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--keep":
+            keep = True
+        elif arg in ("--example", "--cloud-account"):
+            if not rest:
+                raise Refused("{} needs a name".format(arg))
+            if arg == "--example":
+                example = rest.pop(0)
+            else:
+                cloud_account = rest.pop(0)
+        elif arg.startswith("-") or name or example:
+            raise Refused("lab-create: unexpected argument {!r}".format(arg))
+        else:
+            name = arg
+    if not name and not example:
+        raise Refused("lab-create needs a saved lab's file name or --example NAME")
+    if name and example:
+        raise Refused("lab-create takes a saved lab or --example, not both")
+    return lab_create(name, keep, read_stdin().get("passphrase", ""), example=example,
+                      cloud_account=cloud_account)
+
+
 def run(args: list) -> dict:
     """Carry out command line `args`; returns the JSON answer."""
     cmd, rest = (args[0], args[1:]) if args else ("", [])
@@ -454,8 +507,8 @@ def run(args: list) -> dict:
         return credentials_encrypt(rest[0], read_stdin())
     if cmd == "credentials-delete" and len(rest) == 1:
         return credentials_delete(rest[0])
-    if cmd == "lab-create" and rest and rest[1:] in ([], ["--keep"]):
-        return lab_create(rest[0], rest[1:] == ["--keep"], read_stdin().get("passphrase", ""))
+    if cmd == "lab-create":
+        return lab_create_from_args(rest)
     if cmd == "lab-validate" and not rest:
         return lab_validate(read_stdin())
     if cmd == "lab-status" and len(rest) == 1:
@@ -465,8 +518,8 @@ def run(args: list) -> dict:
     if cmd == "pub-status" and len(rest) == 1:
         return pub_status(rest[0], read_stdin().get("token", ""))
     raise Refused("usage: lab-builder-helper {credentials-list|credentials-add|credentials-encrypt FILE|"
-                  "credentials-delete FILE|lab-create FILE [--keep]|lab-validate|lab-status JOB|lab-jobs|"
-                  "pub-status JOB}")
+                  "credentials-delete FILE|lab-create {FILE|--example NAME} [--keep] [--cloud-account NAME]|"
+                  "lab-validate|lab-status JOB|lab-jobs|pub-status JOB}")
 
 
 def main() -> None:

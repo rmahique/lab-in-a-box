@@ -2,6 +2,7 @@
 # The example labs offered as starting points — see 94_lab_examples.sh.
 import json
 import subprocess
+import time
 from unittest import mock
 import os
 import sys
@@ -14,6 +15,7 @@ sys.path.insert(0, str(_REPO / "webui" / "lib"))
 os.environ["LABBUILDER_STATUS_FILE"] = os.devnull
 
 import api  # noqa: E402
+import admin  # noqa: E402
 import discovery  # noqa: E402
 import lab_examples  # noqa: E402
 
@@ -242,6 +244,86 @@ check("--example is documented in both commands' help",
       all("--example" in subprocess.run([sys.executable, str(_REPO / "scripts" / s), "--help"],
                                         stdout=subprocess.PIPE, env=env).stdout.decode()
           for s in ("setup_lab.py", "destroy_lab.py")))
+
+# ── launching one through the lab-builder: the helper, as root, builds it by name ──────────────────
+# A fake setup_lab.py records its own arguments, so what the helper would really run is what is checked.
+helper_jobs = Path(tempfile.mkdtemp())
+helper_labs = Path(tempfile.mkdtemp())
+(helper_labs / "mylab.json").write_text(json.dumps({"common": {}, "nodes": {}}))
+argv_log = helper_jobs / "argv"
+fake_setup = helper_jobs / "fake-setup-lab"
+fake_setup.write_text("#!/bin/bash\nprintf '%s\\n' \"$@\" > " + str(argv_log) + "\n")
+fake_setup.chmod(0o755)
+helper_env = dict(os.environ, LABBUILDER_EXAMPLES_DIR=str(shipped), LABBUILDER_LABS_DIR=str(helper_labs),
+                  LABBUILDER_JOBS_DIR=str(helper_jobs), LABBUILDER_SETUP_LAB=str(fake_setup),
+                  PYTHONPATH=str(_REPO / "libs"))
+helper_cmd = [sys.executable, str(_REPO / "scripts" / "lab_builder_helper.py")]
+
+
+def helper(args, stdin_obj=None):
+    r = subprocess.run(helper_cmd + args, input=json.dumps(stdin_obj or {}).encode(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=helper_env)
+    try:
+        return r, json.loads(r.stdout.decode() or "{}")
+    except ValueError:
+        return r, {}
+
+
+def ran_with():
+    for _ in range(200):
+        if argv_log.is_file():
+            return argv_log.read_text().split()
+        time.sleep(0.05)
+    return []
+
+
+r, out = helper(["lab-create", "--example", "shipped-one.json", "--keep", "--cloud-account", "aws-tmm"])
+check("lab-create --example starts a job", r.returncode == 0 and out.get("job"))
+check("the job is named after the example", out.get("job", "").startswith("shipped-one-"))
+check("it runs setup_lab.py --example, with the options it was given",
+      ran_with() == ["--keep", "--cloud-account", "aws-tmm", "--example", "shipped-one.json"])
+check("nothing is written to the saved labs for an example",
+      sorted(p.name for p in helper_labs.iterdir()) == ["mylab.json"])
+job_json = json.loads((helper_jobs / out["job"] / "job.json").read_text())
+check("the job records which example it is building",
+      job_json.get("lab") == "shipped-one.json" and job_json.get("example") is True)
+
+for args, expected in ((["lab-create", "--example", "nope.json"], "no example lab"),
+                       (["lab-create", "--example", "../etc/passwd"], "invalid example lab name"),
+                       (["lab-create", "--example"], "needs a name"),
+                       (["lab-create", "mylab.json", "--example", "shipped-one.json"], "not both"),
+                       (["lab-create"], "needs a saved lab"),
+                       (["lab-create", "--example", "shipped-one.json", "--cloud-account", "../x"],
+                        "invalid cloud account name")):
+    r, out = helper(args)
+    check("helper refuses {}: '{}'".format(" ".join(args[1:]) or "no arguments", expected),
+          r.returncode != 0 and expected in (out.get("error") or ""))
+
+# The admin action maps the request onto those same helper arguments.
+with mock.patch.object(admin, "helper", lambda args, stdin=None: {"args": args, "stdin": stdin}):
+    answer = admin.dispatch("create", "POST", {},
+                            {"example": "shipped-one.json", "keep": True, "cloud_account": "aws-tmm",
+                             "passphrase": "s3cret"})
+    check("admin create passes an example, its keep and its cloud account to the helper",
+          answer["args"] == ["lab-create", "--example", "shipped-one.json", "--keep",
+                             "--cloud-account", "aws-tmm"])
+    check("the passphrase still goes on stdin, never as an argument",
+          answer["stdin"] == {"passphrase": "s3cret"} and "s3cret" not in " ".join(answer["args"]))
+    saved = admin.dispatch("create", "POST", {}, {"filename": "mylab.json"})
+    check("a saved lab is still created by its file name", saved["args"] == ["lab-create", "mylab.json"])
+
+# ── the UI offers Launch beside Open, for a logged-in operator only ───────────
+app_js = (_REPO / "webui" / "htdocs" / "app.js").read_text()
+check("the dialog offers Launch only where the server actions work and someone is logged in",
+      'el("button", "btn", "Launch")' in app_js
+      and "!serverLock() && state.auth && state.auth.user" in app_js)
+check("Launch goes through the Create dialog with the example's name", "openCreate(ex.name)" in app_js)
+check("creating an example saves nothing first", 'if (!example) await adminCall("save"' in app_js)
+check("and asks the server for it by name", "? { example, keep:" in app_js)
+# The static page is generated from this one (scripts/build-cube-static.py), so only the source is checked.
+html = (_REPO / "webui" / "htdocs" / "index.html").read_text()
+check("the dialog explains that an example is not saved on the server",
+      'id="createExampleNote"' in html and 'id="createSaveNote"' in html)
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

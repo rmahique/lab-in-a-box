@@ -2081,6 +2081,21 @@ async function openExamplesDialog() {
       text.appendChild(el("div", "muted", parts.join(" · ")));
       if (ex.description) text.appendChild(el("p", "example-desc", ex.description));
       li.appendChild(text);
+      // Launch runs the example as it is, through the server. It needs the login the other server actions need,
+      // so it is offered only where those work; Open always works, static build included.
+      if (!serverLock() && state.auth && state.auth.user) {
+        const run = el("button", "btn", "Launch");
+        run.type = "button";
+        run.title = "Create this lab on the automation node, without saving a copy of it";
+        run.addEventListener("click", async () => {
+          closeDialog("#examplesDialog");
+          try {
+            loadLab(await apiGet("example", { name: ex.name }));
+          } catch (e) { /* the canvas is only the summary here — the server builds the example by name */ }
+          openCreate(ex.name);
+        });
+        li.appendChild(run);
+      }
       const b = el("button", "btn", "Open");
       b.type = "button";
       b.addEventListener("click", async () => {
@@ -2274,9 +2289,14 @@ function labSummary(lab) {
   return lines.join("\n");
 }
 
-async function openCreate() {
-  if ($("#createBtn").disabled) return;
-  const name = ($("#labName").value.trim() || "lab").replace(/\.json$/, "");
+// `example` set (the Examples dialog's Launch) creates that example lab by name, server-side: nothing is saved
+// here, and the server materialises it for the run and removes it afterwards.
+async function openCreate(example) {
+  if (!example && $("#createBtn").disabled) return;
+  state.createExample = example || "";
+  const name = example || ($("#labName").value.trim() || "lab").replace(/\.json$/, "");
+  $("#createExampleNote").hidden = !example;
+  $("#createSaveNote").hidden = !!example;
   $("#createTitle").textContent = name;
   $("#createSummary").textContent = labSummary(state.lab);
   $("#createConfirm").hidden = false;
@@ -2290,8 +2310,9 @@ async function openCreate() {
   // A lab already being created cannot be started again, and the server says so only after the password has been
   // typed and Create pressed. Showing its running job instead is the useful answer to a second Create.
   try {
+    const labId = example || name + ".json";
     const running = (await adminCall("jobs")).jobs
-      .find((job) => job.lab === name + ".json" && job.state === "running");
+      .find((job) => job.lab === labId && job.state === "running");
     if (running) {
       $("#createConfirm").hidden = true;
       $("#createGo").hidden = true;
@@ -2306,15 +2327,19 @@ async function openCreate() {
 }
 
 async function startCreate() {
+  const example = state.createExample || "";
   const filename = ($("#labName").value.trim() || "lab").replace(/\.json$/, "");
   $("#createMsg").hidden = true;
   try {
-    await adminCall("save", { filename, config: state.lab });
+    // An example is built by name on the server, so there is nothing to save; a lab of your own is saved first,
+    // because that saved file is what the run reads.
+    if (!example) await adminCall("save", { filename, config: state.lab });
     // The passphrase goes to this one request and is dropped straight away: it is never kept in state.
     const passphrase = $("#createPass").value;
     $("#createPass").value = "";
-    const r = await adminCall("create", {
-      filename: filename + ".json", keep: $("#createKeep").checked, passphrase });
+    const r = await adminCall("create", example
+      ? { example, keep: $("#createKeep").checked, passphrase }
+      : { filename: filename + ".json", keep: $("#createKeep").checked, passphrase });
     $("#createConfirm").hidden = true;
     $("#createGo").hidden = true;
     $("#createJob").hidden = false;

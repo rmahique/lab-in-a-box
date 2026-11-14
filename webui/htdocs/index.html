@@ -177,8 +177,12 @@
     <div class="editor-head"><div><h2>Create lab</h2><h3 id="createTitle"></h3></div></div>
     <div id="createConfirm" class="dialog-body">
       <pre id="createSummary" class="create-summary"></pre>
-      <p class="form-desc">The lab is saved on the server, then <code>setup_lab.py</code> creates it as root on the
-        automation node.</p>
+      <p id="createSaveNote" class="form-desc">The lab is saved on the server, then <code>setup_lab.py</code>
+        creates it as root on the automation node.</p>
+      <p id="createExampleNote" class="form-desc" hidden>This is an example lab, built by name:
+        <code>setup_lab.py --example</code> writes it to a temporary file for this run and removes it afterwards,
+        so nothing is saved on the server. The cloud account it uses is the one it names, or the single credentials
+        file matching its backend.</p>
       <label class="opt-toggle"><input type="checkbox" id="createKeep" checked> Keep VMs that already exist
         (<code>--keep</code>); unticked, they are destroyed and created again</label>
       <div class="cred-grid">

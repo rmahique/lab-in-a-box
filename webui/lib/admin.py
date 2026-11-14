@@ -118,13 +118,22 @@ def dispatch(action, method, params, data):
     if action == "credentials-delete" and method == "POST":
         return helper(["credentials-delete", data.get("file", "")])
     if action == "create" and method == "POST":
-        if os.path.basename(data.get("filename", "")) != data.get("filename", ""):
-            raise ValueError("invalid filename")
-        name = discovery._safe_name(data.get("filename", ""))
+        # Either a lab saved on the server, or an example lab by name: the helper materialises an example for the
+        # run and keeps nothing, so launching one needs nothing saved here first.
+        example = data.get("example", "")
+        if example:
+            args = ["lab-create", "--example", str(example)]
+        else:
+            if os.path.basename(data.get("filename", "")) != data.get("filename", ""):
+                raise ValueError("invalid filename")
+            args = ["lab-create", discovery._safe_name(data.get("filename", ""))]
+        if data.get("keep"):
+            args.append("--keep")
+        if data.get("cloud_account"):
+            args += ["--cloud-account", str(data["cloud_account"])]
         # The passphrase (for a lab whose credentials are encrypted) reaches the helper on stdin, never as an
         # argument other processes could read, and the helper puts it only in the job's own environment.
-        return helper(["lab-create", name] + (["--keep"] if data.get("keep") else []),
-                      {"passphrase": data.get("passphrase", "")})
+        return helper(args, {"passphrase": data.get("passphrase", "")})
     if action == "validate-credentials" and method == "POST":
         # The preflight with the lab's credentials, as root: the passphrase reaches the helper on stdin, for this one
         # request, and is never kept.
