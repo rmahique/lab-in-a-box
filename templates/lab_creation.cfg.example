@@ -1,4 +1,4 @@
-# Schema version: 1.2
+# Schema version: 1.3
 #################################
 #### What you should change: ####
 #################################
@@ -126,6 +126,13 @@ mysource='automation.mydemo.lab'
 ## supports Debian/Ubuntu, SUSE and Fedora-family images. Also valid in a
 ## cloud account file, where it applies to that account only.
 #CLOUD_DNS_IMAGE=
+
+## Your own example labs: the directory setup_lab.py --list-examples and the
+## lab-builder's Examples dialog list beside the ones lab-in-a-box ships in
+## /usr/share/lab_creation/examples. Any *.json/*.yaml/*.yml file in it that
+## parses as a lab definition is offered; a file whose name matches a shipped
+## one replaces it.
+#EXAMPLE_LABS_DIR=/etc/lab_creation/examples
 
 ## Cross-cloud WireGuard overlay (libs/overlay.py) — used only when a lab's
 ## JSON sets common.overlay=true. SITE-TO-SITE: only each site's own

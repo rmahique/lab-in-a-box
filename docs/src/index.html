@@ -719,6 +719,11 @@ migrate_config.py lab.json           # write the migrated copy to lab.json.syste
 
 <hr />
 <h2 id="examples">Examples</h2>
+<p>The labs below are written out in full, but this installation ships them as files too, and lists them with their VM and Kubernetes-cluster counts, their add-ons and their own description:</p>
+<pre><code class="language-shell">setup_lab.py --list-examples          # one block per example
+setup_lab.py --list-examples --json   # the same list, as JSON
+</code></pre>
+<p>They come from two directories: <code>/usr/share/lab_creation/examples</code>, which lab-in-a-box installs and an upgrade replaces, and <code>/etc/lab_creation/examples</code> (<code>EXAMPLE_LABS_DIR</code> in <code>lab_creation.cfg</code>), which is yours. Drop any <code>.json</code>, <code>.yaml</code> or <code>.yml</code> lab definition in it and it is listed too, here and in the <a href="#web-ui-lab-builder">web UI</a>'s <em>Examples</em> dialog, marked as your own. A file whose name matches a shipped one replaces it.</p>
 <h3 id="minimal-single-vm-lab">Minimal single-VM lab</h3>
 <p>The smallest possible lab — one VM, no Kubernetes:</p>
 <pre><code class="language-jsonc">{
@@ -1016,6 +1021,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <tr>
 <td><code>setup_lab.py [--keep] &lt;lab.json&gt;</code></td>
 <td>Create all VMs, set up Kubernetes clusters, and install every cluster-level and VM-level addon in order. <code>--keep</code> skips any VM that already exists, matches the defined IP/MAC, and is SSH-reachable — without it, every VM is destroyed and recreated.</td>
+</tr>
+<tr>
+<td><code>setup_lab.py --list-examples [--json]</code></td>
+<td>List the example labs this installation offers as starting points — the ones it ships and your own, from <code>EXAMPLE_LABS_DIR</code>. <code>--json</code> prints the same list as JSON, with the file each one was read from.</td>
 </tr>
 <tr>
 <td><code>setup_vm.py &lt;lab.json&gt; &lt;hostname&gt;</code></td>

@@ -720,6 +720,11 @@ migrate_config.py lab.json           # write the migrated copy to lab.json.syste
 
 <hr />
 <h2 id="examples">Exemples</h2>
+<p>Les labs ci-dessous sont écrits intégralement, mais cette installation les fournit aussi sous forme de fichiers et les liste avec leur nombre de VM et de clusters Kubernetes, leurs add-ons et leur propre description&nbsp;:</p>
+<pre><code class="language-shell">setup_lab.py --list-examples          # un bloc par exemple
+setup_lab.py --list-examples --json   # la même liste, en JSON
+</code></pre>
+<p>Ils viennent de deux répertoires&nbsp;: <code>/usr/share/lab_creation/examples</code>, que lab-in-a-box installe et qu'une mise à jour remplace, et <code>/etc/lab_creation/examples</code> (<code>EXAMPLE_LABS_DIR</code> dans <code>lab_creation.cfg</code>), qui est le vôtre. Déposez-y n'importe quelle définition de lab <code>.json</code>, <code>.yaml</code> ou <code>.yml</code> et elle est listée aussi, ici et dans la boîte de dialogue <em>Examples</em> de l'<a href="#web-ui-lab-builder">interface web</a>, marquée comme la vôtre. Un fichier portant le nom d'un exemple fourni le remplace.</p>
 <h3 id="minimal-single-vm-lab">Laboratoire minimal à une seule VM</h3>
 <p>Le plus petit laboratoire possible : une VM, sans Kubernetes :</p>
 <pre><code class="language-jsonc">{
@@ -979,6 +984,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <tr>
 <td><code>setup_lab.py [--keep] &lt;lab.json&gt;</code></td>
 <td>Crée toutes les VM, met en place les clusters Kubernetes et installe dans l'ordre tous les modules de cluster et de VM. <code>--keep</code> ignore toute VM qui existe déjà, correspond à l'IP/MAC définie et répond en SSH ; sans cette option, chaque VM est détruite puis recréée.</td>
+</tr>
+<tr>
+<td><code>setup_lab.py --list-examples [--json]</code></td>
+<td>Liste les labs d'exemple que cette installation propose comme point de départ&nbsp;: ceux qu'elle fournit et les vôtres, depuis <code>EXAMPLE_LABS_DIR</code>. <code>--json</code> imprime la même liste en JSON, avec le fichier dont chacun a été lu.</td>
 </tr>
 <tr>
 <td><code>setup_vm.py &lt;lab.json&gt; &lt;hostname&gt;</code></td>

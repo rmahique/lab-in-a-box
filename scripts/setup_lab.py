@@ -17,11 +17,13 @@ Kubernetes clusters, and install cluster-level and VM-level addons in order.
 
 Usage:
     setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>
+    setup_lab.py --list-examples [--json]
 """
 
 __version__ = "__LABVERSION__"
 
 import concurrent.futures
+import json
 import os
 import re
 import subprocess
@@ -40,6 +42,7 @@ import k8s  # noqa: E402
 import targets  # noqa: E402
 import addon_common as ac  # noqa: E402
 import apps  # noqa: E402
+import lab_examples  # noqa: E402
 import qr_util  # noqa: E402
 import spacecmd_common as sc  # noqa: E402
 import services  # noqa: E402
@@ -51,6 +54,7 @@ from setup_vm import provision_vm, refresh_kept_node_dns  # noqa: E402
 
 _HELP_TEXT = """\
 Usage: setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>
+       setup_lab.py --list-examples [--json]
 
 Provisions all VMs defined in the lab definition file, sets up Kubernetes
 clusters, and installs cluster-level and VM-level addons in order.
@@ -58,6 +62,16 @@ clusters, and installs cluster-level and VM-level addons in order.
 Options:
   --help, -h
             Print this help and exit, wherever the option appears.
+  --list-examples [--json]
+            Print the example labs this installation offers as starting
+            points, one per line with its VM and Kubernetes-cluster counts,
+            its add-ons and its description, and exit. They come from two
+            directories: the labs lab-in-a-box ships
+            (/usr/share/lab_creation/examples) and this operator's own
+            (lab_creation.cfg's EXAMPLE_LABS_DIR, by default
+            /etc/lab_creation/examples), where a file of the same name
+            replaces a shipped one. --json prints the same list as JSON,
+            including the file each one was read from.
   --keep    Skip VMs that already exist, are running, match the defined IP and
             MAC address, and are accessible via SSH with default credentials.
             Without this flag (default) every VM is destroyed and recreated.
@@ -973,6 +987,33 @@ def _fold_issues_into_report(lines):
             _report.add_error(s)
 
 
+def _list_examples(as_json: bool) -> int:
+    """
+    Print the example labs this installation offers (libs/lab_examples.py) and return the exit code. `as_json`
+    prints the catalogue as JSON, including each one's file; the plain form is one block per example.
+    """
+    config = lab_examples.config_values()
+    labs = lab_examples.catalogue(config)
+    if as_json:
+        print(json.dumps(labs, indent=1, sort_keys=True))
+        return 0
+    if not labs:
+        print("No example lab was found in: {}".format(
+            ", ".join(d for _source, d in lab_examples.directories(config))))
+        return 0
+    for lab in labs:
+        parts = ["{} VM{}".format(lab["nodes"], "" if lab["nodes"] == 1 else "s")]
+        if lab["kclusters"]:
+            parts.append("{} Kubernetes cluster{}".format(lab["kclusters"],
+                                                          "" if lab["kclusters"] == 1 else "s"))
+        if lab["addons"]:
+            parts.append(", ".join(lab["addons"]))
+        print("{}  [{}]".format(lab["name"], lab["source"]))
+        print("  {}".format(" \u00b7 ".join(parts)))
+        print("  {}".format(lab["description"] or "(no description)"))
+    return 0
+
+
 def main():
     global _report
     args = sys.argv[1:]
@@ -988,6 +1029,9 @@ def main():
     if args and args[0] in ("--input-definition", "--schema"):
         fmt = args[1] if len(args) > 1 else "json"
         sys.exit(subprocess.run(["lab_schema", "--base", fmt]).returncode)
+
+    if "--list-examples" in args:
+        sys.exit(_list_examples("--json" in args))
 
     # Applied and stripped before anything else parses args, so the option reads the same on every command
     # that creates or destroys a cloud node.

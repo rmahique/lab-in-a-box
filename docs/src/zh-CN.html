@@ -717,6 +717,11 @@ migrate_config.py lab.json           # write the migrated copy to lab.json.syste
 
 <hr />
 <h2 id="examples">示例</h2>
+<p>下面的实验环境在此完整列出，但本次安装同样以文件形式自带它们，并可列出每个的虚拟机数量、Kubernetes 集群数量、附加组件及其自身说明：</p>
+<pre><code class="language-shell">setup_lab.py --list-examples          # 每个示例一段
+setup_lab.py --list-examples --json   # 同一列表，以 JSON 输出
+</code></pre>
+<p>它们来自两个目录：由 lab-in-a-box 安装、升级时会被替换的 <code>/usr/share/lab_creation/examples</code>，以及属于你自己的 <code>/etc/lab_creation/examples</code>（<code>lab_creation.cfg</code> 中的 <code>EXAMPLE_LABS_DIR</code>）。把任意 <code>.json</code>、<code>.yaml</code> 或 <code>.yml</code> 实验定义放进后者，它也会出现在这里以及 <a href="#web-ui-lab-builder">Web 界面</a>的 <em>Examples</em> 对话框中，并标记为你自己的。与自带示例同名的文件会取代它。</p>
 <h3 id="minimal-single-vm-lab">最小的单虚拟机实验室</h3>
 <p>最小的实验室：一台虚拟机，没有 Kubernetes：</p>
 <pre><code class="language-jsonc">{
@@ -974,6 +979,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <tr>
 <td><code>setup_lab.py [--keep] &lt;lab.json&gt;</code></td>
 <td>创建所有虚拟机、设置 Kubernetes 集群，并按顺序安装所有集群级和虚拟机级附加组件。<code>--keep</code> 会跳过已存在、与定义的 IP/MAC 一致且可通过 SSH 访问的虚拟机；不加此选项时，每台虚拟机都会被销毁并重新创建。</td>
+</tr>
+<tr>
+<td><code>setup_lab.py --list-examples [--json]</code></td>
+<td>列出本次安装作为起点提供的示例实验环境：自带的，以及 <code>EXAMPLE_LABS_DIR</code> 中你自己的。<code>--json</code> 以 JSON 输出同一列表，并包含每个示例的来源文件。</td>
 </tr>
 <tr>
 <td><code>setup_vm.py &lt;lab.json&gt; &lt;hostname&gt;</code></td>

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.11
-# The lab-builder's example labs — see 94_lab_examples.sh.
+# The example labs offered as starting points — see 94_lab_examples.sh.
 import json
+import subprocess
 from unittest import mock
 import os
 import sys
@@ -14,6 +15,7 @@ os.environ["LABBUILDER_STATUS_FILE"] = os.devnull
 
 import api  # noqa: E402
 import discovery  # noqa: E402
+import lab_examples  # noqa: E402
 
 failures = []
 
@@ -31,7 +33,9 @@ check("each one is named by its file name and has a title",
       all(e["name"] and e["title"] and "/" not in e["name"] for e in items))
 check("the list is sorted by name", [e["name"] for e in items] == sorted(e["name"] for e in items))
 check("a title drops the extension and reads as words",
-      discovery._example_title("harvester-aws.json.template") == "harvester aws")
+      lab_examples.title("harvester-aws.json.template") == "harvester aws")
+check("the shipped examples report where they come from",
+      all(e["source"] == "shipped" for e in items))
 check("every listed example counts its VMs", all(e["nodes"] > 0 for e in items))
 for e in items:
     definition = discovery.example(e["name"])
@@ -66,7 +70,7 @@ tmp = Path(tempfile.mkdtemp())
 (tmp / "no-nodes.json").write_text(json.dumps({"common": {}}))
 (tmp / "notes.txt").write_text("not a lab")
 (tmp / "adir.json").mkdir()
-os.environ[discovery.EXAMPLES_DIR_ENV] = str(tmp)
+os.environ[lab_examples.SHIPPED_DIR_ENV] = str(tmp)
 try:
     names = [e["name"] for e in discovery.examples()]
     check("a definition with nodes is offered", "good.json" in names)
@@ -100,7 +104,7 @@ try:
     status, _ = api.dispatch("examples", "POST", {}, b"")
     check("examples is a GET-only action", status == 400)
 finally:
-    del os.environ[discovery.EXAMPLES_DIR_ENV]
+    del os.environ[lab_examples.SHIPPED_DIR_ENV]
 
 # ── the UI offers them ────────────────────────────────────────────────────────
 app_js = (_REPO / "webui" / "htdocs" / "app.js").read_text()
@@ -139,6 +143,63 @@ with tempfile.TemporaryDirectory() as tmp:
 check("an older-format example is listed with its cluster and its add-ons",
       len(listed) == 1 and listed[0]["kclusters"] == 1
       and listed[0]["addons"] == ["longhorn", "rancher"] and listed[0]["nodes"] == 2)
+
+# ── the operator's own directory, beside the shipped one ──────────────────────
+# EXAMPLE_LABS_DIR is a lab_creation.cfg key, not an environment variable, so it is passed as the config a caller
+# already holds — the same way discovery.py and setup_lab.py get it.
+shipped = Path(tempfile.mkdtemp())
+own = Path(tempfile.mkdtemp())
+(shipped / "shipped-one.json").write_text(json.dumps({"nodes": {"n1": {}}, "common": {"lab_description": "ships"}}))
+(shipped / "both.json").write_text(json.dumps({"nodes": {"n1": {}}, "common": {"lab_description": "ships"}}))
+(own / "both.json").write_text(json.dumps({"nodes": {"n1": {}, "n2": {}}, "common": {"lab_description": "mine"}}))
+(own / "mine.json").write_text(json.dumps({"nodes": {"n1": {}}, "common": {"lab_description": "mine"}}))
+(own / "broken.json").write_text("{not json at all")
+cfg = {"EXAMPLE_LABS_DIR": str(own)}
+with mock.patch.dict(os.environ, {lab_examples.SHIPPED_DIR_ENV: str(shipped)}):
+    listed = lab_examples.catalogue(cfg)
+    by_name = {e["name"]: e for e in listed}
+    check("both directories are listed together",
+          sorted(by_name) == ["both.json", "mine.json", "shipped-one.json"])
+    check("an operator lab says it is the operator's own", by_name["mine.json"]["source"] == "operator")
+    check("a shipped lab still says it is shipped", by_name["shipped-one.json"]["source"] == "shipped")
+    check("an operator file of the same name replaces the shipped one",
+          by_name["both.json"]["source"] == "operator" and by_name["both.json"]["nodes"] == 2
+          and by_name["both.json"]["description"] == "mine")
+    check("a broken operator file is left out, not an error", "broken.json" not in by_name)
+    check("an entry carries the file it was read from",
+          by_name["mine.json"]["path"] == str(own / "mine.json"))
+    check("the operator's lab opens from the operator's directory",
+          len(lab_examples.load("mine.json", cfg).get("nodes") or {}) == 1)
+    check("the shadowed name opens the operator's file",
+          len(lab_examples.load("both.json", cfg).get("nodes") or {}) == 2)
+    check("both directories are reported, shipped first",
+          [d for _s, d in lab_examples.directories(cfg)] == [str(shipped), str(own)])
+    check("without EXAMPLE_LABS_DIR the operator directory is /etc/lab_creation/examples",
+          lab_examples.operator_dir({}) == "/etc/lab_creation/examples")
+    # The file each example came from is the server's business: the browser addresses one by name.
+    check("the API leaves the file path out", all("path" not in e for e in discovery.examples()))
+
+# ── setup_lab.py --list-examples ──────────────────────────────────────────────
+setup_lab = _REPO / "scripts" / "setup_lab.py"
+env = dict(os.environ, LABBUILDER_EXAMPLES_DIR=str(shipped), PYTHONPATH=str(_REPO / "libs"))
+out = subprocess.run([sys.executable, str(setup_lab), "--list-examples", "--json"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+check("--list-examples --json exits 0", out.returncode == 0)
+try:
+    listed_json = json.loads(out.stdout.decode())
+except ValueError:
+    listed_json = []
+    check("--list-examples --json prints JSON", False)
+check("--list-examples --json lists the same examples the library does",
+      [e["name"] for e in listed_json] == ["both.json", "shipped-one.json"])
+out = subprocess.run([sys.executable, str(setup_lab), "--list-examples"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+text = out.stdout.decode()
+check("--list-examples prints each example with its source and its description",
+      out.returncode == 0 and "shipped-one.json" in text and "[shipped]" in text and "ships" in text)
+check("--list-examples is documented in the help",
+      "--list-examples" in subprocess.run([sys.executable, str(setup_lab), "--help"],
+                                          stdout=subprocess.PIPE, env=env).stdout.decode())
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

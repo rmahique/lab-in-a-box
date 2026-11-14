@@ -349,77 +349,27 @@ def discover():
 CORE_SECTIONS = ("common", "nodes", "disabled_nodes", "kclusters")
 
 
-EXAMPLES_DIR_ENV = "LABBUILDER_EXAMPLES_DIR"
-
-
 def examples_dir():
-    """Directory holding the lab definitions offered as starting points: the repository's own examples/."""
-    d = os.environ.get(EXAMPLES_DIR_ENV)
-    if d:
-        return os.path.abspath(d)
-    for cand in ("/usr/share/lab_creation/examples", os.path.join(_REPO, "examples")):
-        if os.path.isdir(cand):
-            return os.path.abspath(cand)
-    return os.path.join(_REPO, "examples")
-
-
-def _example_title(name):
-    """A file name as a title: "harvester-aws.json.template" -> "harvester aws"."""
-    return re.sub(r"\.(json|yaml|yml)(\.template)?$", "", name).replace("-", " ").replace("_", " ")
+    """The directory holding the example labs this installation ships (libs/lab_examples.py)."""
+    return _lib("lab_examples").shipped_dir()
 
 
 def examples():
     """
-    The lab definitions offered as starting points, as [{"name", "title", "description", "nodes", "kclusters",
-    "addons"}], sorted by name. Each one is a file of examples_dir() that parses as a lab definition with a "nodes"
-    section; the counts let the UI say what a file holds without opening it. A file that does not parse is left out
-    rather than failing the list — one broken example must not take the others with it.
+    The example labs offered as starting points, shipped and operator-owned, as [{"name", "title", "description",
+    "source", "nodes", "kclusters", "addons"}] sorted by name. The file each one came from is left out: the browser
+    addresses an example by name, and example() is what resolves it.
     """
-    out = []
-    directory = examples_dir()
-    for name in sorted(os.listdir(directory) if os.path.isdir(directory) else []):
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path) or not re.search(r"\.(json|yaml|yml)(\.template)?$", name):
-            continue
-        definition, parse_error = _primary_lib().try_load_definition(path)
-        if parse_error or not isinstance(definition, dict) or "nodes" not in definition:
-            continue
-        addons = set()
-        owners = list((definition.get("kclusters") or {}).values()) + list((definition.get("nodes") or {}).values())
-        if isinstance(definition.get("cluster"), dict):     # the older single-Kubernetes-cluster format
-            owners.append(definition["cluster"])
-        # The older format also keeps one shared add-on list at the top level, beside its single "cluster".
-        if isinstance(definition.get("addons"), list):
-            owners.append({"addons": definition["addons"]})
-        for owner in owners:
-            for entry in (owner or {}).get("addons") or []:
-                addons.add(_apps_lib().addon_entry_name(entry))
-        out.append({
-            "name": name,
-            "title": _example_title(name),
-            "description": (definition.get("common") or {}).get("lab_description", ""),
-            "nodes": len(definition.get("nodes") or {}),
-            # The older format's single "cluster" counts as one, so an example never reads as having none.
-            "kclusters": len(definition.get("kclusters") or {})
-                         or (1 if isinstance(definition.get("cluster"), dict) else 0),
-            "addons": sorted(addons),
-        })
-    return out
+    return [{k: v for k, v in e.items() if k != "path"}
+            for e in _lib("lab_examples").catalogue()]
 
 
 def example(name):
     """
-    One example's lab definition, as a plain dict ready for the builder to open. `name` is a file name from
-    examples(), never a path: anything with a separator in it, or that is not in that list, is refused.
+    One example's lab definition, as a plain dict ready for the builder to open. `name` is a name from examples(),
+    never a path (libs/lab_examples.py refuses anything else).
     """
-    if not name or os.path.basename(name) != name:
-        raise ValueError("invalid example name: %r" % name)
-    if name not in [e["name"] for e in examples()]:
-        raise FileNotFoundError("no such example: %s" % name)
-    definition, parse_error = _primary_lib().try_load_definition(os.path.join(examples_dir(), name))
-    if parse_error:
-        raise ValueError("%s does not parse: %s" % (name, parse_error))
-    return dict(definition)
+    return _lib("lab_examples").load(name)
 
 
 def catalogue():
