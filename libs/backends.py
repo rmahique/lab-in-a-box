@@ -137,6 +137,10 @@ def _cloud_no_mac(mymac):
 # critical section.
 _mac_lock = threading.Lock()
 
+# How often a power operation re-reads a VM's state while waiting for it to reach the state asked for
+# (LibvirtBackend.stop_vm, HarvesterBackend.stop_vm, scripts/vm_power.py's lab-wide ordering).
+POWER_POLL_SECONDS = 3
+
 # The same reason the MAC lock exists: picking an address, recording it in the shared definition and saving it are
 # one decision, and two nodes being created at once must not reach the same one.
 _ip_lock = threading.Lock()
@@ -398,6 +402,14 @@ class VMBackend(object):
     def stop_vm(self, vm_name):
         """Shut down an existing VM without deleting it (see vm_state)."""
         raise NotImplementedError
+
+    def stop_billing_note(self):
+        """
+        What stopping a VM on this backend does to what it costs, as one sentence for the operator, or "" when the
+        question does not arise (a hypervisor of their own). Provider behaviour differs enough that stopping is not
+        a saving everywhere, so scripts/vm_power.py prints this with every stop rather than implying one.
+        """
+        return ""
 
     def open_vm_ports(self, vm_name, ports):
         """
@@ -671,6 +683,38 @@ class LibvirtBackend(VMBackend):
                     _YELLOW, _RESET, _RED, vm_name, _RESET, mymac, actual_mac or "none"))
                 return False
         return _reachable_for_keep(vm_name, myip)
+
+    def vm_state(self, vm_name):
+        """The domain's own virsh state ("running", "shut off", "paused", …), or "not found"."""
+        result = self._virsh("domstate", vm_name, capture_output=True, text=True, check=False)
+        state = (getattr(result, "stdout", "") or "").strip()
+        return state if result.returncode == 0 and state else "not found"
+
+    def start_vm(self, vm_name):
+        """Power the domain on. A domain that is already running is left alone rather than treated as a failure."""
+        if self.vm_state(vm_name) == "running":
+            return
+        result = self._virsh("start", vm_name, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            die("virsh start failed for '{}': {}".format(vm_name, (getattr(result, "stderr", "") or "").strip()))
+
+    def stop_vm(self, vm_name, timeout=120):
+        """
+        Shut the domain down, keeping its definition and its disks. ACPI first (`virsh shutdown`, the guest's own
+        orderly shutdown), and `virsh destroy` once `timeout` seconds have passed without it going down, because an
+        ACPI signal often does not reach a guest in this nested-virt setup — the same graceful-then-forceful
+        escalation reboot_vm() and delete_vm() use.
+        """
+        if self.vm_state(vm_name) == "not found":
+            die("no domain '{}' on this hypervisor — cannot stop it".format(vm_name))
+        self._virsh("shutdown", vm_name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.vm_state(vm_name) in ("shut off", "not found"):
+                return
+            time.sleep(POWER_POLL_SECONDS)
+        log("- '{}' did not shut down in {}s — powering it off".format(vm_name, timeout))
+        self._virsh("destroy", vm_name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     def reboot_vm(self, vm_name):
         """
@@ -1333,6 +1377,39 @@ class HarvesterBackend(VMBackend):
                 return False
         return _reachable_for_keep(vm_name, myip)
 
+    def vm_state(self, vm_name):
+        """The VirtualMachine's printableStatus ("Running", "Stopped", "Starting", …), or "not found"."""
+        result = self._kubectl("get", "virtualmachine", vm_name, "-o",
+                                "jsonpath={.status.printableStatus}",
+                                capture_output=True, text=True, check=False)
+        state = (getattr(result, "stdout", "") or "").strip()
+        return state if result.returncode == 0 and state else "not found"
+
+    def start_vm(self, vm_name):
+        """Power the VM on through virtctl, as reboot_vm() and delete_vm() drive it."""
+        if self.vm_state(vm_name) == "not found":
+            die("no Harvester VirtualMachine '{}' — cannot start it".format(vm_name))
+        result = self._virtctl("start", vm_name)
+        if result.returncode != 0:
+            die("virtctl start failed for '{}'".format(vm_name))
+
+    def stop_vm(self, vm_name, timeout=120):
+        """
+        Stop the VM through virtctl, keeping the VirtualMachine and its volumes, and wait up to `timeout` seconds
+        for it to report itself stopped. virtctl's own stop is already a graceful guest shutdown.
+        """
+        if self.vm_state(vm_name) == "not found":
+            die("no Harvester VirtualMachine '{}' — cannot stop it".format(vm_name))
+        result = self._virtctl("stop", vm_name)
+        if result.returncode != 0:
+            die("virtctl stop failed for '{}'".format(vm_name))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.vm_state(vm_name) in ("Stopped", "not found"):
+                return
+            time.sleep(POWER_POLL_SECONDS)
+        log("- '{}' has not reported itself stopped after {}s".format(vm_name, timeout))
+
     def reboot_vm(self, vm_name):
         result = self._virtctl("restart", vm_name)
         if result.returncode != 0:
@@ -1679,6 +1756,11 @@ class HetznerBackend(VMBackend):
 
     def stop_vm(self, vm_name):
         self._server_action(vm_name, "shutdown")  # ACPI, like the other backends' graceful stop
+
+    def stop_billing_note(self):
+        return ("Hetzner Cloud: stopping saves nothing — a server is billed for as long as it exists, powered "
+                "off or not. Only deleting it stops the charge, so destroy the lab (destroy_lab.py) instead, or "
+                "accept the cost of leaving it stopped.")
 
     def _server_action(self, vm_name, action):
         server = self._find_server(vm_name)
@@ -2070,6 +2152,11 @@ class AWSBackend(VMBackend):
             self._aws("ec2", "stop-instances", "--instance-ids", instance["InstanceId"])
         except RuntimeError as e:
             die(str(e))
+
+    def stop_billing_note(self):
+        return ("AWS: a stopped instance costs nothing for its compute; its EBS volumes, snapshots and any "
+                "Elastic IP not attached to a running instance still do. Without an Elastic IP its public "
+                "address changes on the next start, which is why starting re-registers the lab's DNS.")
 
     def open_vm_ports(self, vm_name, ports):
         """Same security-group rules create_vm() adds for open_ports (aws_open_ports)."""
@@ -2714,6 +2801,11 @@ class GCPBackend(VMBackend):
         except RuntimeError as e:
             die(str(e))
 
+    def stop_billing_note(self):
+        return ("Google Cloud: a stopped (TERMINATED) instance costs nothing for its compute; its persistent "
+                "disks, images and any reserved static address still do. An ephemeral public address is released, "
+                "so it comes back different, which is why starting re-registers the lab's DNS.")
+
     def open_vm_ports(self, vm_name, ports):
         """
         Create one firewall rule per VM (lab-<vm>), allowing `ports` from anywhere to instances carrying the network tag of
@@ -2970,14 +3062,27 @@ class AlibabaBackend(VMBackend):
         self._instance_call(vm_name, "StartInstance")
 
     def stop_vm(self, vm_name):
-        self._instance_call(vm_name, "StopInstance")
+        """
+        Stop the instance in economical mode (StoppedMode=StopCharging), which suspends the charge for its vCPUs,
+        memory, GPUs and image licence. A start brings it back, so nothing here is one-way, but two consequences
+        are worth knowing: the compute is released, so a start fails while the zone has no capacity, and a
+        system-assigned public address is released and comes back different (convert it to an EIP to keep it).
+        The mode needs a pay-as-you-go instance in a VPC; ECS stops any other instance the ordinary way instead,
+        without an error, and keeps charging for it.
+        """
+        self._instance_call(vm_name, "StopInstance", "--StoppedMode", "StopCharging")
 
-    def _instance_call(self, vm_name, call):
+    def stop_billing_note(self):
+        return ("Alibaba Cloud: stopped in economical mode, so vCPUs, memory, GPUs and the image licence stop "
+                "costing; the disks, their snapshots and any EIP still do. A pay-as-you-go instance in a VPC only "
+                "— any other keeps charging. The public address changes on the next start unless it is an EIP.")
+
+    def _instance_call(self, vm_name, call, *extra):
         instance = self._find_instance(vm_name)
         if not instance:
             die("Alibaba Cloud instance '{}' not found — cannot {}".format(vm_name, call))
         try:
-            self._aliyun(call, "--InstanceId", instance["InstanceId"])
+            self._aliyun(call, "--InstanceId", instance["InstanceId"], *extra)
         except RuntimeError as e:
             die(str(e))
 
@@ -3211,6 +3316,11 @@ class ScalewayBackend(VMBackend):
 
     def stop_vm(self, vm_name):
         self._server_action(vm_name, "poweroff")
+
+    def stop_billing_note(self):
+        return ("Scaleway: a powered-off Instance costs nothing for its compute; its local storage and any "
+                "flexible IP still do. Archiving it instead would move that storage to a snapshot and cost less "
+                "again, but the data has to be moved both ways, so this stops in place.")
 
     def _server_action(self, vm_name, action):
         server = self._find_server(vm_name)
@@ -3451,6 +3561,11 @@ class UpCloudBackend(VMBackend):
             self._api("POST", "/server/{}/start".format(server["uuid"]))
         except RuntimeError as e:
             die(str(e))
+
+    def stop_billing_note(self):
+        return ("UpCloud: what a stopped server costs depends on its plan — a flexible, hourly plan stops "
+                "charging for the compute, while a fixed plan is billed for the month either way, and its storage "
+                "is billed in both cases. Check your own plan before counting on a saving.")
 
     def stop_vm(self, vm_name):
         server = self._require_server(vm_name, "stop")
@@ -3714,10 +3829,25 @@ class OVHcloudBackend(VMBackend):
         return (instance or {}).get("status", "unknown") if instance else "not found"
 
     def start_vm(self, vm_name):
-        self._instance_action(vm_name, "start")
+        """
+        Bring the instance back: unshelve when stop_vm() shelved it (its status then starts with SHELVED), start
+        otherwise. Unshelving restores the instance from the snapshot shelving made and deletes that snapshot.
+        """
+        action = "unshelve" if self.vm_state(vm_name).startswith("SHELVED") else "start"
+        self._instance_action(vm_name, action)
 
     def stop_vm(self, vm_name):
-        self._instance_action(vm_name, "stop")
+        """
+        Shelve the instance: OVHcloud keeps the disk as a snapshot and the instance's main address, and releases
+        everything else. A plain stop would keep the whole instance on the bill, which is why this is the shelve
+        and not the stop; start_vm() unshelves it again.
+        """
+        self._instance_action(vm_name, "shelve")
+
+    def stop_billing_note(self):
+        return ("OVHcloud: shelved rather than stopped, which bills the snapshot of its disk instead of the "
+                "instance (a stop would bill in full). A monthly instance is only free of charge for a whole "
+                "month shelved: unshelving it at all bills that month. Unshelving takes longer than a start.")
 
     def _instance_action(self, vm_name, action):
         instance = self._find_instance(vm_name)
@@ -3936,6 +4066,11 @@ class ExoscaleBackend(VMBackend):
             self._exo("compute", "instance", "stop", vm_name, "--force")
         except RuntimeError as e:
             die(str(e))
+
+    def stop_billing_note(self):
+        return ("Exoscale: a stopped instance is billed for the storage it keeps, not for its compute. Its "
+                "public address is released unless it is an Elastic IP, so it comes back different, which is why "
+                "starting re-registers the lab's DNS.")
 
     def open_vm_ports(self, vm_name, ports):
         """

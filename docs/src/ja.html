@@ -1008,6 +1008,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <td>ラボ内のすべての VM を削除</td>
 </tr>
 <tr>
+<td><code>vm_power.py &lt;lab.json&gt; {status|start|stop}</code></td>
+<td>ラボの VM の電源状態を表示し、あるいは削除せずに停止して再び起動します。主にクラウドバックエンド上のラボ向けで、停止したラボのほうが費用は少なくなります。停止はエージェントをサーバーより先に行い、各サイトの DNS VM とオーバーレイ VM を最後まで残します。起動はその逆で、プロバイダーが別のパブリックアドレスを割り当てるため、ラボの DNS を再登録します。停止が課金にどう影響するかは各バックエンドが説明し、Hetzner Cloud では何も変わりません。</td>
+</tr>
+<tr>
 <td><code>migrate_config.py [--check] &lt;file&gt;</code></td>
 <td>ラボ定義または設定ファイルを現在のスキーマバージョンに移行する (<a href="#schema-versions">スキーマのバージョンと移行</a>)</td>
 </tr>

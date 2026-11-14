@@ -20,7 +20,7 @@ import subprocess
 import discovery
 
 ACTIONS = {"labs", "lab", "save", "credentials", "credentials-add", "credentials-encrypt",
-           "credentials-delete", "create", "validate-credentials", "job", "jobs"}
+           "credentials-delete", "create", "validate-credentials", "job", "jobs", "power"}
 
 
 def helper_path():
@@ -138,6 +138,18 @@ def dispatch(action, method, params, data):
         # The preflight with the lab's credentials, as root: the passphrase reaches the helper on stdin, for this one
         # request, and is never kept.
         return helper(["lab-validate"], {"config": data.get("config", {}), "passphrase": data.get("passphrase", "")})
+    if action == "power" and method == "POST":
+        # The power state of a lab's VMs, or starting/stopping them: a saved lab by file name, or an example lab
+        # by name. Synchronous — the helper answers with the states themselves and with what each backend says
+        # stopping does to the bill.
+        args = ["lab-power", str(data.get("action", ""))]
+        if data.get("example"):
+            args += ["--example", str(data["example"])]
+        else:
+            args.append(discovery._safe_name(data.get("filename", "")))
+        if data.get("cloud_account"):
+            args += ["--cloud-account", str(data["cloud_account"])]
+        return helper(args)
     if action == "job" and method == "GET":
         return helper(["lab-status", one("id")])
     if action == "jobs" and method == "GET":

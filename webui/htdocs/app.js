@@ -2095,6 +2095,15 @@ async function openExamplesDialog() {
           openCreate(ex.name);
         });
         li.appendChild(run);
+        // An example launched this way has no lab file of its own, so this is the only place its VMs can be
+        // stopped again without the command line.
+        ["Status", "Stop"].forEach((label) => {
+          const pb = el("button", "btn", label);
+          pb.type = "button";
+          pb.title = "The VMs of this example, if it has been launched";
+          pb.addEventListener("click", () => labPower({ example: ex.name }, label.toLowerCase(), pb, li));
+          li.appendChild(pb);
+        });
       }
       const b = el("button", "btn", "Open");
       b.type = "button";
@@ -2136,9 +2145,39 @@ async function openSavedDialog() {
         } catch (e) { toastError("Cannot open " + l.name + ": " + e.message); }
       });
       li.appendChild(b);
+      // Power: a lab on a cloud backend costs money while it runs, and stopping it is not the same as
+      // destroying it. The answer (and what each backend says stopping does to the bill) goes under the row.
+      ["Status", "Start", "Stop"].forEach((label) => {
+        const pb = el("button", "btn", label);
+        pb.type = "button";
+        pb.addEventListener("click", () => labPower({ filename: l.name }, label.toLowerCase(), pb, li));
+        li.appendChild(pb);
+      });
       list.appendChild(li);
     });
   } catch (e) { list.appendChild(el("li", "issue err", e.message)); }
+}
+
+// One power action on one lab (saved, or an example by name), with its answer written under the row it came
+// from. Start and stop walk the whole lab and wait for each VM, so this can take minutes: the button says so
+// while it runs rather than looking like nothing happened.
+async function labPower(which, action, button, row) {
+  const old = button.textContent;
+  button.disabled = true;
+  button.textContent = action === "status" ? "Reading…" : (action === "start" ? "Starting…" : "Stopping…");
+  const answer = row.querySelector(".power-answer") || row.appendChild(el("pre", "power-answer"));
+  answer.textContent = "";
+  try {
+    const r = await adminCall("power", { ...which, action });
+    const states = Object.entries(r.result || {}).map(([vm, state]) => vm + ": " + state).join("\n");
+    answer.textContent = [states || "This lab has no VM the provider still knows.", r.note].filter(Boolean).join("\n\n");
+  } catch (e) {
+    answer.textContent = "";
+    toastError("Cannot " + action + " this lab: " + e.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = old;
+  }
 }
 
 function showDialog(sel) {

@@ -1005,6 +1005,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <td>销毁实验室中的所有虚拟机</td>
 </tr>
 <tr>
+<td><code>vm_power.py &lt;lab.json&gt; {status|start|stop}</code></td>
+<td>查看实验环境中各虚拟机的电源状态，或在不销毁的前提下停止并再次启动它们，主要面向云后端上的实验环境，停止后花费更少。停止时先停 agent 再停 server，各站点的 DNS 虚拟机和 overlay 虚拟机保留到最后；启动顺序相反，并会重新登记实验环境的 DNS，因为云厂商会给回另一个公网地址。每个后端都会说明停止对其账单意味着什么，在 Hetzner Cloud 上则毫无影响。</td>
+</tr>
+<tr>
 <td><code>migrate_config.py [--check] &lt;file&gt;</code></td>
 <td>将实验室定义或配置文件更新到当前的模式版本 (<a href="#schema-versions">模式版本与迁移</a>)</td>
 </tr>

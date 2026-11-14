@@ -1010,6 +1010,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <td>Destrói todas as VMs de um laboratório</td>
 </tr>
 <tr>
+<td><code>vm_power.py &lt;lab.json&gt; {status|start|stop}</code></td>
+<td>Mostra o estado de energia das VMs de um lab, ou as para sem destruí-las e as inicia de novo — principalmente para um lab em um backend de nuvem, onde um lab parado custa menos. Para os agentes antes dos servidores e mantém ligadas por mais tempo as VMs de DNS e do overlay de cada site; iniciar inverte essa ordem e registra o DNS do lab de novo, porque o provedor devolve outro endereço público. Cada backend diz o que parar significa para a sua fatura, que na Hetzner Cloud é nada.</td>
+</tr>
+<tr>
 <td><code>migrate_config.py [--check] &lt;file&gt;</code></td>
 <td>Atualiza uma definição de laboratório ou um arquivo de configuração para as versões de esquema atuais (<a href="#schema-versions">Versões de esquema e migração</a>)</td>
 </tr>

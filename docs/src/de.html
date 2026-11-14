@@ -917,6 +917,10 @@ iptables -L LAB_PORTFWD_FWD -n -v            # matching FORWARD-chain ACCEPT rul
 <td>Zerstört alle VMs eines Labs</td>
 </tr>
 <tr>
+<td><code>vm_power.py &lt;lab.json&gt; {status|start|stop}</code></td>
+<td>Zeigt den Energiezustand der VMs eines Labs oder stoppt sie, ohne sie zu löschen, und startet sie wieder — vor allem für ein Lab auf einem Cloud-Backend, wo ein gestopptes Lab weniger kostet. Agenten werden vor den Servern gestoppt, die DNS- und Overlay-VM jedes Standorts bleiben am längsten laufen; beim Starten ist es umgekehrt, und das Lab-DNS wird neu geschrieben, weil der Anbieter eine andere öffentliche Adresse zurückgibt. Jedes Backend sagt, was ein Stopp für seine Rechnung bedeutet — bei Hetzner Cloud nämlich nichts.</td>
+</tr>
+<tr>
 <td><code>migrate_config.py [--check] &lt;file&gt;</code></td>
 <td>Bringt eine Labordefinition oder Konfigurationsdatei auf die aktuellen Schemaversionen (<a href="#schema-versions">Schemaversionen und Migration</a>)</td>
 </tr>
