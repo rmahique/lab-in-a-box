@@ -50,6 +50,21 @@ smlm_ansible_control_nodes JSON fields need, handy for cross-referencing
 without a second lookup. Systems in no group at all still appear, under
 the synthetic "ungrouped" group — Ansible's own inventory convention.
 
+A system's custom info values (SMLM's own key=value tags, set with
+system.setCustomValues — this project's own smlm_system_custom_values
+JSON field, or set by hand) are exposed as hostvar "uyuni_custom_info", a
+plain dict, via one extra system.getCustomValues call per system. Omitted
+entirely for a system with none set, rather than an empty dict, so a
+playbook can check with the plain `is defined` Jinja test.
+
+A system's own System Details (the same facts the "System Details >
+Overview" web UI page shows — release, virtualization, base/addon
+entitlements, hostname, minion_id, osa_status, machine_id, lock_status,
+...) are exposed as hostvar "uyuni_system_details", a plain dict, via one
+extra system.getDetails call per system. Ground-truthed live 2026-11-06
+against a real registered system's own real response, same as every
+other API call in this script.
+
 SMLM/Uyuni system group names are sanitized into valid Ansible group names
 (letters/digits/underscore only — see _sanitize_group_name()) before use,
 since Ansible group names may not contain hyphens and this lab's own real
@@ -126,6 +141,26 @@ def _load_env_file():
         pass
 
 
+def _jsonify(value):
+    """
+    Recursively convert any xmlrpc.client.DateTime in `value` to a plain string, so the dict it's
+    part of can go through json.dumps() — confirmed live 2026-11-06 the hard way: system.getDetails'
+    own "last_boot" field is a real DateTime object over the raw xmlrpc.client path this script
+    uses, which json.dumps() rejects outright ("Object of type DateTime is not JSON serializable").
+    spacecmd's own `api` CLI subcommand stringifies these for display, which is why checking its
+    output first didn't catch this — same lesson as the getCustomValues/getDetails list-vs-struct
+    shape mismatch just above: spacecmd's CLI formatting is not a reliable guide to a method's raw
+    XML-RPC return shape at all, only to spacecmd's own already-adjusted idea of it.
+    """
+    if isinstance(value, xmlrpc.client.DateTime):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _jsonify(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonify(v) for v in value]
+    return value
+
+
 def _server_proxy():
     _load_env_file()
     host = os.environ.get("UYUNI_HOST")
@@ -175,6 +210,19 @@ def build_inventory():
             if not name:
                 continue
             hv = {"uyuni_system_id": system.get("id")}
+            # Both return the struct directly, no outer list, despite spacecmd's own `api`
+            # subcommand printing EVERY struct response wrapped in "[...]" for display (true of
+            # listSystems/listAllGroups too, but those really are lists) — confirmed live
+            # 2026-11-06 the hard way, against the real server, through the raw xmlrpc.client
+            # path this script actually uses: custom[0]/details[0] both raised KeyError: 0 (a
+            # dict indexed by int 0). spacecmd's own CLI output is not a reliable guide to a raw
+            # XML-RPC method's real return shape.
+            custom = proxy.system.getCustomValues(session, system.get("id"))
+            if custom:
+                hv["uyuni_custom_info"] = _jsonify(custom)
+            details = proxy.system.getDetails(session, system.get("id"))
+            if details:
+                hv["uyuni_system_details"] = _jsonify(details)
             if name == local_fqdn:
                 hv["ansible_connection"] = "local"
             hostvars[name] = hv
