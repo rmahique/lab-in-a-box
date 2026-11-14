@@ -157,7 +157,9 @@ do
 done
 
 # Non-addon, non-orchestration tooling.
-for i in pushDockerImage.sh lab_schema refresh_hypervisor_status.py setup_harvester_cluster.py build_lab_usb.py setup_credentials.py vm_power.py check_addon.py migrate_config.py overlay_ctl.py check_lab.py
+_TOOLING="pushDockerImage.sh lab_schema refresh_hypervisor_status.py setup_harvester_cluster.py build_lab_usb.py
+setup_credentials.py vm_power.py check_addon.py migrate_config.py overlay_ctl.py check_lab.py upgrade_lab_in_a_box"
+for i in ${_TOOLING}
 do
     cp "scripts/${i}" "/usr/local/bin/${i}"
     sed -i "s/__LABVERSION__/$(lab_version "scripts/${i}")/" "/usr/local/bin/${i}"
@@ -172,19 +174,14 @@ cp scripts/lab-builder-passwd /usr/local/sbin/lab-builder-passwd
 chown root:root /usr/local/sbin/lab-builder-helper /usr/local/sbin/lab-builder-passwd
 chmod 0755 /usr/local/sbin/lab-builder-helper /usr/local/sbin/lab-builder-passwd
 
-# Point the installed scripts at _python_bin when it isn't the default.
-if [[ "${_python_bin}" != "python3.11" ]]
-then
-    for i in /usr/local/bin/install_* /usr/local/bin/setup_lab.py /usr/local/bin/setup_vm.py \
-             /usr/local/bin/destroy_vm.py /usr/local/bin/destroy_lab.py /usr/local/bin/lab_schema \
-             /usr/local/bin/refresh_hypervisor_status.py /usr/local/bin/setup_harvester_cluster.py \
-             /usr/local/bin/build_lab_usb.py /usr/local/bin/setup_credentials.py /usr/local/bin/vm_power.py \
-             /usr/local/bin/check_addon.py \
-             /usr/local/sbin/lab-builder-helper
-    do
-        [[ -f "${i}" ]] && grep -Iq . "${i}" && sed -i "1s|^#!/usr/bin/env python3.11\$|#!/usr/bin/env ${_python_bin}|" "${i}"
-    done
-fi
+# Point every installed Python script at _python_bin: a "python3" or "python3.11" interpreter line becomes
+# "#!/usr/bin/env ${_python_bin}", so each runs where only _python_bin exists (a node with python3.13 alone).
+for i in /usr/local/bin/install_* /usr/local/sbin/lab-builder-helper \
+         $(printf '/usr/local/bin/%s ' setup_lab.py setup_vm.py destroy_vm.py destroy_lab.py ${_TOOLING})
+do
+    [[ -f "${i}" ]] && grep -Iq . "${i}" \
+        && sed -i -E "1s@^#!/usr/bin/env python3(\.11)?\$@#!/usr/bin/env ${_python_bin}@" "${i}"
+done
 
 # Old bash orchestration binaries are fully superseded by the ones installed
 # above — remove them so nothing can ever dispatch to a stale copy.

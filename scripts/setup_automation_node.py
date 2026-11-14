@@ -24,6 +24,9 @@ ranges (automation-node-lib.sh's _RECURSION_NETWORKS), so a node whose port 53 i
 internet is not an open resolver. Opening port 53 at all is the lab definition's business: list it in
 the node's own aws_open_ports (or the equivalent for another backend).
 
+A node that already exists on the backend (an instance with that name) is not created again: it is
+only configured, so running this again, or on a node the lab already built, is safe.
+
 What this does NOT do: point anything at the new node's DNS. Whoever wants to resolve the lab's names
 from elsewhere adds it as a nameserver themselves.
 """
@@ -111,6 +114,7 @@ def node_settings(definition, config, vm_name, private_ip, mydomain) -> dict:
         "_host_fqdn": "",
         "_node_kind": NODE_KIND,
         "_node_netstack": "nm",
+        "_node_network": "",
         # Left to the node: node_install_packages picks the interpreter its own distribution ships,
         # which is not the same on Leap 15 and Leap 16.
         "_python_bin": str(config.get("_python_bin") or ""),
@@ -121,7 +125,8 @@ def node_settings(definition, config, vm_name, private_ip, mydomain) -> dict:
 def stage_inputs(stage: Path, settings: dict) -> None:
     """
     Fill `stage` with what the node needs under NODE_DIR: the settings file, automation-node-lib.sh
-    and this repository's tracked files.
+    and this repository's tracked files, with their .lab-versions (write_lab_versions.sh) for the
+    version stamps of the scripts installed from a tree without .git.
 
     The settings file is written by automation-node-lib.sh's own write_node_settings, sourced for the
     purpose, so its format cannot drift from what configure_node reads back.
@@ -152,6 +157,9 @@ def stage_inputs(stage: Path, settings: dict) -> None:
     tar.stdout.close()
     if untar.wait() != 0 or tar.wait() != 0:
         die("staging this repository's files for the automation node failed")
+    with open(str(tree / ".lab-versions"), "w") as versions:
+        if subprocess.run([str(setup_dir() / "write_lab_versions.sh"), str(root)], stdout=versions).returncode != 0:
+            die("writing the staged tree's .lab-versions failed")
 
 
 def configure_node(host: str, stage: Path) -> None:
@@ -206,16 +214,20 @@ def main():
         die("nodes.{}: no mydomain — the automation node serves a DNS zone and needs its "
             "name".format(vm_name))
 
-    log("Creating the automation node \"{}\" on backend \"{}\"".format(vm_name, backend_name))
-    # ensure_cloud_dns=False: this node is the DNS server for its own network. The standard path
-    # would create a separate lab-dns VM beside it and point the network at that one instead.
-    failures = provision_vm(definition, config, defaults, vm_name, ensure_cloud_dns=False)
-    for message in failures or []:
-        warn(message)
-    if failures:
-        die("provisioning '{}' reported failures (above) — not configuring it".format(vm_name))
-
     backend = backends.get_backend(definition, config, vm_name)
+    if backend.vm_exists(vm_name):
+        log("The automation node \"{}\" already exists on backend \"{}\" — configuring it".format(
+            vm_name, backend_name))
+    else:
+        log("Creating the automation node \"{}\" on backend \"{}\"".format(vm_name, backend_name))
+        # ensure_cloud_dns=False: this node is the DNS server for its own network. The standard path
+        # would create a separate lab-dns VM beside it and point the network at that one instead.
+        failures = provision_vm(definition, config, defaults, vm_name, ensure_cloud_dns=False)
+        for message in failures or []:
+            warn(message)
+        if failures:
+            die("provisioning '{}' reported failures (above) — not configuring it".format(vm_name))
+
     public_ip = backend.get_ip(vm_name) or ""
     private_ip = backend.get_private_ip(vm_name) or public_ip
     if not public_ip:

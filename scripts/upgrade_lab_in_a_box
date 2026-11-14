@@ -1,0 +1,160 @@
+#!/bin/bash
+# Part of lab-in-a-box: upgrade the lab-in-a-box installed on this automation node to the latest version.
+# Author/s: Raul Mahiques
+# License: GPLv3
+#
+#  This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+_VERSION="__LABVERSION__"
+
+_DEFAULT_REPO="https://github.com/SUSE-Technical-Marketing/lab-in-a-box.git"
+_DEFAULT_BRANCH="main"
+_PACKAGE="lab-in-a-box"
+
+usage() {
+    cat <<EOF
+Usage: upgrade_lab_in_a_box [--repo URL] [--branch NAME]
+
+Upgrades the lab-in-a-box installed on this host to the latest version. Run as root.
+
+Installed from git (the default): fetches BRANCH of REPO into a checkout of its own and deploys it with that
+checkout's install_automation_node_scripts.sh, the same deploy a fresh install runs.
+
+Installed from the ${_PACKAGE} RPM/DEB package: installs the package of REPO's latest GitHub release through the
+package manager (zypper, dnf or apt) instead, so the package keeps owning the install. --branch does not apply.
+
+Options:
+  --repo URL      git repository to upgrade from (default: ${_DEFAULT_REPO})
+  --branch NAME   branch to deploy (default: ${_DEFAULT_BRANCH})
+  --help, -h      print this help and exit
+
+Environment:
+  LAB_UPGRADE_SRC   the checkout this keeps between runs (default: /var/cache/lab-in-a-box/src)
+  LAB_UPGRADE_API   GitHub API base URL for the package path (default: https://api.github.com)
+EOF
+}
+
+for _arg in "$@"; do
+    if [[ "${_arg}" == "-h" || "${_arg}" == "--help" ]]; then
+        usage
+        exit 0
+    fi
+done
+
+set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+log() { echo "- $*"; }
+
+_repo="${_DEFAULT_REPO}"
+_branch="${_DEFAULT_BRANCH}"
+_branch_given=0
+while (( $# )); do
+    case $1 in
+        --repo) _repo=${2:?--repo needs a URL}; shift 2 ;;
+        --repo=*) _repo=${1#*=}; shift ;;
+        --branch) _branch=${2:?--branch needs a name}; _branch_given=1; shift 2 ;;
+        --branch=*) _branch=${1#*=}; _branch_given=1; shift ;;
+        *) die "unknown option '$1' (see --help)" ;;
+    esac
+done
+_src="${LAB_UPGRADE_SRC:-/var/cache/lab-in-a-box/src}"
+_api="${LAB_UPGRADE_API:-https://api.github.com}"
+
+[[ ${EUID} -eq 0 ]] || die "run this as root"
+
+# "rpm" or "deb" when lab-in-a-box came from its package, else nothing.
+package_kind() {
+    if command -v rpm >/dev/null 2>&1 && rpm -q "${_PACKAGE}" >/dev/null 2>&1; then
+        echo rpm
+    elif command -v dpkg-query >/dev/null 2>&1 \
+            && dpkg-query -W -f='${Status}' "${_PACKAGE}" 2>/dev/null | grep -q "install ok installed"; then
+        echo deb
+    fi
+}
+
+# owner/name of a GitHub repository URL (https://github.com/owner/name(.git), git@github.com:owner/name(.git)).
+github_slug() {
+    local slug
+    slug=$(sed -E -n 's#^(https://github\.com/|git@github\.com:)([^/]+/[^/]+)$#\2#p' <<<"$1")
+    [[ -n ${slug} ]] || die "the package upgrade needs a GitHub repository URL, got '$1'"
+    echo "${slug%.git}"
+}
+
+# Prints "<tag> <url>": the latest release of GitHub repository $1 and its asset ending in $2 (".rpm" or ".deb").
+latest_release_asset() {
+    curl -fsSL "${_api}/repos/$1/releases/latest" | python3 -c '
+import json, sys
+release = json.load(sys.stdin)
+urls = [a["browser_download_url"] for a in release.get("assets", []) if a.get("name", "").endswith(sys.argv[1])]
+if not urls:
+    sys.exit("the latest release ({}) has no {} package".format(release.get("tag_name", "?"), sys.argv[1]))
+print(release.get("tag_name", ""), urls[0])
+' "$2"
+}
+
+upgrade_package() {
+    local kind=$1 slug tag url file installed
+    (( _branch_given )) && echo "WARNING: --branch does not apply to a package install; installing the latest release" >&2
+    slug=$(github_slug "${_repo}")
+    read -r tag url < <(latest_release_asset "${slug}" ".${kind}") || die "could not read the latest release of ${slug}"
+    [[ -n ${url} ]] || die "could not read the latest release of ${slug}"
+    if [[ ${kind} == rpm ]]; then
+        installed=$(rpm -q --qf '%{VERSION}' "${_PACKAGE}")
+    else
+        installed=$(dpkg-query -W -f='${Version}' "${_PACKAGE}")
+    fi
+    if [[ ${installed} == "${tag#v}" ]]; then
+        log "${_PACKAGE} ${installed} is already the latest release of ${slug}"
+        return 0
+    fi
+    file="$(mktemp -d)/${url##*/}"
+    log "downloading ${_PACKAGE} ${tag} from ${url}"
+    curl -fsSL -o "${file}" "${url}" || die "could not download ${url}"
+    log "upgrading ${_PACKAGE} ${installed} -> ${tag}"
+    if [[ ${kind} == deb ]]; then
+        apt-get install -y "${file}"
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install --allow-unsigned-rpm "${file}"
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y "${file}"
+    else
+        die "no zypper or dnf to install ${file} with"
+    fi
+    rm -rf "$(dirname "${file}")"
+}
+
+upgrade_git() {
+    local before after
+    command -v git >/dev/null 2>&1 || die "git is not installed"
+    before=$(git -C "${_src}" rev-parse --short HEAD 2>/dev/null || true)
+    if [[ -d ${_src}/.git && $(git -C "${_src}" remote get-url origin 2>/dev/null) == "${_repo}" ]]; then
+        log "fetching ${_branch} of ${_repo}"
+        git -C "${_src}" fetch --prune origin "${_branch}" || die "could not fetch ${_branch} of ${_repo}"
+        # This checkout is the command's own: whatever changed in it is discarded, so it holds exactly the branch.
+        git -C "${_src}" checkout -q -f -B "${_branch}" FETCH_HEAD
+        git -C "${_src}" clean -q -fdx
+    else
+        log "cloning ${_branch} of ${_repo} into ${_src}"
+        rm -rf "${_src}"
+        mkdir -p "$(dirname "${_src}")"
+        git clone -q --branch "${_branch}" "${_repo}" "${_src}" || die "could not clone ${_branch} of ${_repo}"
+    fi
+    [[ -f ${_src}/install_automation_node_scripts.sh ]] || die "${_repo} has no install_automation_node_scripts.sh"
+    after=$(git -C "${_src}" rev-parse --short HEAD)
+    log "deploying ${after} ($(git -C "${_src}" log -1 --format=%s))"
+    (cd "${_src}" && bash ./install_automation_node_scripts.sh)
+    echo "lab-in-a-box upgraded to ${after} of ${_branch} (${_repo}); this command last deployed: ${before:-nothing}"
+}
+
+_kind=$(package_kind)
+if [[ -n ${_kind} ]]; then
+    log "${_PACKAGE} was installed from its ${_kind} package: upgrading it through the package manager"
+    upgrade_package "${_kind}"
+else
+    upgrade_git
+fi

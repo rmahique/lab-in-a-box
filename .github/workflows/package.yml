@@ -34,6 +34,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+          # Full history: .lab-versions (below) records each file's own last commit.
+          fetch-depth: 0
 
       - name: Compute package version from the tag
         id: version
@@ -53,6 +55,8 @@ jobs:
           set -euo pipefail
           mkdir -p stage
           git archive HEAD | tar -x -C stage
+          # The package has no .git: install_automation_node_scripts.sh stamps versions from this list instead.
+          setup_demo_server/write_lab_versions.sh . > stage/.lab-versions
           rm -rf stage/.github stage/.githooks stage/tests
           # nfpm's own --target needs the dir to already exist (confirmed
           # live: "Open dist/: is a directory" otherwise).

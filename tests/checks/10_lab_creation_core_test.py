@@ -15,6 +15,8 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "libs"))
 
 import lab_creation as lc  # noqa: E402
+import io as _io_early  # noqa: E402
+from contextlib import redirect_stderr as _redirect_stderr_early  # noqa: E402
 import primary  # noqa: E402
 import targets  # noqa: E402
 
@@ -316,6 +318,40 @@ definition6 = {"common": {}, "nodes": {"vm1": {}}}
 env = lc.load_vm_vars(definition6, "vm1")
 check("load_vm_vars: no mynet_reverse when myip is absent", "mynet_reverse" not in env)
 
+# mydomain left out: the domain the node names share, else this host's own; names in different domains are fatal.
+_nd = primary.node_name_domain
+check("node_name_domain: FQDN names sharing a domain give that domain",
+      _nd({"nodes": {"a.sko.lab": {}, "b.sko.lab": {}}}) == "sko.lab")
+check("node_name_domain: only the first label is the host name",
+      _nd({"nodes": {"a.east.sko.lab": {}}}) == "east.sko.lab")
+check("node_name_domain: short names give no domain", _nd({"nodes": {"a": {}, "b": {}}}) == "")
+check("node_name_domain: a node with its own mydomain is left out",
+      _nd({"nodes": {"a.sko.lab": {}, "b.other.lab": {"mydomain": "other.lab"}}}) == "sko.lab")
+for _label, _nodes in (("different domains", {"a.sko.lab": {}, "b.other.lab": {}}),
+                       ("an FQDN mixed with a short name", {"a.sko.lab": {}, "b": {}})):
+    try:
+        _nd({"nodes": _nodes})
+        _msg = ""
+    except ValueError as e:
+        _msg = str(e)
+    check("node_name_domain: {} raise, asking for mydomain".format(_label),
+          "cannot determine the default domain name" in _msg and "mydomain" in _msg)
+
+env = lc.load_vm_vars({"common": {}, "nodes": {"rodeo1.mydemosko.lab": {}}}, "rodeo1.mydemosko.lab")
+check("load_vm_vars: no mydomain takes the node names' shared domain, not this host's",
+      env["mydomain"] == "mydemosko.lab")
+env = lc.load_vm_vars({"common": {"mydomain": "set.lab"}, "nodes": {"r.mydemosko.lab": {}}}, "r.mydemosko.lab")
+check("load_vm_vars: an explicit mydomain wins over the node names", env["mydomain"] == "set.lab")
+env = lc.load_vm_vars({"common": {}, "nodes": {"vm1": {}}}, "vm1")
+check("load_vm_vars: short names still fall back to this host's domain", env["mydomain"] == "mydemo.lab")
+try:
+    with _redirect_stderr_early(_io_early.StringIO()):
+        lc.load_vm_vars({"common": {}, "nodes": {"a.sko.lab": {}, "b.other.lab": {}}}, "a.sko.lab")
+    _died = False
+except SystemExit:
+    _died = True
+check("load_vm_vars: node names in different domains with no mydomain are fatal", _died)
+
 
 # ── validate_lab_definition: preflight checks ────────────────────────────────
 # subprocess.run is mocked throughout (no virsh/ping/jq in the test
@@ -394,6 +430,107 @@ lc.run_libvirt_tool = lambda *a, **kw: _virsh_calls.append(a) or FakeCompleted(r
 check("validate_lab_definition: host_checks=False still validates the definition",
       lc.validate_lab_definition(good, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 check("validate_lab_definition: host_checks=False runs no libvirt call", _virsh_calls == [])
+_mixed = _lab_def({"common": dict(base_common),
+                   "nodes": {"a.sko.lab": {"myip": "192.168.1.52", "mymac": "aa:bb:cc:dd:ee:0b",
+                                           "config_method": "virt_customize"},
+                             "b.other.lab": {"myip": "192.168.1.53", "mymac": "aa:bb:cc:dd:ee:0c",
+                                             "config_method": "virt_customize"}}})
+_issues = []
+check("validate_lab_definition: node names in different domains with no mydomain fail",
+      lc.validate_lab_definition(_mixed, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_issues) is False)
+check("validate_lab_definition: and the error asks for mydomain",
+      any("cannot determine the default domain name" in line for line in _issues))
+_keys_bad = _lab_def({"common": dict(base_common, ssh_authorized_keys=["http://example.com/keys"]),
+                      "nodes": {"vm1": {"myip": "192.168.1.54", "mymac": "aa:bb:cc:dd:ee:0d",
+                                        "config_method": "virt_customize"}}})
+_issues = []
+check("validate_lab_definition: an ssh_authorized_keys entry over http fails",
+      lc.validate_lab_definition(_keys_bad, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_issues) is False
+      and any("common.ssh_authorized_keys[0]" in line and "https" in line for line in _issues))
+_keys_ok = _lab_def({"common": dict(base_common, ssh_authorized_keys=[
+                        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAaaaa a@b", {"key": "/not/here.pub", "user": "bob"}]),
+                     "nodes": {"vm1": {"myip": "192.168.1.55", "mymac": "aa:bb:cc:dd:ee:0e",
+                                       "config_method": "virt_customize"}}})
+check("validate_lab_definition: a key line and a file path pass without host checks",
+      lc.validate_lab_definition(_keys_ok, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
+# An add-on's --validate runs through the REAL subprocess.run: this container's python3 is 3.6, as the lab-builder
+# CGI's can be, so a keyword argument newer than 3.6 (capture_output=, text=) fails here as it does there.
+import apps  # noqa: E402
+_fake_addon = os.path.join(tempfile.mkdtemp(), "install_fakeaddon")
+with open(_fake_addon, "w") as _fh:
+    _fh.write("#!/bin/sh\necho '[ERROR] fakeaddon.fake_field is required'\nexit 1\n")
+os.chmod(_fake_addon, 0o755)
+_orig_installer, _orig_run = apps.addon_installer, lc.subprocess.run
+apps.addon_installer = lambda name: _fake_addon if name == "fakeaddon" else None
+lc.subprocess.run = _real_subprocess_run
+_with_addon = _lab_def({"common": dict(base_common),
+                        "nodes": {"vm1": {"myip": "192.168.1.56", "mymac": "aa:bb:cc:dd:ee:0f",
+                                          "config_method": "virt_customize", "addons": ["fakeaddon"]}}})
+_issues = []
+try:
+    _ok = lc.validate_lab_definition(_with_addon, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                     issues_out=_issues)
+    _crash = ""
+except TypeError as e:
+    _ok, _crash = None, str(e)
+check("validate_lab_definition: an add-on's --validate runs under this python3 ({})".format(_crash or "ok"),
+      _crash == "")
+check("validate_lab_definition: the add-on's own error is reported",
+      _ok is False and any("fakeaddon.fake_field is required" in line for line in _issues))
+apps.addon_installer, lc.subprocess.run = _orig_installer, _orig_run
+
+# read_credentials=False (the lab-builder's public Validate): an account is only looked for, never read, and its type
+# comes from its <type>-<account> name.
+_cred_dir = tempfile.mkdtemp()
+with open(os.path.join(_cred_dir, "aws-team.yaml"), "w") as _fh:
+    _fh.write("{this is not: [valid yaml\n")          # would be a parse error if it were read
+open(os.path.join(_cred_dir, "corp.yaml"), "w").close()
+_cred_cfg = dict(single_host_cfg, CREDENTIALS_PATH=_cred_dir)
+
+
+def _cloud_lab(account):
+    return _lab_def({"common": dict(base_common, cloud_account=account), "nodes": {"c1.mydemo.lab": {}}})
+
+
+_issues = []
+lc.validate_lab_definition(_cloud_lab("aws-team"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                           read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: without read_credentials an account file is not read",
+      not any("aws-team" in line for line in _issues))
+_issues = []
+check("validate_lab_definition: ...but read with it (the default), where its parse error shows",
+      lc.validate_lab_definition(_cloud_lab("aws-team"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_issues) is False
+      and any("aws-team" in line for line in _issues))
+_issues = []
+check("validate_lab_definition: without read_credentials a missing account is still an error",
+      lc.validate_lab_definition(_cloud_lab("aws-nope"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                                 read_credentials=False, issues_out=_issues) is False
+      and any("not found" in line for line in _issues))
+_issues = []
+_ok = lc.validate_lab_definition(_cloud_lab("corp"), _cred_cfg, "/iso", "/lab", host_checks=False,
+                                 read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: an account name without its type is a warning asking to log in",
+      any("WARN" in line and "log in" in line for line in _issues))
+_conflict = _lab_def({"common": dict(base_common, cloud_account="aws-team", backend="gcp"), "nodes": {"c1.mydemo.lab": {}}})
+_issues = []
+check("validate_lab_definition: a type from the name that contradicts backend is an error",
+      lc.validate_lab_definition(_conflict, _cred_cfg, "/iso", "/lab", host_checks=False, read_credentials=False,
+                                 issues_out=_issues) is False
+      and any("backend is set to 'gcp'" in line for line in _issues))
+
+# A credential file that cannot be read is an error returned, not an exception (a directory stands in for an unreadable
+# file: this container runs as root, which reads any file).
+os.mkdir(os.path.join(_cred_dir, "aws-dir.yaml"))
+_data, _err = primary.try_load_cloud_account("aws-dir", config=_cred_cfg)
+check("try_load_cloud_account: an unreadable file is returned as an error",
+      _data is None and "cannot be read" in (_err or ""))
+
+_mixed_set = _lab_def({"common": dict(base_common, mydomain="mydemo.lab"), "nodes": dict(_mixed["nodes"])})
+check("validate_lab_definition: the same names pass once mydomain is set",
+      lc.validate_lab_definition(_mixed_set, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 bad_no_ip = _lab_def({"common": dict(base_common),
                       "nodes": {"vm1": {"mymac": "aa:bb:cc:dd:ee:09", "config_method": "virt_customize"}}})
 check("validate_lab_definition: host_checks=False reports a missing myip",
@@ -852,6 +989,80 @@ _b = _io.StringIO()
 with _redirect_stdout(_b):
     lc.ssh_run("host1", "some command", check=False)
 check("ssh_run: a failing command's output is shown even without debug", "it broke" in _b.getvalue())
+
+import subprocess  # noqa: E402
+from contextlib import redirect_stderr as _redirect_stderr  # noqa: E402
+
+_fq = FakeRun()
+lc.subprocess.run = _fq
+lc.ssh_run("host1", "true", check=False)
+lc.scp_to("host1", "/tmp/a", "/tmp/b")
+check("ssh_run/scp_to: LogLevel=ERROR, not -q, when debug is off",
+      all("-o LogLevel=ERROR" in c and " -q " not in c for c, _ in _fq.calls))
+check("set_debug(False): LAB_DEBUG is not exported", "LAB_DEBUG" not in os.environ)
+
+lc.set_debug(True)
+_fd = FakeRun()
+lc.subprocess.run = _fd
+with _redirect_stdout(_io.StringIO()):
+    lc.ssh_run("host1", "true", check=False)
+lc.scp_to("host1", "/tmp/a", "/tmp/b")
+check("ssh_run/scp_to: no quieting options when debug is on",
+      not any(" -q " in c or "LogLevel" in c for c, _ in _fd.calls))
+check("set_debug(True): LAB_DEBUG=1 is exported for child processes", os.environ.get("LAB_DEBUG") == "1")
+check("set_debug(True): _SSH_BASE itself is left unchanged", "LogLevel=ERROR" in lc._SSH_BASE)
+check("_ssh_opts: debug also drops a caller's own -q",
+      lc._ssh_opts(["ssh", "-q", "-o", "ConnectTimeout=5"]) == ["ssh", "-o", "ConnectTimeout=5"])
+lc.set_debug(False)
+
+# ssh_run's failure message: whole command, and ssh's own error on rc=255
+_long = "echo " + "x" * 200
+lc.subprocess.run = FakeRun(responses=[("", FakeCompleted(returncode=255, stdout="",
+                                                          stderr="Could not resolve hostname h9"))])
+try:
+    lc.ssh_run("h9", _long, capture=True)
+    _msg = ""
+except RuntimeError as e:
+    _msg = str(e)
+check("ssh_run: failure message carries the whole command", _long in _msg)
+check("ssh_run: rc=255 failure quotes ssh's own error", "Could not resolve hostname h9" in _msg)
+
+# require_ssh(): dies with ssh's reason after ssh_reachable()'s retries; returns quietly when reachable
+_real_sleep = lc.time.sleep
+lc.time.sleep = lambda s: None
+lc.subprocess.run = FakeRun(responses=[("", FakeCompleted(returncode=255, stdout="",
+                                                          stderr="Could not resolve hostname h9"))])
+_e = _io.StringIO()
+try:
+    with _redirect_stderr(_e):
+        lc.require_ssh("h9")
+    _died = False
+except SystemExit:
+    _died = True
+check("require_ssh: dies when the host never answers", _died)
+check("require_ssh: names ssh's own error", "Could not resolve hostname h9" in _e.getvalue())
+lc.subprocess.run = FakeRun()
+try:
+    lc.require_ssh("h1")
+    _ok = True
+except SystemExit:
+    _ok = False
+check("require_ssh: returns when the host answers", _ok)
+lc.time.sleep = _real_sleep
+
+# detect_os(): its line names the host it read
+lc.subprocess.run = FakeRun(responses=[("os-release", FakeCompleted(stdout="sles|16.1|suse"))])
+_b = _io.StringIO()
+with _redirect_stdout(_b):
+    _info = lc.detect_os("dns1.mydemo.lab")
+check("detect_os: the printed line names the host", "Detected remote OS on dns1.mydemo.lab: id=sles" in _b.getvalue())
+check("detect_os: returns the parsed fields", _info["id"] == "sles" and _info["ver_major"] == "16")
+
+_child = _real_subprocess_run(
+    [sys.executable, "-c", "import sys; sys.path.insert(0, {!r}); import lab_creation; "
+                           "print(lab_creation.debug_enabled())".format(str(_REPO / "libs"))],
+    env=dict(os.environ, LAB_DEBUG="1"), stdout=subprocess.PIPE, universal_newlines=True)
+check("LAB_DEBUG=1 in the environment turns debug on at import", _child.stdout.strip() == "True")
 
 
 # ── prepare_cloud_init(): network_renderer defaulting/override ──────────────

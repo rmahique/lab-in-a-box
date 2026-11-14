@@ -70,7 +70,7 @@ import services      # noqa: E402
 if KEY:
     lab_creation._SSH_BASE = ["ssh", "-i", KEY, "-o", "StrictHostKeyChecking=no", "-o",
                               "UserKnownHostsFile=" + str(Path(KEY).parent / "known_hosts"),
-                              "-o", "ConnectTimeout=5", "-q"]
+                              "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR"]
 
 tmp = Path(tempfile.mkdtemp(prefix="dns-remote-"))
 services.NAMED_ZONE_DIR = tmp

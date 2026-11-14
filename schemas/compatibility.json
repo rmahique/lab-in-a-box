@@ -260,7 +260,9 @@
   ],
   "addon:rodeo_cli": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
-   {"version": "1.1", "breaking": false, "changes": "rodeo_cli_install_lab_in_a_box opts in to installing lab-in-a-box itself on the node first, if not already present, since rodeo-cli needs something to deploy nested KVM labs into."}
+   {"version": "1.1", "breaking": false, "changes": "rodeo_cli_install_lab_in_a_box opts in to installing lab-in-a-box itself on the node first, if not already present, since rodeo-cli needs something to deploy nested KVM labs into."},
+   {"version": "1.2", "breaking": false, "changes": "rodeo_cli_builder_allow adds Host names the Rodeo Builder answers to; the node's FQDN and its resolved address are now always allowed."},
+   {"version": "1.3", "breaking": false, "changes": "rodeo-cli installer options as fields: rodeo_cli_ref, rodeo_cli_repo_url, rodeo_cli_dir, rodeo_cli_mode, rodeo_cli_builder, rodeo_cli_builder_host."}
   ],
   "addon:run_command": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}
@@ -345,7 +347,8 @@
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}
   ],
   "config:automation.cfg": [
-   {"version": "1.0", "breaking": false, "changes": "First version: split from the old config:lab.cfg. The automation node's own identity (network, hostname, vm/container/kubernetes shape) -- needed regardless of whether a KVM host is even involved."}
+   {"version": "1.0", "breaking": false, "changes": "First version: split from the old config:lab.cfg. The automation node's own identity (network, hostname, vm/container/kubernetes shape) -- needed regardless of whether a KVM host is even involved."},
+   {"version": "1.1", "breaking": false, "changes": "_automation_network added: \"host\" puts a container automation node on its host's own network (set automatically when the host has no bridge and is not a KVM host); empty or \"bridge\" keeps the bridge as before."}
   ],
   "config:credentials": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
@@ -376,7 +379,8 @@
    {"version": "2.5", "breaking": false, "changes": "nodes.myip is optional: an address is allocated from the network the lab already describes when the definition gives none"},
    {"version": "2.6", "breaking": false, "changes": "ISO_URL and ISO_SHA256_URL declared again, hidden and deprecated: setup_lab.py still downloads them. A URL in SOURCE_IMAGE is downloaded the same way, once into ISO_LOC on each KVM host and checked against SOURCE_SHA256, which it requires."},
    {"version": "2.7", "breaking": false, "changes": "A disabled_nodes section, in the same form as nodes, for nodes that are part of a lab's design but are not deployed: nothing reads it, so a node waiting on an image or a release stays in the file instead of being deleted. SOURCE_IMAGE also accepts a cloud provider's own image ID or a product name (\"slmicro6.1\", \"sles16\", \"ubuntu24.04\", see libs/cloud_images.py), resolved to the provider's current image for the node's architecture at create time."},
-   {"version": "3.0", "breaking": true, "changes": "INSTALL_RKE2_TYPE, ISO_IMAGE, ISO_URL, ISO_SHA256 and ISO_SHA256_URL removed from common and nodes: their values move to KUBERNETES_NODE_TYPE, SOURCE_IMAGE (a URL itself, downloaded under the URL's own file name) and SOURCE_SHA256. setup_lab.py, setup_vm.py and setup_automation_node.py now apply a pending migration themselves, warn per change and continue with the migrated sibling file.", "migration": "lab_3_0"}
+   {"version": "3.0", "breaking": true, "changes": "INSTALL_RKE2_TYPE, ISO_IMAGE, ISO_URL, ISO_SHA256 and ISO_SHA256_URL removed from common and nodes: their values move to KUBERNETES_NODE_TYPE, SOURCE_IMAGE (a URL itself, downloaded under the URL's own file name) and SOURCE_SHA256. setup_lab.py, setup_vm.py and setup_automation_node.py now apply a pending migration themselves, warn per change and continue with the migrated sibling file.", "migration": "lab_3_0"},
+   {"version": "3.1", "breaking": false, "changes": "ssh_authorized_keys in common and nodes: extra SSH keys (a key, an https URL or a file path; for root or a named user) added to each VM once it is up."}
   ]
  }
 }

@@ -69,6 +69,21 @@ import sys, yaml; sys.path.insert(0, '/usr/local/lib/lab_creation'); import cryp
 d = yaml.safe_load(open('/etc/lab_creation/credentials/aws-main.encrypted.yaml'))
 assert crypto_store.decrypt_cascade('pass-phrase-1', d['AWS_SECRET_ACCESS_KEY']) == b'TOPSECRET1'
 " || fail "the encrypted copy does not decrypt with its passphrase"
+# Validate a lab using the encrypted account: the public Validate never reads the root-only file; the logged-in one
+# reads it through lab-builder-helper, asks for its passphrase, and waits 3 seconds before saying one is wrong.
+_lab='{"config": {"common": {"SOURCE_IMAGE": "sles16", "VM_MEM": "2048", "VM_CPU": "2", "VM_DSK": "20", "cloud_account": "aws-main.encrypted"}, "nodes": {"n1.mydemo.lab": {}}}'
+_r=$(call validate api -X POST -d "${_lab}}")
+[[ "${_r}" == 200*'"ok":'* && "${_r}" != *"Permission denied"* && "${_r}" != *'"error"'* ]] \
+    || fail "the public Validate of a lab with a root-only cloud account failed: ${_r}"
+_r=$(call validate-credentials admin "${_a[@]}" -X POST -d "${_lab}}")
+[[ "${_r}" == 200*'"need_passphrase": true'* ]] || fail "the logged-in Validate did not ask for the passphrase: ${_r}"
+_t0=$(date +%s)
+_r=$(call validate-credentials admin "${_a[@]}" -X POST -d "${_lab}, \"passphrase\": \"wrong-phrase\"}")
+(( $(date +%s) - _t0 >= 3 )) || fail "a wrong passphrase was answered without the 3-second wait"
+[[ "${_r}" == 200*'"wrong_passphrase": true'* ]] || fail "a wrong passphrase was not reported: ${_r}"
+_r=$(call validate-credentials admin "${_a[@]}" -X POST -d "${_lab}, \"passphrase\": \"pass-phrase-1\"}")
+[[ "${_r}" == 200*'"ok":'* && "${_r}" != *passphrase\":* ]] || fail "the right passphrase did not validate the lab: ${_r}"
+grep -rq "pass-phrase-1" /var/log/apache2 /srv/www/lab-builder 2>/dev/null && fail "the passphrase was written to a log or the labs dir"
 [[ "$(call credentials-delete admin "${_a[@]}" -X POST -d '{"file": "aws-main.yaml"}')" == '200 {"deleted": "aws-main.yaml"}' ]] \
     || fail "deleting a credential failed"
 [[ "$(call credentials-delete admin "${_a[@]}" -X POST -d '{"file": "../../lab_creation.cfg"}')" == 400* ]] \

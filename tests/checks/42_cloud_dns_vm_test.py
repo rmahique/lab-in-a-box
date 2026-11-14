@@ -311,11 +311,15 @@ check("newest_sles(): {} when no major matches",
 _res = backends.AWSBackend.__new__(backends.AWSBackend)
 _res.region = "eu-central-1"
 with mock.patch.object(suse_catalogue, "active_images", return_value=_sles):
-    check("'sles16' resolves to the region's newest plain SLES 16 AMI",
-          _res.resolve_image_name("sles16") == "ami-16-new")
-    check("'sles16.0' means the same", _res.resolve_image_name("sles16.0") == "ami-16-new")
-    check("'sles' takes the newest major there is", _res.resolve_image_name("sles") == "ami-16-new")
-    check("the name is case-insensitive", _res.resolve_image_name("SLES16") == "ami-16-new")
+    check("'sles16' resolves to the region's newest SLES 16 AMI, BYOS by default (2026-11-12)",
+          _res.resolve_image_name("sles16") == "ami-16-byos")
+    check("'sles16.0' means the same", _res.resolve_image_name("sles16.0") == "ami-16-byos")
+    check("'sles' takes the newest major there is", _res.resolve_image_name("sles") == "ami-16-byos")
+    check("the name is case-insensitive", _res.resolve_image_name("SLES16") == "ami-16-byos")
+    check("'sles16-payg' opts back into the plain pay-as-you-go AMI",
+          _res.resolve_image_name("sles16-payg") == "ami-16-new")
+    check("'sles16-byos' still works too, now a no-op since it's the default",
+          _res.resolve_image_name("sles16-byos") == "ami-16-byos")
     check("an AMI ID is left exactly as it is",
           _res.resolve_image_name("ami-0123456789abcdef0") == "ami-0123456789abcdef0")
     check("a libvirt image name is left alone too, since a lab may hold both",

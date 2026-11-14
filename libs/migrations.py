@@ -430,3 +430,52 @@ def ensure_current(definition, path: str) -> str:
     warn("{} is written for older schema versions: the run continues with {}, which holds the changes above. "
          "Replace {} with it to stop this warning.".format(path, migrated, path))
     return migrated
+
+
+def ensure_current_shell_config(path: Path, kind: str) -> list:
+    """
+    Bring the shell-style config file at `path` (lab_creation.cfg or lab_creation.defaults) up to date in memory
+    before anything parses it: same "detect, migrate, warn, continue with the result" pattern as ensure_current()
+    for lab definitions, adapted for a list-of-lines file instead of a dict. The original is never touched; a
+    migrated copy is saved to a `<path>.system_modified` sibling for the operator to adopt. Returns the lines to
+    parse (migrated if anything was pending, the file's own lines otherwise) — primary.py's load_config()/
+    load_defaults() call this, so every caller of those gets it for free.
+    """
+    lines = path.read_text().splitlines()
+    record = load_record()
+    changes = migrate(kind, lines, record)
+    if not changes:
+        return lines
+    stamp(kind, lines, record)
+    for change in changes:
+        warn("- {}".format(change))
+    out = Path("{}.system_modified".format(path))
+    out.write_text("\n".join(lines) + "\n")
+    warn("{} is written for older schema versions: this run continues with the changes above applied in memory, "
+         "and the result is saved to {} for review. Replace {} with it to stop this warning.".format(
+             path, out, path))
+    return lines
+
+
+def ensure_current_json_config(path: Path, kind: str) -> dict:
+    """
+    The JSON-config counterpart of ensure_current_shell_config() — for harvester-cluster.json, whose own schema
+    (config:harvester-cluster.json) uses the dict-based "schema_version" key, same as a credentials file but
+    never encrypted, so a migration can always rewrite it directly. Same contract: the original is never
+    touched, a migrated copy goes to `<path>.system_modified.json`, and the migrated dict is what the caller
+    should actually use.
+    """
+    data = json.loads(path.read_text())
+    record = load_record()
+    changes = migrate(kind, data, record)
+    if not changes:
+        return data
+    stamp(kind, data, record)
+    for change in changes:
+        warn("- {}".format(change))
+    out = Path("{}.system_modified.json".format(path))
+    out.write_text(json.dumps(data, indent=2) + "\n")
+    warn("{} is written for older schema versions: this run continues with the changes above applied in memory, "
+         "and the result is saved to {} for review. Replace {} with it to stop this warning.".format(
+             path, out, path))
+    return data

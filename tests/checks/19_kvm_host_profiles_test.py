@@ -128,22 +128,37 @@ check("RHEL enables CodeReady Builder through subscription-manager and EPEL 10 f
 check("Fedora and Debian need no repository setup",
       khp.FedoraProfile({"ID": "fedora"}).repo_setup == [] and p.repo_setup == [])
 
-# ── _SuseRegisteredProfile.register_repos(): the registration code is required ──
+# ── _SuseRegisteredProfile.register_repos(): the registration code is required, unless the ──
+# ── host is already registered some other way (e.g. a cloud PAYG image) ─────────────────────
 # The base product is registered with the registration code before any module is added. Modules alone fail on an unregistered host.
 p = khp.SLES15Profile({"ID": "sles", "VERSION_ID": "15.6"})
 raised = False
-with mock.patch.object(subprocess, "run") as m:
+with mock.patch.object(khp, "is_scc_registered", return_value=False), \
+     mock.patch.object(subprocess, "run") as m:
     try:
         p.register_repos()
     except RuntimeError:
         raised = True
-check("register_repos without a regcode raises instead of silently skipping base registration",
-      raised)
+check("register_repos without a regcode, on a genuinely unregistered host, raises instead of "
+      "silently skipping base registration", raised)
 check("register_repos without a regcode never calls SUSEConnect at all", m.call_count == 0)
 
 p = khp.SLES15Profile({"ID": "sles", "VERSION_ID": "15.6"})
+with mock.patch.object(khp, "is_scc_registered", return_value=True), \
+     mock.patch.object(subprocess, "run") as m:
+    p.register_repos()
+    calls = [c[0][0] for c in m.call_args_list]
+check("register_repos on an already-registered host (no regcode needed) skips SUSEConnect "
+      "--regcode entirely, found live on an AWS PAYG SLES AMI (2026-11-12)",
+      not any(c[:2] == ["SUSEConnect", "--regcode"] for c in calls))
+check("register_repos on an already-registered host still adds every configured module",
+      calls and all(c[:2] == ["SUSEConnect", "--product"] for c in calls)
+      and len(calls) == len(p._products))
+
+p = khp.SLES15Profile({"ID": "sles", "VERSION_ID": "15.6"})
 p.regcode = "SOME-REAL-REGCODE"
-with mock.patch.object(subprocess, "run") as m:
+with mock.patch.object(khp, "is_scc_registered", return_value=False), \
+     mock.patch.object(subprocess, "run") as m:
     p.register_repos()
     calls = [c[0][0] for c in m.call_args_list]
 check("register_repos with a regcode set registers the base product first",
@@ -152,17 +167,46 @@ check("register_repos then adds every configured module on top of the base regis
       all(c[:2] == ["SUSEConnect", "--product"] for c in calls[1:])
       and len(calls) == 1 + len(p._products))
 
+# A module not yet mirrored on a region's registration proxy must not block host prep: the
+# base product is already registered and usable without it. Found live on a brand-new SLES
+# 16.1 AMI on AWS (2026-11-12): PackageHub's repos not mirrored there yet.
+p = khp.SLES16Profile({"ID": "sles", "VERSION_ID": "16.1"})
+with mock.patch.object(khp, "is_scc_registered", return_value=True), \
+     mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 67)):
+    failed = p.register_repos()
+check("register_repos: a module that fails to register is reported, not raised",
+      failed == ["PackageHub"])
+
 p = khp.SLES15Profile({"ID": "sles", "VERSION_ID": "15.6"})
 p.regcode = "SOME-REAL-REGCODE"
 p.suse_email = "me@example.com"
 p.suse_url = "https://scc.suse.com"
-with mock.patch.object(subprocess, "run") as m:
+with mock.patch.object(khp, "is_scc_registered", return_value=False), \
+     mock.patch.object(subprocess, "run") as m:
     p.register_repos()
     base_call = m.call_args_list[0][0][0]
 check("register_repos passes --email/--url through when set",
       "--email" in base_call and "me@example.com" in base_call
       and "--url" in base_call and "https://scc.suse.com" in base_call)
 
+# ── install_packages(): on-demand best-effort install, for a package not every KVM host needs ─
+# sshfs moved out of every profile's baseline packages (2026-11-12): it's only needed by
+# setup_shared_storage()'s --share-storage-from path, not every KVM host unconditionally.
+p = khp.SLES15Profile({"ID": "sles", "VERSION_ID": "15.6"})
+check("sshfs is no longer in any profile's baseline required packages",
+      "sshfs" not in khp.SLES15Profile({"ID": "sles"}).packages
+      and "sshfs" not in khp.SLES16Profile({"ID": "sles"}).packages
+      and "sshfs" not in khp.Debian13Profile({"ID": "debian"}).packages
+      and "fuse-sshfs" not in khp.EL9Profile({"ID": "rhel"}).packages)
+check("sshfs_package names the right package per package-manager family",
+      khp.SLES15Profile({"ID": "sles"}).sshfs_package == "sshfs"
+      and khp.EL9Profile({"ID": "rhel"}).sshfs_package == "fuse-sshfs")
+with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as m:
+    ok = p.install_packages(["sshfs"])
+check("install_packages: installs the given package(s) and reports success",
+      ok and m.call_args[0][0] == p._install_cmd(["sshfs"]))
+with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
+    check("install_packages: reports failure instead of raising", not p.install_packages(["sshfs"]))
 
 
 # ── /etc/os-release and configure_dns ──────────────────────────────────────────────────────────────────────────────

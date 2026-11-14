@@ -15,7 +15,27 @@ LAB_SCHEMA_VERSION is its own schema version, recorded in schemas/compatibility.
 __version__ = "__LABVERSION__"
 
 
-LAB_SCHEMA_VERSION = "3.0"
+LAB_SCHEMA_VERSION = "3.1"
+
+# A user name an ssh_authorized_keys entry may name (libs/ssh_keys.py).
+SSH_KEY_USER_PATTERN = r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}\$?$"
+
+
+def _ssh_authorized_keys_field(description: str) -> dict:
+    """The ssh_authorized_keys field: a list of key entries, each a string (for root) or {"key", "user"}."""
+    return {
+        "name": "ssh_authorized_keys", "required": False, "type": "array", "description": description,
+        "item_shorthand": "key",
+        "item_fields": [
+            {"name": "key", "required": True, "type": "string",
+             "description": "A public key line (\"ssh-ed25519 AAAA... alice@laptop\"), an https URL holding key lines "
+                            "(such as https://github.com/<user>.keys, fetched on the automation node at deploy time), "
+                            "or an absolute path to a file of key lines on the automation node"},
+            {"name": "user", "required": False, "type": "string", "pattern": SSH_KEY_USER_PATTERN,
+             "description": "Account on the VM the keys are added to (default: root). One that does not exist is a "
+                            "warning in the run summary, and is not created"},
+        ],
+    }
 
 
 def base_lab_schema():
@@ -46,7 +66,7 @@ def base_lab_schema():
                     {"name": "mygw", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "Default gateway IP (default: auto-detected)"},
                     {"name": "mydns", "required": False, "type": "string", "pattern": r"^(\d{1,3}\.){3}\d{1,3}$", "description": "DNS server IP (default: auto-detected)"},
                     {"name": "mynet_reverse", "required": False, "type": "string", "description": "Reverse DNS zone prefix e.g. 88.168.192 (default: derived from first node IP)"},
-                    {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: derived from automation VM hostname)"},
+                    {"name": "mydomain", "required": False, "type": "string", "description": "Lab DNS domain (default: the domain every node name shares, e.g. mydemo.lab for node1.mydemo.lab; the automation node's own domain when the node names are short. Required when the node names use different domains)"},
                     {"name": "VM_BOOT", "required": False, "type": "string", "default": "uefi", "enum": ["uefi", "firmware=bios", "bios", "uefi=off", "hd"], "description": "virt-install boot mode"},
                     {"name": "VM_DSK_BUS", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "scsi", "sata", "usb", "ide"], "description": "Disk bus type for the primary disk"},
                     {"name": "VM_NET_MODEL", "required": False, "type": "string", "default": "virtio", "enum": ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3", "ne2k_pci"], "description": "NIC device model"},
@@ -78,6 +98,7 @@ def base_lab_schema():
                     {"name": "cloud_instance_type", "required": False, "type": "string", "description": "Cloud backends only: an explicit instance type/server type/plan/flavor name, used verbatim instead of auto-picking one from vm_cpu/vm_mem — see README's Compute backends table for each provider's own official list of valid values"},
                     {"name": "pre_commands", "required": False, "type": "array", "description": "Shell commands run on the VM itself, as root, once it is up and reachable and before any Kubernetes or add-on work (e.g. [\"zypper -n in vim\"]). Each one's output is shown; one that fails is an error for that VM and the rest still run. A node's own list replaces this one — set [] on a node to run nothing there. Not run for a clu_type harvester node, which installs itself at first boot."},
                     {"name": "post_commands", "required": False, "type": "array", "description": "Shell commands run on the VM itself, as root, after everything else for it is done — its Kubernetes join and its own add-ons included. Same reporting and per-node override as pre_commands."},
+                    _ssh_authorized_keys_field("Extra SSH keys added to every VM once it is up and reachable, over SSH. Each entry is a key, an https URL or a file path on the automation node (a plain string goes to root), or {\"key\": ..., \"user\": ...} for another account. A node's own entries are added to these. Not done for an existing host or a clu_type harvester node"),
                     {"name": "services", "required": False, "type": "array", "description": "Lab-support services to configure+enable before VMs are created: dns, http (both already running from the automation VM bootstrap; listing them is a no-op today), pxe (see the top-level \"pxe\" section), portforward (DNAT-forwards each node's own \"forwarded_ports\" field from the KVM host's real IP — see that per-node field). Omit for today's default (nothing extra runs)."},
                     {"name": "overlay", "required": False, "type": "boolean", "default": False, "description": "Routes this lab's sites (each cloud account, and the home libvirt lab) to each other by their REAL subnets, site-to-site, over a hub-and-spoke WireGuard overlay (libs/overlay.py) — needed since a cloud node generally cannot route to another cloud account's private network, or to the home lab, any other way. Only each site's own automation VM (or a small dedicated gateway VM, auto-created/reused per non-hub cloud account) ever joins the overlay itself; individual lab nodes just get a local route to other sites' subnets via their own site's gateway — no per-node WireGuard membership. The hub is the gateway VM for lab_creation.cfg's designated OVERLAY_HUB_ACCOUNT (required). Also configurable via OVERLAY_CIDR (default 10.99.0.0/16, used only for the gateways' own admin addresses) and OVERLAY_WG_PORT (default 51820) in lab_creation.cfg. Known gaps: no DNS changes are made (a node is reachable by its real hostname only once that name already resolves into a now-routed subnet); a site's already-provisioned nodes aren't retroactively re-routed when a new remote site joins later, only at each node's own provisioning time; the AWS-specific source/dest-check disable needed for a cloud site gateway to forward traffic has no equivalent yet for the other 7 cloud backends."},
                 ],
@@ -95,6 +116,7 @@ def base_lab_schema():
                     {"name": "addons", "required": False, "type": "array", "description": "List of VM-level addon names (install_<addon> scripts). Each entry is either a plain \"<addon>\" string (runs with only that addon's shared top-level config section, same as always), or a single-key {\"<addon>\": {...fields...}} mapping to override that addon's config for this node only — e.g. a lab registering many different OSes against one shared Uyuni/SMLM server, each node needing its own client_registration_activation_key. See README's addon-config section."},
                     {"name": "pre_commands", "required": False, "type": "array", "description": "Overrides common.pre_commands for this node only — shell commands run on the VM itself, as root, once it is up and reachable and before any Kubernetes or add-on work (e.g. [\"zypper -n in vim\"]). Each one's output is shown; one that fails is an error for that VM and the rest still run. Not run for a clu_type harvester node, which installs itself at first boot."},
                     {"name": "post_commands", "required": False, "type": "array", "description": "Overrides common.post_commands for this node only — shell commands run on the VM itself, as root, after everything else for it is done — its Kubernetes join and its own add-ons included. Same reporting as pre_commands."},
+                    _ssh_authorized_keys_field("Extra SSH keys for this node only, added to common.ssh_authorized_keys (both lists are installed). Same entry forms: a key, an https URL or a file path on the automation node, as a string for root or as {\"key\": ..., \"user\": ...}"),
                     {"name": "extra_dsk", "required": False, "type": "string", "description": "Additional disk paths or UUID=… entries (space-separated); per-disk bus: /dev/sdb,bus=scsi"},
                     # VM_MEM/VM_DSK/VM_CPU/VM_BOOT/VM_DSK_BUS/VM_NET_MODEL/VM_OSVARIANT/
                     # VM_ROOT_PASS: load_vm_vars() (libs/lab_creation.py) merges 'common'
