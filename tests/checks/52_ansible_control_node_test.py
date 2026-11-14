@@ -6,6 +6,7 @@
 # to managed nodes, and main()'s default-to-every-other-lab-node behavior.
 # Run from 52_ansible_control_node.sh, in its own container — see
 # tests/run_tests.sh.
+import json
 import sys
 from pathlib import Path
 
@@ -191,12 +192,29 @@ check("_sanitize_group_name: a clean name passes through unchanged",
 check("_sanitize_group_name: a name colliding with a reserved Ansible group gets suffixed",
       udi._sanitize_group_name("all") == "all_group" and udi._sanitize_group_name("ungrouped") == "ungrouped_group")
 
+# ── _jsonify(): xmlrpc.client.DateTime isn't JSON-serializable ──────────────
+# Real bug found live 2026-11-06: system.getDetails' own "last_boot" field is a genuine
+# xmlrpc.client.DateTime object over the raw xmlrpc.client path this script uses — json.dumps()
+# rejects it outright. spacecmd's own `api` CLI subcommand stringifies these for display, which is
+# why checking its output first didn't catch this.
+_dt = udi.xmlrpc.client.DateTime("20261104T05:28:38")
+check("_jsonify: a bare DateTime becomes a plain string",
+      udi._jsonify(_dt) == str(_dt) and isinstance(udi._jsonify(_dt), str))
+check("_jsonify: a DateTime nested in a dict is converted too, other values untouched",
+      udi._jsonify({"last_boot": _dt, "release": "15.7"}) == {"last_boot": str(_dt), "release": "15.7"})
+check("_jsonify: a DateTime nested in a list is converted too",
+      udi._jsonify([_dt, "plain"]) == [str(_dt), "plain"])
+check("_jsonify: json.dumps() actually accepts the result (the real failure mode)",
+      json.dumps(udi._jsonify({"last_boot": _dt})) == '{"last_boot": "%s"}' % str(_dt))
+
 
 class _FakeProxy:
     """Mocks the xmlrpc.client.ServerProxy surface build_inventory() calls."""
-    def __init__(self, systems, groups_and_members):
+    def __init__(self, systems, groups_and_members, custom_values=None, system_details=None):
         self._systems = systems
         self._groups_and_members = groups_and_members  # {group_name: [member_names]}
+        self._custom_values = custom_values or {}  # {system_id: {key: value}}
+        self._system_details = system_details or {}  # {system_id: {field: value}}
 
         class _Auth:
             def login(self_, user, password):
@@ -206,9 +224,23 @@ class _FakeProxy:
                 pass
         self.auth = _Auth()
 
+        outer = self
+
         class _System:
             def listSystems(self_, session):
                 return systems
+
+            def getCustomValues(self_, session, sid):
+                # Real system.getCustomValues shape, confirmed live: the struct directly, no
+                # outer list (spacecmd's own CLI output wraps every struct response in "[...]"
+                # for display, which is not the same as the raw xmlrpc.client return shape).
+                return outer._custom_values.get(sid, {})
+
+            def getDetails(self_, session, sid):
+                # Real system.getDetails shape, confirmed live: the struct directly, no outer
+                # list (unlike getCustomValues) — a registered system always has details, so no
+                # "missing" case to test.
+                return outer._system_details.get(sid, {})
         self.system = _System()
 
         outer = self
@@ -264,6 +296,35 @@ check("build_inventory(): the control node's own hostvars get ansible_connection
       inv3["_meta"]["hostvars"]["charon.mydemo.lab"].get("ansible_connection") == "local")
 check("build_inventory(): every OTHER host is untouched — no ansible_connection set at all",
       "ansible_connection" not in inv3["_meta"]["hostvars"]["venus.mydemo.lab"])
+
+
+# ── custom info values are exposed as hostvar "uyuni_custom_info" ──────────
+udi.socket.getfqdn = lambda: ""
+udi.xmlrpc.client.ServerProxy = lambda *a, **kw: _FakeProxy(
+    systems=[{"name": "mercury.mydemo.lab", "id": 7}, {"name": "venus.mydemo.lab", "id": 8}],
+    groups_and_members={},
+    custom_values={7: {"lab_role": "container-build-host"}})
+inv4 = udi.build_inventory()
+check("build_inventory(): a system with custom info values gets them as hostvar uyuni_custom_info",
+      inv4["_meta"]["hostvars"]["mercury.mydemo.lab"].get("uyuni_custom_info") ==
+      {"lab_role": "container-build-host"})
+check("build_inventory(): a system with none set has NO uyuni_custom_info key at all (not an "
+      "empty dict) — so a playbook can check it with a plain 'is defined' test",
+      "uyuni_custom_info" not in inv4["_meta"]["hostvars"]["venus.mydemo.lab"])
+
+# ── System Details are exposed as hostvar "uyuni_system_details" ───────────
+udi.xmlrpc.client.ServerProxy = lambda *a, **kw: _FakeProxy(
+    systems=[{"name": "mercury.mydemo.lab", "id": 7}],
+    groups_and_members={},
+    system_details={7: {"release": "15.7", "virtualization": "Amazon EC2/Nitro",
+                         "base_entitlement": "salt_entitled", "hostname": "mercury.mydemo.lab"}})
+inv5 = udi.build_inventory()
+check("build_inventory(): a system's real System Details come through as hostvar "
+      "uyuni_system_details, the same facts the web UI's own overview page shows",
+      inv5["_meta"]["hostvars"]["mercury.mydemo.lab"].get("uyuni_system_details", {}).get("release")
+      == "15.7"
+      and inv5["_meta"]["hostvars"]["mercury.mydemo.lab"]["uyuni_system_details"]["virtualization"]
+      == "Amazon EC2/Nitro")
 
 
 if failures:
