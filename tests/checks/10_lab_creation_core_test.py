@@ -521,6 +521,39 @@ check("validate_lab_definition: a type from the name that contradicts backend is
                                  issues_out=_issues) is False
       and any("backend is set to 'gcp'" in line for line in _issues))
 
+# mygw/mymask/mydns on an all-cloud lab: the provider assigns the addresses and the cloud DNS VM serves the zone,
+# so the fields are not read and the preflight says so — unless a node still uses them, or the caller runs a
+# definition the operator did not write (setup_lab.py --example).
+_net_common = dict(base_common, mygw="192.168.88.1", mymask="24", mydns="192.168.88.73", mydomain="mydemo.lab")
+_all_cloud = _lab_def({"common": dict(_net_common, backend="aws"), "nodes": {"c1.mydemo.lab": {}}})
+_issues = []
+lc.validate_lab_definition(_all_cloud, single_host_cfg, "/iso", "/lab", host_checks=False,
+                           read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: an all-cloud lab is told its network fields are not read",
+      any("WARN" in line and "not read by this lab" in line and "'mygw'" in line and "'mydns'" in line
+          for line in _issues))
+check("validate_lab_definition: and that mydomain still is", any("'mydomain' is used" in line for line in _issues))
+_issues = []
+lc.validate_lab_definition(_all_cloud, single_host_cfg, "/iso", "/lab", host_checks=False,
+                           read_credentials=False, issues_out=_issues, warn_unused_fields=False)
+check("validate_lab_definition: warn_unused_fields=False leaves that advice out",
+      not any("not read by this lab" in line for line in _issues))
+_mixed_backends = _lab_def({"common": dict(_net_common, backend="aws"),
+                            "nodes": {"c1.mydemo.lab": {}, "v1.mydemo.lab": {"backend": "libvirt",
+                                                                             "myip": "192.168.88.51"}}})
+_issues = []
+lc.validate_lab_definition(_mixed_backends, single_host_cfg, "/iso", "/lab", host_checks=False,
+                           read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: a node that does use them keeps the advice away",
+      not any("not read by this lab" in line for line in _issues))
+_issues = []
+lc.validate_lab_definition(_lab_def({"common": dict(base_common, backend="aws", mydomain="mydemo.lab"),
+                                     "nodes": {"c1.mydemo.lab": {}}}),
+                           single_host_cfg, "/iso", "/lab", host_checks=False,
+                           read_credentials=False, issues_out=_issues)
+check("validate_lab_definition: a lab that sets none of them is told nothing",
+      not any("not read by this lab" in line for line in _issues))
+
 # A credential file that cannot be read is an error returned, not an exception (a directory stands in for an unreadable
 # file: this container runs as root, which reads any file).
 os.mkdir(os.path.join(_cred_dir, "aws-dir.yaml"))

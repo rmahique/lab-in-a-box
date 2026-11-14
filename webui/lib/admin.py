@@ -20,7 +20,7 @@ import subprocess
 import discovery
 
 ACTIONS = {"labs", "lab", "save", "credentials", "credentials-add", "credentials-encrypt",
-           "credentials-delete", "create", "validate-credentials", "job", "jobs"}
+           "credentials-delete", "create", "validate-credentials", "job", "jobs", "power"}
 
 
 def helper_path():
@@ -118,17 +118,38 @@ def dispatch(action, method, params, data):
     if action == "credentials-delete" and method == "POST":
         return helper(["credentials-delete", data.get("file", "")])
     if action == "create" and method == "POST":
-        if os.path.basename(data.get("filename", "")) != data.get("filename", ""):
-            raise ValueError("invalid filename")
-        name = discovery._safe_name(data.get("filename", ""))
+        # Either a lab saved on the server, or an example lab by name: the helper materialises an example for the
+        # run and keeps nothing, so launching one needs nothing saved here first.
+        example = data.get("example", "")
+        if example:
+            args = ["lab-create", "--example", str(example)]
+        else:
+            if os.path.basename(data.get("filename", "")) != data.get("filename", ""):
+                raise ValueError("invalid filename")
+            args = ["lab-create", discovery._safe_name(data.get("filename", ""))]
+        if data.get("keep"):
+            args.append("--keep")
+        if data.get("cloud_account"):
+            args += ["--cloud-account", str(data["cloud_account"])]
         # The passphrase (for a lab whose credentials are encrypted) reaches the helper on stdin, never as an
         # argument other processes could read, and the helper puts it only in the job's own environment.
-        return helper(["lab-create", name] + (["--keep"] if data.get("keep") else []),
-                      {"passphrase": data.get("passphrase", "")})
+        return helper(args, {"passphrase": data.get("passphrase", "")})
     if action == "validate-credentials" and method == "POST":
         # The preflight with the lab's credentials, as root: the passphrase reaches the helper on stdin, for this one
         # request, and is never kept.
         return helper(["lab-validate"], {"config": data.get("config", {}), "passphrase": data.get("passphrase", "")})
+    if action == "power" and method == "POST":
+        # The power state of a lab's VMs, or starting/stopping them: a saved lab by file name, or an example lab
+        # by name. Synchronous — the helper answers with the states themselves and with what each backend says
+        # stopping does to the bill.
+        args = ["lab-power", str(data.get("action", ""))]
+        if data.get("example"):
+            args += ["--example", str(data["example"])]
+        else:
+            args.append(discovery._safe_name(data.get("filename", "")))
+        if data.get("cloud_account"):
+            args += ["--cloud-account", str(data["cloud_account"])]
+        return helper(args)
     if action == "job" and method == "GET":
         return helper(["lab-status", one("id")])
     if action == "jobs" and method == "GET":

@@ -17,15 +17,21 @@ Kubernetes clusters, and install cluster-level and VM-level addons in order.
 
 Usage:
     setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>
+    setup_lab.py [options] --example <name>
+    setup_lab.py --list-examples [--json]
 """
 
 __version__ = "__LABVERSION__"
 
+import atexit
 import concurrent.futures
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -40,6 +46,7 @@ import k8s  # noqa: E402
 import targets  # noqa: E402
 import addon_common as ac  # noqa: E402
 import apps  # noqa: E402
+import lab_examples  # noqa: E402
 import qr_util  # noqa: E402
 import spacecmd_common as sc  # noqa: E402
 import services  # noqa: E402
@@ -51,6 +58,8 @@ from setup_vm import provision_vm, refresh_kept_node_dns  # noqa: E402
 
 _HELP_TEXT = """\
 Usage: setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>
+       setup_lab.py [same options] --example <name>
+       setup_lab.py --list-examples [--json]
 
 Provisions all VMs defined in the lab definition file, sets up Kubernetes
 clusters, and installs cluster-level and VM-level addons in order.
@@ -58,6 +67,25 @@ clusters, and installs cluster-level and VM-level addons in order.
 Options:
   --help, -h
             Print this help and exit, wherever the option appears.
+  --list-examples [--json]
+            Print the example labs this installation offers as starting
+            points, one per line with its VM and Kubernetes-cluster counts,
+            its add-ons and its description, and exit. They come from two
+            directories: the labs lab-in-a-box ships
+            (/usr/share/lab_creation/examples) and this operator's own
+            (lab_creation.cfg's EXAMPLE_LABS_DIR, by default
+            /etc/lab_creation/examples), where a file of the same name
+            replaces a shipped one. --json prints the same list as JSON,
+            including the file each one was read from.
+  --example <name>
+            Build one of the example labs (--list-examples names them)
+            instead of a file of your own. The definition is written to a
+            temporary file for the run and removed afterwards, so nothing is
+            left behind; tear the lab down again with destroy_lab.py
+            --example <name>. An example that names a cloud account of its
+            own, or none at all, follows the same rules as any lab:
+            --cloud-account decides for this run, and with neither it is the
+            one credentials file that matches the backend.
   --keep    Skip VMs that already exist, are running, match the defined IP and
             MAC address, and are accessible via SSH with default credentials.
             Without this flag (default) every VM is destroyed and recreated.
@@ -973,6 +1001,33 @@ def _fold_issues_into_report(lines):
             _report.add_error(s)
 
 
+def _list_examples(as_json: bool) -> int:
+    """
+    Print the example labs this installation offers (libs/lab_examples.py) and return the exit code. `as_json`
+    prints the catalogue as JSON, including each one's file; the plain form is one block per example.
+    """
+    config = lab_examples.config_values()
+    labs = lab_examples.catalogue(config)
+    if as_json:
+        print(json.dumps(labs, indent=1, sort_keys=True))
+        return 0
+    if not labs:
+        print("No example lab was found in: {}".format(
+            ", ".join(d for _source, d in lab_examples.directories(config))))
+        return 0
+    for lab in labs:
+        parts = ["{} VM{}".format(lab["nodes"], "" if lab["nodes"] == 1 else "s")]
+        if lab["kclusters"]:
+            parts.append("{} Kubernetes cluster{}".format(lab["kclusters"],
+                                                          "" if lab["kclusters"] == 1 else "s"))
+        if lab["addons"]:
+            parts.append(", ".join(lab["addons"]))
+        print("{}  [{}]".format(lab["name"], lab["source"]))
+        print("  {}".format(" \u00b7 ".join(parts)))
+        print("  {}".format(lab["description"] or "(no description)"))
+    return 0
+
+
 def main():
     global _report
     args = sys.argv[1:]
@@ -989,9 +1044,17 @@ def main():
         fmt = args[1] if len(args) > 1 else "json"
         sys.exit(subprocess.run(["lab_schema", "--base", fmt]).returncode)
 
+    if "--list-examples" in args:
+        sys.exit(_list_examples("--json" in args))
+
     # Applied and stripped before anything else parses args, so the option reads the same on every command
     # that creates or destroys a cloud node.
     args = backends.take_cloud_account_option(args)
+
+    try:
+        args, example = lab_examples.take_example_option(args)
+    except ValueError as e:
+        lc.die(str(e))
 
     keep = "--keep" in args
     debug = _debug_wanted(args)
@@ -1020,9 +1083,23 @@ def main():
                "setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>".format(
             " ".join(unknown)))
     positional = [a for a in args if not a.startswith("-")]
-    if not positional:
+    if example and positional:
+        lc.die("--example {} builds that example — pass it or a lab file, not both ('{}')".format(
+            example, positional[0]))
+    if not example and not positional:
         lc.die("Usage: setup_lab.py [--keep] [--debug] [--parallel[=N]] [--cloud-account <name>] <lab.json>")
-    lab_file = positional[0]
+    if example:
+        # The run needs the definition on disk (every add-on re-reads it). Nothing of it is kept: the directory
+        # goes when this process ends, however it ends, and destroy_lab.py --example writes the same file again.
+        example_dir = tempfile.mkdtemp(prefix="lab-example-")
+        atexit.register(shutil.rmtree, example_dir, True)
+        try:
+            lab_file = lab_examples.materialise(example, directory=example_dir)
+        except (ValueError, FileNotFoundError) as e:
+            lc.die("{} — setup_lab.py --list-examples lists the example labs".format(e))
+        lc.log("Example lab '{}' — building it from '{}'".format(example, lab_file))
+    else:
+        lab_file = positional[0]
 
     defaults = primary.load_defaults()
     config = primary.load_config()
@@ -1052,8 +1129,10 @@ def main():
     lab_file = phase_allocate_ips(definition, config, lab_file)
 
     preflight_issues = []
+    # An example is a file the operator did not write, so advice about fields in it is left out.
     ok = lc.validate_lab_definition(definition, config, iso_loc, lab_setup_path,
-                                    vm_img_loc=vm_img_loc, issues_out=preflight_issues)
+                                    vm_img_loc=vm_img_loc, issues_out=preflight_issues,
+                                    warn_unused_fields=not example)
     _fold_issues_into_report(preflight_issues)
     if not ok:
         print_summary(definition)

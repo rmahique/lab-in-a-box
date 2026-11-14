@@ -112,9 +112,11 @@ cp -r  templates/addons/* ${_templ_addons_loc}/
 mkdir -p /usr/share/lab_creation/schemas
 cp schemas/compatibility.json /usr/share/lab_creation/schemas/compatibility.json
 
-# The example lab definitions, offered as starting points by the lab-builder (webui/lib/discovery.py's examples()).
-# Only the definitions: examples/addons/ holds example add-on scripts, which are not installed.
-mkdir -p /usr/share/lab_creation/examples
+# The example lab definitions, offered as starting points by setup_lab.py --list-examples and the lab-builder
+# (libs/lab_examples.py). Only the definitions: examples/addons/ holds example add-on scripts, which are not
+# installed. /etc/lab_creation/examples is this operator's own set, listed beside the shipped ones and never
+# written by an install or an upgrade (lab_creation.cfg's EXAMPLE_LABS_DIR moves it elsewhere).
+mkdir -p /usr/share/lab_creation/examples /etc/lab_creation/examples
 for i in examples/*.json examples/*.json.template examples/*.yaml examples/*.yml
 do
     [[ -f "${i}" ]] || continue

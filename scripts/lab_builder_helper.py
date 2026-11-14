@@ -22,8 +22,15 @@ Usage: lab-builder-helper <command> [argument]
                               secret-looking fields encrypted; stdin:
                               {"passphrase": "..."}
   credentials-delete FILE     delete credential file FILE
-  lab-create FILE [--keep]    start setup_lab.py on saved lab FILE in the
-                              background (--keep: keep VMs that already exist);
+  lab-create FILE [--keep] [--cloud-account NAME]
+  lab-create --example NAME [--keep] [--cloud-account NAME]
+                              start setup_lab.py on saved lab FILE, or on
+                              example lab NAME (libs/lab_examples.py, which
+                              setup_lab.py --example materialises for the run
+                              and removes afterwards), in the
+                              background (--keep: keep VMs that already exist;
+                              --cloud-account: the cloud account this run uses,
+                              outranking the one the definition names);
                               prints the job id, a public live-status page URL
                               (job id + a random token, needing no login — see
                               pub-status below) and that page's QR code as SVG
@@ -42,6 +49,15 @@ Usage: lab-builder-helper <command> [argument]
                               was given, or {"wrong_passphrase": true} after
                               a WRONG_PASSPHRASE_DELAY-second wait when the
                               passphrase does not decrypt it
+  lab-power {status|start|stop} {FILE|--example NAME} [--cloud-account NAME]
+                              run vm_power.py on a saved lab or an example lab:
+                              the power state of its VMs, or start/stop them in
+                              the lab's own order. Answers {"action", "lab",
+                              "result": {vm: state}, "note"}; "note" is what
+                              each backend says stopping does to the bill, which
+                              on some providers is nothing. Synchronous, unlike
+                              lab-create: nothing is provisioned, and the answer
+                              is the states themselves
   lab-status JOB              a job's state, exit code and the end of its log
   lab-jobs                    every job, newest first
   pub-status JOB              a job's state and log for whoever holds its own
@@ -56,6 +72,7 @@ Usage: lab-builder-helper <command> [argument]
 Paths (environment overrides, for tests): LABBUILDER_LABS_DIR (saved labs,
 /srv/www/lab-builder/labs), LABBUILDER_JOBS_DIR (job logs,
 /var/lib/lab-builder/jobs), LABBUILDER_SETUP_LAB (/usr/local/bin/setup_lab.py),
+LABBUILDER_VM_POWER (/usr/local/bin/vm_power.py),
 CREDENTIALS_PATH in /etc/lab_creation.cfg (credential files).
 """
 
@@ -83,6 +100,7 @@ for _candidate in ("/usr/local/bin", str(Path(__file__).resolve().parent)):
         sys.path.append(_candidate)
 
 import crypto_store  # noqa: E402
+import lab_examples  # noqa: E402
 import primary  # noqa: E402
 import qr_util  # noqa: E402
 import setup_credentials  # noqa: E402
@@ -90,6 +108,7 @@ import setup_credentials  # noqa: E402
 LABS_DIR = Path(os.environ.get("LABBUILDER_LABS_DIR", "/srv/www/lab-builder/labs"))
 JOBS_DIR = Path(os.environ.get("LABBUILDER_JOBS_DIR", "/var/lib/lab-builder/jobs"))
 SETUP_LAB = os.environ.get("LABBUILDER_SETUP_LAB", "/usr/local/bin/setup_lab.py")
+VM_POWER = os.environ.get("LABBUILDER_VM_POWER", "/usr/local/bin/vm_power.py")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CREDENTIAL_EXTS = (".yaml", ".yml", ".json", ".cfg")
 LOG_TAIL_LINES = 400
@@ -281,24 +300,38 @@ def status_url(job: str, token: str) -> str:
     return "https://{}/lab-builder/status.html?job={}&token={}".format(socket.getfqdn(), job, token)
 
 
-def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
+def lab_create(name: str, keep: bool, passphrase: str = "", example: str = "",
+               cloud_account: str = "") -> dict:
     """
-    Start setup_lab.py on saved lab `name` as a background job; refuse while one runs for that lab.
+    Start setup_lab.py as a background job, on saved lab `name` or on example lab `example`; refuse while one runs
+    for that same lab. An example is not copied anywhere: setup_lab.py --example writes it to a temporary file for
+    the run and removes it afterwards, so launching one leaves nothing on the server.
+
+    `cloud_account` becomes --cloud-account, which outranks the account the definition names.
 
     `passphrase` decrypts the lab's credential files (libs/crypto_store.py). It is handed to the job in its own
     environment and nowhere else: not in job.json, not in the log, not on a command line other processes can read.
     """
-    lab = LABS_DIR / safe_name(name, "lab file")
-    if lab.suffix != ".json" or not lab.is_file():
-        raise Refused("no saved lab {}".format(name))
+    if example:
+        # Checked against the catalogue, not just the name's shape: the value reaches a command line.
+        if safe_name(example, "example lab") not in [e["name"] for e in lab_examples.catalogue()]:
+            raise Refused("no example lab {}".format(example))
+        label, lab_args = example, ["--example", example]
+    else:
+        lab = LABS_DIR / safe_name(name, "lab file")
+        if lab.suffix != ".json" or not lab.is_file():
+            raise Refused("no saved lab {}".format(name))
+        label, lab_args = lab.name, [str(lab)]
+    if cloud_account:
+        lab_args = ["--cloud-account", safe_name(cloud_account, "cloud account")] + lab_args
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     for d in JOBS_DIR.iterdir():
         if (d / "job.json").is_file():
             st = job_state(d)
-            if st["lab"] == lab.name and st["state"] == "running":
-                raise Refused("lab {} is already being created (job {})".format(lab.name, d.name))
+            if st["lab"] == label and st["state"] == "running":
+                raise Refused("lab {} is already being created (job {})".format(label, d.name))
     # The id carries the lab and the time; two runs within the same second get -2, -3, … rather than colliding.
-    stamp = "{}-{}".format(lab.stem, time.strftime("%Y%m%d-%H%M%S"))
+    stamp = "{}-{}".format(Path(label).stem, time.strftime("%Y%m%d-%H%M%S"))
     job, attempt = stamp, 1
     while True:
         d = JOBS_DIR / job
@@ -311,7 +344,7 @@ def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
     # The token makes the public status page unguessable: the job id alone is a predictable
     # <lab>-<timestamp>, but holding the id AND this token is what pub_status() actually checks.
     token = secrets.token_urlsafe(32)
-    cmd = [SETUP_LAB] + (["--keep"] if keep else []) + [str(lab)]
+    cmd = [SETUP_LAB] + (["--keep"] if keep else []) + lab_args
     env = dict(os.environ)
     if passphrase:
         env[crypto_store.PASSPHRASE_ENV] = passphrase
@@ -324,8 +357,8 @@ def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
             ["/bin/sh", "-c", '"$@"; echo $? > "$0"', str(d / "rc")] + cmd,
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             cwd=str(JOBS_DIR), env=env, start_new_session=True, close_fds=True)
-    (d / "job.json").write_text(json.dumps({"lab": lab.name, "started": int(time.time()), "pid": proc.pid,
-                                            "keep": keep, "token": token}))
+    (d / "job.json").write_text(json.dumps({"lab": label, "started": int(time.time()), "pid": proc.pid,
+                                            "keep": keep, "example": bool(example), "token": token}))
     url = status_url(job, token)
     return {"job": job, "status_url": url, "qr_svg": qr_util.render_svg(url)}
 
@@ -443,6 +476,112 @@ def lab_jobs() -> dict:
     return {"jobs": sorted(jobs, key=lambda j: j.get("started", 0), reverse=True)}
 
 
+POWER_ACTIONS = ("status", "start", "stop")
+
+# A lab-wide start or stop waits for each VM, so it can take minutes on a large lab; past this it gives up and
+# the answer says so, rather than the web request hanging for ever.
+POWER_TIMEOUT = 900
+
+
+def lab_power(action: str, name: str = "", example: str = "", cloud_account: str = "") -> dict:
+    """
+    Run vm_power.py on saved lab `name` or example lab `example` and answer {"action", "lab", "result", "note"}.
+
+    Unlike lab_create() this waits for the command and answers with its output: nothing is provisioned, the states
+    are the answer, and vm_power.py already orders and waits for the lab's own VMs. `note` carries what the
+    backends said stopping does to the bill (their stderr), which is the part an operator stopping a lab to save
+    money has to read.
+    """
+    if action not in POWER_ACTIONS:
+        raise Refused("lab-power takes one of {}".format(", ".join(POWER_ACTIONS)))
+    if example:
+        if safe_name(example, "example lab") not in [e["name"] for e in lab_examples.catalogue()]:
+            raise Refused("no example lab {}".format(example))
+        label, lab_args = example, ["--example", example]
+    else:
+        lab = LABS_DIR / safe_name(name, "lab file")
+        if lab.suffix != ".json" or not lab.is_file():
+            raise Refused("no saved lab {}".format(name))
+        label, lab_args = lab.name, [str(lab)]
+    if cloud_account:
+        lab_args = ["--cloud-account", safe_name(cloud_account, "cloud account")] + lab_args
+    try:
+        proc = subprocess.run([VM_POWER] + lab_args + [action], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=POWER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Refused("{} on {} did not finish within {}s — run vm_power.py on the automation node to "
+                      "see where it is".format(action, label, POWER_TIMEOUT))
+    try:
+        result = json.loads(proc.stdout.decode("utf-8") or "{}")
+    except ValueError:
+        raise Refused("vm_power.py answered something other than JSON: {}".format(
+            proc.stdout.decode("utf-8", "replace").strip()[:200]
+            or proc.stderr.decode("utf-8", "replace").strip()[:200]))
+    return {"action": action, "lab": label, "result": result,
+            "note": proc.stderr.decode("utf-8", "replace").strip()}
+
+
+def lab_power_from_args(args: list) -> dict:
+    """
+    lab-power's own arguments: the action, then a saved lab's FILE (or --example NAME in its place), in any order
+    with --cloud-account NAME. lab_power() is what rejects an action that is not one of POWER_ACTIONS, so the
+    answer names the three it takes.
+    """
+    example = cloud_account = ""
+    positional, rest = [], list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg in ("--example", "--cloud-account"):
+            if not rest:
+                raise Refused("{} needs a name".format(arg))
+            if arg == "--example":
+                example = rest.pop(0)
+            else:
+                cloud_account = rest.pop(0)
+        elif arg.startswith("-"):
+            raise Refused("lab-power: unexpected argument {!r}".format(arg))
+        else:
+            positional.append(arg)
+    if len(positional) > 2:
+        raise Refused("lab-power: unexpected argument {!r}".format(positional[2]))
+    action = positional[0] if positional else ""
+    name = positional[1] if len(positional) > 1 else ""
+    if name and example:
+        raise Refused("lab-power takes a saved lab or --example, not both")
+    return lab_power(action, name, example=example, cloud_account=cloud_account)
+
+
+def lab_create_from_args(args: list) -> dict:
+    """
+    lab-create's own arguments: a saved lab's FILE or --example NAME, in any order with --keep and
+    --cloud-account NAME. The passphrase comes from stdin, never from here.
+    """
+    name = example = cloud_account = ""
+    keep = False
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--keep":
+            keep = True
+        elif arg in ("--example", "--cloud-account"):
+            if not rest:
+                raise Refused("{} needs a name".format(arg))
+            if arg == "--example":
+                example = rest.pop(0)
+            else:
+                cloud_account = rest.pop(0)
+        elif arg.startswith("-") or name or example:
+            raise Refused("lab-create: unexpected argument {!r}".format(arg))
+        else:
+            name = arg
+    if not name and not example:
+        raise Refused("lab-create needs a saved lab's file name or --example NAME")
+    if name and example:
+        raise Refused("lab-create takes a saved lab or --example, not both")
+    return lab_create(name, keep, read_stdin().get("passphrase", ""), example=example,
+                      cloud_account=cloud_account)
+
+
 def run(args: list) -> dict:
     """Carry out command line `args`; returns the JSON answer."""
     cmd, rest = (args[0], args[1:]) if args else ("", [])
@@ -454,10 +593,12 @@ def run(args: list) -> dict:
         return credentials_encrypt(rest[0], read_stdin())
     if cmd == "credentials-delete" and len(rest) == 1:
         return credentials_delete(rest[0])
-    if cmd == "lab-create" and rest and rest[1:] in ([], ["--keep"]):
-        return lab_create(rest[0], rest[1:] == ["--keep"], read_stdin().get("passphrase", ""))
+    if cmd == "lab-create":
+        return lab_create_from_args(rest)
     if cmd == "lab-validate" and not rest:
         return lab_validate(read_stdin())
+    if cmd == "lab-power":
+        return lab_power_from_args(rest)
     if cmd == "lab-status" and len(rest) == 1:
         return lab_status(rest[0])
     if cmd == "lab-jobs" and not rest:
@@ -465,8 +606,9 @@ def run(args: list) -> dict:
     if cmd == "pub-status" and len(rest) == 1:
         return pub_status(rest[0], read_stdin().get("token", ""))
     raise Refused("usage: lab-builder-helper {credentials-list|credentials-add|credentials-encrypt FILE|"
-                  "credentials-delete FILE|lab-create FILE [--keep]|lab-validate|lab-status JOB|lab-jobs|"
-                  "pub-status JOB}")
+                  "credentials-delete FILE|lab-create {FILE|--example NAME} [--keep] [--cloud-account NAME]|"
+                  "lab-power {status|start|stop} {FILE|--example NAME} [--cloud-account NAME]|"
+                  "lab-validate|lab-status JOB|lab-jobs|pub-status JOB}")
 
 
 def main() -> None:
