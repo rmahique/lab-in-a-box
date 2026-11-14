@@ -43,9 +43,10 @@ def _tmp_cfgs(automation_text="", kvm_text=""):
 
 
 def _run_main(argv, tmp, automation_values=None, kvm_values=None, ask_answers=None,
-             input_answers=None, automation_cfg=None, kvm_cfg=None):
-    """Runs setup_automation.main() with every external effect mocked, returns the mocks used."""
-    prep_calls, deploy_calls, cred_calls, died = [], [], [], []
+             input_answers=None, automation_cfg=None, kvm_cfg=None, bridges=("br0",)):
+    """Runs setup_automation.main() with every external effect mocked, returns the mocks used. `bridges`: the
+    host's bridge devices (default one, so a container node keeps its bridge)."""
+    prep_calls, deploy_calls, cred_calls, died, cfg_writes = [], [], [], [], []
     ask_iter = iter(ask_answers or [])
 
     def fake_ask(question, default, choices=None):
@@ -73,12 +74,17 @@ def _run_main(argv, tmp, automation_values=None, kvm_values=None, ask_answers=No
                            else (kvm_cfg or {})), \
          mock.patch.object(sa.primary, "credentials_dirs", return_value=["/etc/lab_creation/credentials"]), \
          mock.patch.object(sa.setup_credentials, "interactive_build", side_effect=lambda d: cred_calls.append(d)), \
+         mock.patch.object(sa.host_network, "bridges", return_value=list(bridges)), \
+         mock.patch.object(sa.host_network, "current_settings",
+                           return_value=mock.Mock(address="203.0.113.5/24")), \
+         mock.patch.object(skn, "_write_cfg",
+                           side_effect=lambda path, tpl, fresh, values, flags: cfg_writes.append((path.name, flags))), \
          mock.patch("builtins.input", side_effect=input_answers or []):
         try:
             sa.main(argv)
         except SystemExit:
             pass
-    return {"prep": prep_calls, "deploy": deploy_calls, "cred": cred_calls, "died": died}
+    return {"prep": prep_calls, "deploy": deploy_calls, "cred": cred_calls, "died": died, "writes": cfg_writes}
 
 
 # ── vm mode: KVM-host setup is mandatory, never a question ───────────────────────────────────
@@ -204,6 +210,28 @@ with mock.patch.object(skn, "run_remote", side_effect=lambda t, a: remote_calls.
 check("a TARGET argument delegates to run_remote() and does nothing else locally",
       remote_calls == [("nuc9.lab", ["nuc9.lab", "--automation-node", "container"])] and not bv.called)
 
+
+# ── a container on a host without a bridge: it shares the host's network ────────────────────
+_host = {"_automation_network": "host", "_myip": "203.0.113.5"}
+tmp = _tmp_cfgs()
+r = _run_main(["-y", "--automation-node", "container"], tmp,
+             automation_cfg={"_automation_node": "container", "_myip": "203.0.113.200"}, bridges=())
+check("a container node on a host without a bridge is put on the host's network, at the host's address",
+      ("automation.cfg", _host) in r["writes"])
+tmp = _tmp_cfgs()
+r = _run_main(["-y", "--automation-node", "container"], tmp, automation_cfg={"_automation_node": "container"})
+check("a container node keeps its own address when the host has a bridge",
+      not any(flags == _host for _name, flags in r["writes"]))
+tmp = _tmp_cfgs()
+r = _run_main(["-y", "--automation-node", "container", "--kvm-host"], tmp,
+             automation_cfg={"_automation_node": "container"}, kvm_cfg={"_network_mode": "nat"}, bridges=())
+check("a container node on a nat lab network keeps its own address",
+      not any(flags == _host for _name, flags in r["writes"]))
+with mock.patch.object(sa.host_network, "bridges", return_value=[]):
+    check("host_network_values: a vm node is never put on the host's network",
+          sa.host_network_values({"_automation_node": "vm"}, {}) == {})
+    check("host_network_values: a node already on the host's network is left as it is",
+          sa.host_network_values({"_automation_node": "container", "_automation_network": "host"}, {}) == {})
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

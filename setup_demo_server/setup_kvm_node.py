@@ -45,6 +45,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -163,19 +164,24 @@ def _automation_host_reachable(myip, timeout=3):
     ).returncode == 0
 
 
-def setup_shared_storage(share_from, copy_from):
+def setup_shared_storage(profile, share_from, copy_from):
     """
     Make /var/lib/libvirt/images (covers both ISO_LOC's sources/ subdir and
     VM_IMG_LOC) available on this host by sshfs-mounting it from another
     host, or by a one-time rsync copy. At most one of share_from/copy_from
     is set (mutually exclusive CLI flags) — a no-op if neither is given,
     which is the default and today's unchanged behavior (this host manages
-    its own local storage).
+    its own local storage). sshfs itself is installed here, on demand —
+    not part of every KVM host's baseline packages, since most never share
+    storage with another one.
     """
     path = "/var/lib/libvirt/images"
     Path(path).mkdir(parents=True, exist_ok=True)
 
     if share_from:
+        if not profile.install_packages([profile.sshfs_package]):
+            die("could not install {} — needed to mount {} from {}".format(
+                profile.sshfs_package, path, share_from))
         log("Mount {} storage from {} via sshfs".format(path, share_from))
         fstab_line = (
             "{}:{} {} fuse.sshfs  noauto,x-systemd.automount,_netdev,reconnect,"
@@ -402,7 +408,10 @@ def prepare_kvm_host(cfg, script_dir, share_storage_from=None, copy_storage_from
         profile.suse_url = scc.get("scc_url", "")
 
     log("Configure package repositories")
-    profile.register_repos()
+    failed_modules = profile.register_repos()
+    if failed_modules:
+        warn("registration module(s) not available yet (base product is registered; proceeding "
+             "without them): {}".format(", ".join(failed_modules)))
 
     log("Update all packages and install necessary ones")
     profile.refresh()
@@ -430,7 +439,7 @@ def prepare_kvm_host(cfg, script_dir, share_storage_from=None, copy_storage_from
                      bridge_name, after.ip, before.ip, after.mac))
 
     if share_storage_from or copy_storage_from:
-        setup_shared_storage(share_storage_from, copy_storage_from)
+        setup_shared_storage(profile, share_storage_from, copy_storage_from)
 
     if _automation_host_reachable(cfg.get("_myip", "")):
         configure_automation_dns(cfg)
@@ -444,6 +453,16 @@ def prepare_kvm_host(cfg, script_dir, share_storage_from=None, copy_storage_from
         nat_cidr = cfg.get("_nat_network_cidr", "") or "192.168.150.0/24"
         log("Configure NAT'd libvirt network {} ({})".format(nat_name, nat_cidr))
         configure_nat_network(nat_name, nat_cidr)
+
+
+def ensure_podman() -> None:
+    """Installs podman with this host's package manager when it is missing: a container automation node runs on it,
+    and on a host that is not set up as a KVM host nothing else installs it. Dies when it cannot."""
+    if shutil.which("podman"):
+        return
+    profile = kvm_host_profiles.detect_profile()
+    if profile is None or not profile.install_packages(["podman"]):
+        die("podman is missing and could not be installed; install it and run this again")
 
 
 def deploy_automation_node(cfg, script_dir):
@@ -468,12 +487,15 @@ def deploy_automation_node(cfg, script_dir):
                  "instead".format(e))
             node_mode, fallback = "container", True
 
+    if node_mode == "container":
+        ensure_podman()
     log("Start setup_lab_automation.sh script to create the automation node ({})".format(node_mode))
     rc = run_lab_automation(lab_automation_script, node_mode)
     if rc != 0 and node_mode == "vm" and rc != 130:
         warn("the automation VM could not be built (exit {}); creating the automation node as a container "
              "instead".format(rc))
         node_mode, fallback = "container", True
+        ensure_podman()
         rc = run_lab_automation(lab_automation_script, node_mode)
     if rc == 0 and fallback:
         cfg_path = _find("automation.cfg")
@@ -612,10 +634,7 @@ def _existing_ssh_keys() -> List[Path]:
     return sorted(Path("~/.ssh").expanduser().glob("id_*.pub"))
 
 
-def _scc_registered() -> bool:
-    """True if this host already has SUSEConnect credentials on file (registered by some other
-    means, e.g. at image build time) — asking for a regcode would be redundant."""
-    return Path("/etc/zypp/credentials.d/SCCcredentials").is_file()
+_scc_registered = kvm_host_profiles.is_scc_registered
 
 
 def scc_credential() -> Dict[str, str]:

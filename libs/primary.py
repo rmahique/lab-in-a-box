@@ -126,6 +126,23 @@ def try_load_definition(path):
     return LabDefinition(data, path, "yaml"), None
 
 
+def node_name_domain(definition) -> str:
+    """
+    The domain the lab's node names share, used as mydomain by a lab that sets none: the part of each name after its
+    first dot. Nodes that set their own mydomain are left out. Returns "" when no remaining name is an FQDN, so the
+    caller falls back to the automation node's own domain. Raises ValueError when the names do not all share one
+    domain, a mix of FQDNs and short names included.
+    """
+    names = [n for n, cfg in (definition.get("nodes") or {}).items() if not (cfg or {}).get("mydomain")]
+    domains = {n.split(".", 1)[1] if "." in n else "" for n in names}
+    if not domains - {""}:
+        return ""
+    if len(domains) == 1:
+        return domains.pop()
+    raise ValueError("cannot determine the default domain name: the node names use {}; please specify it with "
+                     "mydomain".format(", ".join(sorted(d or "short names" for d in domains))))
+
+
 def save_definition(definition):
     """
     Persist a change made to an in-memory `definition` (a LabDefinition, or
@@ -246,6 +263,12 @@ def cloud_account_path(name, config=None):
             if p.exists():
                 return p
     return None
+
+
+def cloud_account_not_found(name, config=None) -> str:
+    """The message for cloud account `name` having no file in any of credentials_dirs(config)."""
+    return "cloud account '{}' not found — looked for <name>.{{{}}} in: {}".format(
+        name, ",".join(e.lstrip(".") for e in _CLOUD_ACCOUNT_EXTS), ", ".join(credentials_dirs(config)))
 
 
 def list_cloud_accounts(config=None):
@@ -450,11 +473,12 @@ def try_load_cloud_account(name, config=None, passphrase_prompt=None):
     """
     p = cloud_account_path(name, config)
     if p is None:
-        return None, ("cloud account '{}' not found — looked for <name>.{{{}}} in: {}".format(
-            name, ",".join(e.lstrip(".") for e in _CLOUD_ACCOUNT_EXTS),
-            ", ".join(credentials_dirs(config))))
+        return None, cloud_account_not_found(name, config)
 
-    text = p.read_text()
+    try:
+        text = p.read_text()
+    except OSError as e:
+        return None, "cloud account '{}' ({}) cannot be read: {}".format(name, p, e.strerror or e)
     try:
         if p.suffix.lower() == ".json":
             data = json.loads(text)
@@ -615,7 +639,9 @@ def _load_shell_vars_file(search_paths, name):
     for candidate in search_paths:
         p = Path(candidate)
         if p.exists():
-            return _parse_shell_vars(p.read_text())
+            import migrations  # lazy: migrations.py imports primary at its own top, so this stays local to avoid a cycle
+            lines = migrations.ensure_current_shell_config(p, "config:" + name)
+            return _parse_shell_vars("\n".join(lines))
     _die("Configuration file '{}' not found in: {}".format(name, ", ".join(search_paths)))
 
 

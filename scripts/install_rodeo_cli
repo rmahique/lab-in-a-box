@@ -4,7 +4,7 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.1
+# Schema version: 1.3
 #
 # JSON section: "rodeo_cli" — Installs rodeo-cli
 #   rodeo_cli_install_url : [OPTIONAL] URL of the install script to fetch and run on the
@@ -14,14 +14,33 @@
 #                            this node first, if it isn't already there, since rodeo-cli deploys
 #                            nested KVM labs and needs something to deploy (see install_lab_in_a_box;
 #                            same libs/lab_in_a_box_common.py the two addons share) (default: "false")
+#   rodeo_cli_builder_allow : [OPTIONAL] extra Host names or addresses, space- or comma-separated, that
+#                            rodeo-cli's Rodeo Builder (port 8678) answers to. The node's FQDN and the
+#                            address this automation node resolves it to (its public IP on a cloud node)
+#                            are always allowed; list here any other name clients use, such as a DNS alias
+#   rodeo_cli_ref         : [OPTIONAL] git ref (branch, tag or commit) of rodeo-cli to install, e.g. v0.29.0
+#                            (default: main)
+#   rodeo_cli_repo_url    : [OPTIONAL] git repository to clone rodeo-cli from instead of upstream
+#                            (default: https://github.com/avaleror/rodeo-cli.git)
+#   rodeo_cli_dir         : [OPTIONAL] absolute directory to install rodeo-cli into; the installer's own
+#                            default is /opt/rodeo-cli as root (pattern: ^/)
+#   rodeo_cli_mode        : [OPTIONAL] role rodeo-cli installs in: "kvm-host" runs labs on this node
+#                            (SLES 16 / Leap 16), "control-plane" only drives remote hosts and needs no
+#                            /dev/kvm; "auto" lets the installer pick from the node's OS
+#                            (options: auto, kvm-host, control-plane) (default: auto)
+#   rodeo_cli_builder     : [OPTIONAL] run the Rodeo Builder web UI as rodeo-builder.service; "false" stops
+#                            and removes one an earlier install set up (options: true, false) (default: "true")
+#   rodeo_cli_builder_host : [OPTIONAL] address the Rodeo Builder listens on; 127.0.0.1 keeps it on the
+#                            node itself (default: 0.0.0.0)
 #
 # Target node(s): any node listing "rodeo_cli" in its own addons[] list — same dispatch shape
 # as install_client_registration.py. This only installs the tool; rodeo-cli's own
 # rodeo-plan.yaml/secrets.yaml for whatever nested lab it will deploy are not this addon's
 # concern — write those on the node yourself (or via the run_command addon) once rodeo-cli
-# is there. rodeo-cli itself deploys nested KVM VMs, so it needs /dev/kvm on the target —
-# this addon warns, but does not refuse to install, when that is missing, since the target
-# may get nested virtualization (e.g. aws_nested_virtualization) enabled later.
+# is there. Except in control-plane mode, rodeo-cli deploys nested KVM VMs, so it needs
+# /dev/kvm on the target — this addon warns, but does not refuse to install, when that is
+# missing, since the target may get nested virtualization (e.g. aws_nested_virtualization)
+# enabled later.
 
 __version__ = "__LABVERSION__"
 
@@ -35,7 +54,9 @@ PLUGIN = {
 }
 
 import os
+import re
 import shlex
+import socket
 import sys
 from pathlib import Path
 
@@ -46,23 +67,72 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 import addon_common as ac  # noqa: E402
 import k8s  # noqa: E402
 import primary  # noqa: E402
-from lab_creation import ssh_run, die  # noqa: E402
+from lab_creation import ssh_run, die, require_ssh  # noqa: E402
 from lab_in_a_box_common import install_lab_in_a_box, lab_in_a_box_installed  # noqa: E402
 
 DEFAULT_INSTALL_URL = "https://raw.githubusercontent.com/avaleror/rodeo-cli/main/install.sh"
 
 
+# Field -> the installer's environment variable for it. Unset fields are left out, so the installer's own defaults
+# apply.
+INSTALLER_ENV = (
+    ("rodeo_cli_ref", "RODEO_REF"),
+    ("rodeo_cli_repo_url", "RODEO_REPO"),
+    ("rodeo_cli_mode", "RODEO_MODE"),
+    ("rodeo_cli_builder_host", "RODEO_BUILDER_HOST"),
+)
+
+
 def _validate(v):
     v.vurl_field("rodeo_cli", "rodeo_cli_install_url")
+    v.vurl_field("rodeo_cli", "rodeo_cli_repo_url")
     v.vbool("rodeo_cli", "rodeo_cli_install_lab_in_a_box")
+    v.vbool("rodeo_cli", "rodeo_cli_builder")
 
 
-def setup_rodeo_cli(hostname, install_url):
+def builder_allow(hostname: str, extra) -> str:
+    """
+    RODEO_BUILDER_ALLOW for `hostname`: the Host names rodeo-cli's builder answers to besides the ones it finds on
+    the node itself. These are the node's FQDN, which the node may not know as its own name, the address this
+    automation node resolves it to, which on a cloud node is a public IP on none of its interfaces, and `extra`
+    (rodeo_cli_builder_allow: a space- or comma-separated string, or a list). Space-separated, duplicates dropped.
+    """
+    names = [hostname]
+    try:
+        names.append(socket.gethostbyname(hostname))
+    except OSError:
+        pass
+    if isinstance(extra, (list, tuple)):
+        extra = " ".join(str(x) for x in extra)
+    names += re.split(r"[\s,]+", str(extra or ""))
+    return " ".join(dict.fromkeys(n for n in names if n))
+
+
+def installer_command(install_url: str, cfg: dict, allow: str) -> str:
+    """
+    The shell command that fetches rodeo-cli's installer from `install_url` and runs it with this node's add-on
+    settings `cfg`: each set INSTALLER_ENV field as its environment variable, rodeo_cli_builder "false" as
+    RODEO_BUILDER=0, rodeo_cli_dir as --dir, and `allow` (builder_allow()) as RODEO_BUILDER_ALLOW.
+    """
+    env = [("RODEO_BUILDER_ALLOW", allow)]
+    env += [(var, str(cfg.get(field))) for field, var in INSTALLER_ENV if cfg.get(field)]
+    if str(cfg.get("rodeo_cli_builder") or "true").lower() == "false":
+        env.append(("RODEO_BUILDER", "0"))
+    args = ["--dir", str(cfg["rodeo_cli_dir"])] if cfg.get("rodeo_cli_dir") else []
+    return "curl -fsSL {} | {} bash{}".format(
+        shlex.quote(install_url),
+        " ".join("{}={}".format(var, shlex.quote(value)) for var, value in env),
+        " -s -- " + " ".join(shlex.quote(a) for a in args) if args else "")
+
+
+def setup_rodeo_cli(hostname: str, install_url: str, command: str, needs_kvm: bool = True) -> None:
+    """Run installer_command() `command` on `hostname`, warn when a role that needs it has no /dev/kvm, and die
+    unless rodeo answers afterwards."""
     print("- Installing rodeo-cli on '{}' from {}".format(hostname, install_url))
-    ssh_run(hostname, "curl -fsSL {} | bash".format(shlex.quote(install_url)))
+    ssh_run(hostname, command)
 
-    kvm = ssh_run(hostname, "test -e /dev/kvm", check=False)
-    if kvm.returncode != 0:
+    kvm = ssh_run(hostname, "test -e /dev/kvm", check=False) if needs_kvm else None
+    if kvm is not None and kvm.returncode != 0:
         print("  WARNING: /dev/kvm is not present on '{}' — rodeo-cli deploys nested KVM VMs and "
               "needs it; enable nested virtualization on this node before using rodeo-cli "
               "(e.g. aws_nested_virtualization: \"true\" on a cloud node)".format(hostname))
@@ -93,11 +163,13 @@ def main():
     env_vm_name = os.environ.get("_vm_name") or None
     for vm_name, _ssh_cmd in k8s.addon_nodes(definition, "rodeo_cli", vm_name=env_vm_name):
         cfg = k8s.addon_node_config(definition, "rodeo_cli", vm_name)
+        require_ssh(vm_name)
         want_lab_in_a_box = (cfg.get("rodeo_cli_install_lab_in_a_box") or "false").lower() == "true"
         if want_lab_in_a_box and not lab_in_a_box_installed(vm_name):
             install_lab_in_a_box(vm_name)
         install_url = cfg.get("rodeo_cli_install_url") or DEFAULT_INSTALL_URL
-        setup_rodeo_cli(vm_name, install_url)
+        command = installer_command(install_url, cfg, builder_allow(vm_name, cfg.get("rodeo_cli_builder_allow")))
+        setup_rodeo_cli(vm_name, install_url, command, needs_kvm=cfg.get("rodeo_cli_mode") != "control-plane")
 
 
 if __name__ == "__main__":

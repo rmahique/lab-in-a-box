@@ -156,6 +156,9 @@ class _FakeProfile:
         self.installed_packages = list(self.packages)
         return []
 
+    def install_packages(self, pkgs):
+        return True
+
 
 def _run_do_it_all(cfg, fake_profile, nat_calls=None, fusermount_compat_calls=None, downloads=None,
                    download_error=None, build_automation_node=True):
@@ -850,19 +853,24 @@ def rooted(p, *a):
 
 (root / "etc").mkdir()
 (root / "etc" / "fstab").write_text("/dev/vda1 / xfs defaults 0 0\n")
+storage_profile = mock.Mock(sshfs_package="sshfs")
 with mock.patch.object(skn, "Path", side_effect=rooted), mock.patch.object(skn.subprocess, "run", return_value=done()) as run:
-    skn.setup_shared_storage("nuc1.lab", "")
-    skn.setup_shared_storage("nuc1.lab", "")
+    skn.setup_shared_storage(storage_profile, "nuc1.lab", "")
+    skn.setup_shared_storage(storage_profile, "nuc1.lab", "")
     fstab = (root / "etc" / "fstab").read_text()
     check("setup_shared_storage: adds the sshfs automount line once and mounts it",
           fstab.count("nuc1.lab:/var/lib/libvirt/images /var/lib/libvirt/images fuse.sshfs") == 1
           and ["mount", "/var/lib/libvirt/images"] in [c[0][0] for c in run.call_args_list])
+    check("setup_shared_storage: installs sshfs on demand, only when actually sharing storage",
+          storage_profile.install_packages.call_args_list == [mock.call(["sshfs"])] * 2)
     run.reset_mock()
-    skn.setup_shared_storage("", "nuc2.lab")
+    skn.setup_shared_storage(storage_profile, "", "nuc2.lab")
     check("setup_shared_storage: copies once with rsync",
           run.call_args[0][0] == ["rsync", "-a", "nuc2.lab:/var/lib/libvirt/images/", "/var/lib/libvirt/images/"])
+    check("setup_shared_storage: a plain rsync copy never installs sshfs — it isn't needed",
+          storage_profile.install_packages.call_count == 2)
     run.reset_mock()
-    skn.setup_shared_storage("", "")
+    skn.setup_shared_storage(storage_profile, "", "")
     check("setup_shared_storage: does nothing without a source", not run.called)
 
 profile = mock.Mock()
@@ -946,6 +954,28 @@ check("main() offers to add another KVM node in interactive mode, and shares sto
 check("main() offers to add cloud credentials in interactive mode",
       cred_calls == ["/etc/lab_creation/credentials"])
 
+
+# ── ensure_podman(): a container automation node gets podman from the package manager ─────────
+_profile = mock.Mock()
+_profile.install_packages.return_value = True
+with mock.patch.object(skn.shutil, "which", return_value=None), \
+     mock.patch.object(skn.kvm_host_profiles, "detect_profile", return_value=_profile):
+    skn.ensure_podman()
+check("ensure_podman installs podman with the host's package manager when it is missing",
+      _profile.install_packages.call_args == mock.call(["podman"]))
+_profile = mock.Mock()
+with mock.patch.object(skn.shutil, "which", return_value="/usr/bin/podman"), \
+     mock.patch.object(skn.kvm_host_profiles, "detect_profile", return_value=_profile):
+    skn.ensure_podman()
+check("ensure_podman installs nothing when podman is there", not _profile.install_packages.called)
+_profile = mock.Mock()
+_profile.install_packages.return_value = False
+_died = []
+with mock.patch.object(skn.shutil, "which", return_value=None), \
+     mock.patch.object(skn.kvm_host_profiles, "detect_profile", return_value=_profile), \
+     mock.patch.object(skn, "die", side_effect=lambda m: _died.append(m)):
+    skn.ensure_podman()
+check("ensure_podman stops with a message when podman cannot be installed", _died and "podman" in _died[0])
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

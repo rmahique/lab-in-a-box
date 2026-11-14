@@ -37,10 +37,20 @@ One entry per VM, keyed by its FQDN:
 ### `common`
 
 Shared defaults applied to every node unless overridden per-node: `mymask`, `mygw`,
-`mydns`, `mynet_reverse`, `ISO_IMAGE`, `VM_MEM`, `VM_DSK`, `VM_CPU`, `VM_BOOT`
+`mydns`, `mydomain`, `mynet_reverse`, `ISO_IMAGE`, `VM_MEM`, `VM_DSK`, `VM_CPU`, `VM_BOOT`
 (`uefi`/`bios`/...), `VM_DSK_BUS`, `VM_NET_MODEL`. Read `libs/lab_creation.py`'s
 `load_vm_vars` for the authoritative full list and current defaults — this file only
 covers the fields you'll touch routinely.
+
+`mydomain` left out: the domain every node name shares is used (`node1.mydemo.lab` gives
+`mydemo.lab`), or the automation node's own domain when the names are short. Node names in
+different domains (or FQDNs mixed with short names) are an error until `mydomain` is set.
+
+`ssh_authorized_keys` (common and per node, merged): extra SSH keys added over SSH once each
+VM is up. Each entry is a key line, an https URL (e.g. `https://github.com/<user>.keys`) or an
+absolute file path on the automation node; a plain string goes to root,
+`{"key": ..., "user": "alice"}` to another account. A missing user or unreadable source is
+a warning in the run summary, never a failure. See `libs/ssh_keys.py`.
 
 ### `kclusters` (preferred) vs. `cluster` (old format)
 

@@ -20,7 +20,7 @@ import subprocess
 import discovery
 
 ACTIONS = {"labs", "lab", "save", "credentials", "credentials-add", "credentials-encrypt",
-           "credentials-delete", "create", "job", "jobs"}
+           "credentials-delete", "create", "validate-credentials", "job", "jobs"}
 
 
 def helper_path():
@@ -125,6 +125,10 @@ def dispatch(action, method, params, data):
         # argument other processes could read, and the helper puts it only in the job's own environment.
         return helper(["lab-create", name] + (["--keep"] if data.get("keep") else []),
                       {"passphrase": data.get("passphrase", "")})
+    if action == "validate-credentials" and method == "POST":
+        # The preflight with the lab's credentials, as root: the passphrase reaches the helper on stdin, for this one
+        # request, and is never kept.
+        return helper(["lab-validate"], {"config": data.get("config", {}), "passphrase": data.get("passphrase", "")})
     if action == "job" and method == "GET":
         return helper(["lab-status", one("id")])
     if action == "jobs" and method == "GET":

@@ -1,0 +1,61 @@
+{
+ "fields": {
+  "rodeo_cli_builder": {
+   "default": "true",
+   "enum": [
+    "true",
+    "false"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_builder_allow": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_builder_host": {
+   "default": "0.0.0.0",
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_dir": {
+   "default": "",
+   "pattern": "^/",
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_install_lab_in_a_box": {
+   "default": "false",
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_install_url": {
+   "default": "https://raw.githubusercontent.com/avaleror/rodeo-cli/main/install.sh",
+   "required": false,
+   "type": "url"
+  },
+  "rodeo_cli_mode": {
+   "default": "auto",
+   "enum": [
+    "auto",
+    "kvm-host",
+    "control-plane"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_ref": {
+   "default": "main",
+   "required": false,
+   "type": "string"
+  },
+  "rodeo_cli_repo_url": {
+   "default": "https://github.com/avaleror/rodeo-cli.git",
+   "required": false,
+   "type": "url"
+  }
+ },
+ "schema": "addon:rodeo_cli",
+ "version": "1.3"
+}

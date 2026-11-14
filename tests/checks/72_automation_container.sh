@@ -144,4 +144,44 @@ run_setup "${_plain}"
 grep -q "^podman volume rm\|^podman rm .*-v\|--volumes" "${_log}" && fail "re-running setup removed a persistent volume"
 [[ "$(grep -c CONTAINERKEY /root/.ssh/authorized_keys)" == 1 ]] || fail "re-running setup authorized the container's key on the host twice"
 
+# A container on the host's network (_automation_network=host): no bridge, no veth, no sshd; the host gets wrappers.
+echo '_automation_network="host"' >> "${_t}/lab/lab.cfg"
+echo "not a wrapper" > /usr/local/bin/check_addon.py
+run_setup
+grep -q "^podman create .* --network host --uts private -v /var/lib/lab-in-a-box/labs:/var/lib/lab-in-a-box/labs --systemd always " "${_log}" \
+    || fail "a host-network container is not created on the host's network with its own hostname and the labs directory"
+[[ -d /var/lib/lab-in-a-box/labs ]] || fail "the shared labs directory is not created"
+grep -q "lab-automation-net" "${_unit}" && fail "a host-network container's unit still connects it to a bridge"
+[[ -e /usr/local/sbin/lab-automation-net ]] && fail "lab-automation-net is left behind for a host-network container"
+grep -q "^ExecStart=/usr/bin/podman start automation.mydemo.lab$" "${_unit}" && grep -q "^ExecStop=/usr/bin/podman stop" "${_unit}" \
+    || fail "a host-network container's unit does not start and stop it"
+grep -q "Using bridge" "${_t}/run.log" && fail "a host-network container still looks for a bridge"
+(
+    # shellcheck source=/dev/null
+    . "${_node}/settings"
+    [[ "${_node_network}" == host && "${_host_ip}" == 192.0.2.10 ]]
+) || fail "the node settings do not tell a host-network container it is one, at the host's own address"
+grep -q 'Device "" does not exist' "${_t}/run.log" && fail "a host-network container still asks for a bridge's address"
+_w=/usr/local/bin/setup_lab.py
+[[ -x "${_w}" ]] && grep -qx "# lab-in-a-box host wrapper" "${_w}" \
+    && grep -q '^exec podman exec -i "${_tty\[@\]}" -w "${_wd}" automation.mydemo.lab setup_lab.py "\$@"$' "${_w}" \
+    || fail "the host has no setup_lab.py wrapper running it in the container"
+[[ "$(cat /usr/local/bin/check_addon.py)" == "not a wrapper" ]] || fail "a file that is not a wrapper was overwritten"
+# The wrapper: a file outside the labs directory is refused; inside it, the command runs there in the container.
+echo '{}' > "${_t}/outside.json"
+PATH="${_bin}:${PATH}" bash "${_w}" "${_t}/outside.json" > "${_t}/w.out" 2>&1 && fail "a wrapper accepted a file outside the labs directory"
+grep -q "outside /var/lib/lab-in-a-box/labs" "${_t}/w.out" || fail "a wrapper does not say why it refused a file"
+mkdir -p /var/lib/lab-in-a-box/labs/x && echo '{}' > /var/lib/lab-in-a-box/labs/x/lab.json
+: > "${_log}"
+(cd /var/lib/lab-in-a-box/labs/x && PATH="${_bin}:${PATH}" bash "${_w}" lab.json --debug)
+grep -q "^podman exec -i -w /var/lib/lab-in-a-box/labs/x automation.mydemo.lab setup_lab.py lab.json --debug$" "${_log}" \
+    || fail "a wrapper does not run the command in the container, in the same directory: $(cat "${_log}")"
+# Removing the container removes the wrappers, and only them.
+( . "${_repo}/setup_demo_server/automation-node-lib.sh"
+  _HOST_WRAPPED="setup_lab.py check_addon.py" _WRAPPER_MARK="# lab-in-a-box host wrapper" AUTOMATION_HOSTNAME=automation.mydemo.lab
+  eval "$(sed -n '/^function remove_automation_container/,/^}/p' "${_repo}/setup_demo_server/setup_lab_automation.sh")"
+  PATH="${_bin}:${PATH}" remove_automation_container )
+[[ -e /usr/local/bin/setup_lab.py ]] && fail "removing the container leaves its wrappers"
+[[ -e /usr/local/bin/check_addon.py ]] || fail "removing the container removed a file that is not a wrapper"
+
 exit "${_fail}"

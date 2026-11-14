@@ -16,7 +16,7 @@ NODE_DIR=/etc/lab_creation/node
 # Shell variables the node needs, written to NODE_DIR/settings by write_node_settings.
 NODE_SETTINGS="AUTOMATION_HOSTNAME MYREG _myip _mymask_cidr _mygw _mydns _mydomain _mynetrev _timezone _virt_srv
 ROOT_SSH_PUB_KEY HOST_SSH_PUB_KEY ROOT_PWD_HASH _host_ip _host_name _host_fqdn _node_kind _node_netstack
-_python_bin _kubectl_install"
+_node_network _python_bin _kubectl_install"
 
 # sshfs mount options for the hypervisor's source images. accept-new: the node has never connected to the hypervisor
 # before, so its host key is not known yet.
@@ -35,6 +35,10 @@ _LEAP15_PACKAGES="python311 python311-cryptography kubernetes1.35-client"
 _LEAP15_PYTHON="python3.11"
 _LEAP16_PACKAGES="python313 python313-cryptography python313-PyYAML"
 _LEAP16_PYTHON="python3.13"
+
+# Products a registered SLES node activates before installing _VM_PACKAGES: SLES ships salt-ssh and sshfs only in
+# PackageHub (as libs/kvm_host_profiles.py's SLES profiles also activate); openSUSE Leap has them in its own repositories.
+_SLES_PRODUCTS="PackageHub"
 
 # Writes NODE_DIR/settings (mode 0600) under ROOT from the current values of NODE_SETTINGS. A setting that is unset
 # is written empty: every optional one, such as _kubectl_install, is absent on the nodes that do not need it.
@@ -308,9 +312,28 @@ function write_authorized_keys() {
     chmod 0600 "${_f}"
 }
 
+# Activates _SLES_PRODUCTS on a registered SLES node, best effort: a product that cannot be activated leaves the
+# package installation to name what is missing. Does nothing on other distributions or an unregistered SLES.
+# $1: the os-release file to read (default /etc/os-release).
+function node_enable_products() {
+    local _os_release="${1:-/etc/os-release}" _id="" _ver="" _p
+    _id="$(. "${_os_release}" && echo "${ID}")"
+    [[ "${_id}" == sles ]] || return 0
+    if ! command -v SUSEConnect >/dev/null || ! SUSEConnect --status 2>/dev/null | grep -q '"status":"Registered"'; then
+        echo "WARNING: this SLES node is not registered; ${_SLES_PRODUCTS} cannot be activated" >&2
+        return 0
+    fi
+    _ver="$(. "${_os_release}" && echo "${VERSION_ID}")"
+    for _p in ${_SLES_PRODUCTS}; do
+        SUSEConnect --product "${_p}/${_ver}/$(uname -m)" \
+            || echo "WARNING: activating ${_p}/${_ver} failed; the packages only it provides will be missing" >&2
+    done
+}
+
 # Installs the VM's packages and sets which services start at boot.
 function node_install_packages() {
     local _pkgs="${_VM_PACKAGES}" _version=""
+    node_enable_products
     _version="$(. /etc/os-release && echo "${VERSION_ID%%.*}")"
     case "${_version}" in
         16) _pkgs+=" ${_LEAP16_PACKAGES}"; _python_bin="${_python_bin:-${_LEAP16_PYTHON}}" ;;
@@ -341,6 +364,34 @@ function node_ssh_key() {
     cp /root/.ssh/id_rsa.pub /srv/www/htdocs/id_rsa.pub && chmod 0644 /srv/www/htdocs/id_rsa.pub
 }
 
+# Writes ROOT/etc/lab_creation.cfg from ROOT/etc/lab_creation.cfg.example (installed by install_automation_node_scripts.sh)
+# with this node's values, only when it does not exist: an existing one belongs to its operator and is kept. Set:
+# ROOT_SSH_KEY (the operator's key, for the lab VMs), REMOTE_HOST (the KVM host; its line and VIRT_SRV's are commented
+# out on a node without one), ROOT_PWD_HASH (commented out when there is none, never left at the example's), MYREG
+# and mysource. SUSE_email/SUSE_regcode are left empty: credentials live in the encrypted store (setup_credentials.py).
+function write_lab_creation_cfg() {
+    local _root="$1" _cfg="$1/etc/lab_creation.cfg" _example="$1/etc/lab_creation.cfg.example" _host
+    [[ -e "${_cfg}" ]] && return 0
+    if [[ ! -f "${_example}" ]]; then
+        echo "WARNING: ${_example} not found; /etc/lab_creation.cfg is not written" >&2
+        return 0
+    fi
+    _host="${_host_fqdn:-${_host_ip}}"
+    ( umask 077
+      awk -v key="${ROOT_SSH_PUB_KEY}" -v host="${_host}" -v hash="${ROOT_PWD_HASH}" -v reg="${MYREG}" \
+          -v src="${AUTOMATION_HOSTNAME}" '
+          function q(v) { gsub(/\047/, "\047\\\047\047", v); return "\047" v "\047" }
+          /^ROOT_SSH_KEY=/  { print "ROOT_SSH_KEY=" q(key); next }
+          /^REMOTE_HOST=/   { print (host == "" ? "#" : "") "REMOTE_HOST=" q(host); next }
+          /^VIRT_SRV=/      { print (host == "" ? "#" : "") $0; next }
+          /^SUSE_email=/    { print "SUSE_email=\047\047"; next }
+          /^SUSE_regcode=/  { print "SUSE_regcode=\047\047"; next }
+          /^ROOT_PWD_HASH=/ { print (hash == "" ? "#ROOT_PWD_HASH=\047\047" : "ROOT_PWD_HASH=" q(hash)); next }
+          /^MYREG=/         { print "MYREG=" q(reg); next }
+          /^mysource=/      { print "mysource=" q(src); next }
+          { print }' "${_example}" > "${_cfg}" )
+}
+
 # Installs the lab scripts from NODE_DIR/lab-in-a-box.
 function node_install_lab_scripts() {
     (cd "${NODE_DIR}/lab-in-a-box" \
@@ -349,7 +400,7 @@ function node_install_lab_scripts() {
 
 # Configures the node from NODE_DIR. $1: --offline or --boot (see the header), or nothing.
 function configure_node() {
-    local _mode="${1:-}"
+    local _mode="${1:-}" _services="named apache2 sshd"
     # shellcheck source=/dev/null
     . "${NODE_DIR}/settings" || return 1
     if [[ "${_node_kind}" == vm ]]; then
@@ -375,6 +426,7 @@ function configure_node() {
     [[ -z "${ROOT_PWD_HASH}" ]] || echo "root:${ROOT_PWD_HASH}" | chpasswd -e
     node_ssh_key
     node_install_lab_scripts || { echo "ERROR: install_automation_node_scripts.sh failed" >&2; return 1; }
+    write_lab_creation_cfg /
     if [[ "${_mode}" == --offline ]]; then
         return 0
     fi
@@ -386,10 +438,20 @@ function configure_node() {
     else
         systemctl enable --now srv-www-htdocs-sources.automount
     fi
+    # A container on its host's network (_node_network=host) shares the host's port 22: it runs no sshd, the host's
+    # wrappers reach it with podman exec instead.
+    if [[ "${_node_network}" == host ]]; then
+        systemctl disable --now sshd.service 2>/dev/null
+        # It failed at the container's first start, before this disabled it: that state is cleared.
+        systemctl reset-failed sshd.service 2>/dev/null
+        _services="named apache2"
+    fi
     if [[ "${_mode}" == --boot ]]; then
-        systemctl restart --no-block named apache2 sshd
+        # shellcheck disable=SC2086
+        systemctl restart --no-block ${_services}
     else
-        systemctl restart named apache2 sshd
+        # shellcheck disable=SC2086
+        systemctl restart ${_services}
     fi
 }
 

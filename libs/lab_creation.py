@@ -91,7 +91,10 @@ def die(msg):
     raise SystemExit(1)
 
 
-_DEBUG = False
+# LAB_DEBUG=1 in the environment turns debug on for this process. set_debug() keeps it in sync, so every child
+# process (addon installers, setup_vm.py) a debug run starts inherits the setting.
+_DEBUG_ENV = "LAB_DEBUG"
+_DEBUG = os.environ.get(_DEBUG_ENV) == "1"
 
 _NOISY_RE = re.compile(
     r"(?i)\b(warn|warning|error|errno|fail|failed|denied|refused|"
@@ -102,9 +105,31 @@ def set_debug(on):
     """Turn debug output on/off (default off). When OFF, ssh_run() runs remote
     commands quietly and only prints their output if the command fails or the
     output looks like it contains a warning/error. When ON, every remote command
-    streams its output live."""
+    streams its output live and ssh/scp run without -q, so their own connection
+    errors are shown. Exports LAB_DEBUG to this process's environment so child
+    processes inherit the setting."""
     global _DEBUG
     _DEBUG = bool(on)
+    if _DEBUG:
+        os.environ[_DEBUG_ENV] = "1"
+    else:
+        os.environ.pop(_DEBUG_ENV, None)
+
+
+def _ssh_opts(base):
+    """`base` (an ssh/scp argv prefix) without its quieting options (-q, -o LogLevel=ERROR) when debug is on,
+    unchanged otherwise."""
+    if not _DEBUG:
+        return list(base)
+    out = []
+    for a in base:
+        if a == "-q":
+            continue
+        if a == "LogLevel=ERROR" and out and out[-1] == "-o":
+            out.pop()
+            continue
+        out.append(a)
+    return out
 
 
 def debug_enabled():
@@ -277,11 +302,15 @@ def _template_state(path):
 # Fields the preflight checks itself, with context the schema cannot carry, so schema_validate.py leaves them to it
 # and one bad value is reported once: backend and cloud_account against the installed backends and credential files,
 # config_method and install_type as the effective value a node ends up with after common's default.
+# subprocess.run() keyword arguments that capture stdout and stderr as text. Not capture_output=/text=, which need
+# Python 3.7: the lab-builder CGI runs this library under the host's own python3, which can be 3.6.
+_CAPTURE_TEXT = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "universal_newlines": True}
+
 _PREFLIGHT_OWN_FIELDS = ("backend", "cloud_account", "config_method", "install_type")
 
 
 def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None,
-                            vm_img_loc=None, issues_out=None, host_checks=True):
+                            vm_img_loc=None, issues_out=None, host_checks=True, read_credentials=True):
     """
     Preflight-validate an already loaded lab definition. Prints a full report of errors and warnings, and returns True when
     there are no errors. Warnings never block.
@@ -300,6 +329,9 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                          "existing" nodes, the VM-name collision and resource probes on the host, the informational IP
                          ping, and the source-image checks. Only the definition's own contents are then validated, so
                          callers without SSH access to the hypervisors (the lab-builder's CGI) can validate a lab.
+        read_credentials : when False, cloud accounts are never read or decrypted: an account is only looked for, and its
+                         type is taken from its <type>-<account> file name. For a caller that may not read the credential
+                         files and cannot ask for a passphrase (the lab-builder's public Validate).
 
     The function validates the definition's contents and does not re-read the file. Empty collections are skipped, so an empty
     nodes object is not reported as an error.
@@ -360,8 +392,26 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         if _empty(_jq_or(common.get(req))):
             err("common.{} is required".format(req))
 
+    if _empty(_jq_or(common.get("mydomain"))):
+        from primary import node_name_domain
+        try:
+            node_name_domain(definition)
+        except ValueError as e:
+            err(str(e))
+
+    # ssh_authorized_keys: the schema check above covers each entry's shape and user name; this covers its key. A file
+    # is looked for only with host_checks, since the web UI's CGI may not read where the keys are kept.
+    import ssh_keys
+    for where, cfg in [("common", common)] + [("nodes." + n, c or {}) for n, c in nodes.items()]:
+        listed = cfg.get(ssh_keys.FIELD) if isinstance(cfg, dict) else None
+        for i, entry in enumerate(listed if isinstance(listed, list) else []):
+            key = entry if isinstance(entry, str) else (entry.get("key") if isinstance(entry, dict) else None)
+            problem = ssh_keys.source_problem(key.strip(), check_files=host_checks) if isinstance(key, str) else ""
+            if problem:
+                err("{}.{}[{}]: {}".format(where, ssh_keys.FIELD, i, problem))
+
     from backends import BACKENDS, CLOUD_BACKEND_NAMES
-    from primary import try_load_cloud_account
+    from primary import cloud_account_not_found, cloud_account_path, credentials_dirs, try_load_cloud_account
     common_backend = _jq_or(common.get("backend"))
     if not _empty(common_backend) and common_backend not in BACKENDS:
         err("common.backend '{}' is invalid — must be one of: {}".format(
@@ -372,6 +422,27 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
     # here so section 6's libvirt-vs-cloud split can reuse it.
     node_account_cloudtype = {}
 
+    def _account_type(acct_name):
+        """
+        (cloudtype, error, note) for cloud account `acct_name`. With read_credentials, its file is loaded, which
+        decrypts it. Without (the lab-builder's public Validate, whose user may not read the files), the file is
+        only looked for and the cloudtype is the <type> of its <type>-<account> name; a name not of that form gives
+        a note rather than a type.
+        """
+        if read_credentials:
+            data, e = try_load_cloud_account(acct_name, config=config)
+            return (data or {}).get("CLOUDTYPE") or "", e, ""
+        if cloud_account_path(acct_name, config) is None:
+            if any(os.path.isdir(d) and not os.access(d, os.X_OK) for d in credentials_dirs(config)):
+                return None, None, ("cloud_account '{}': the credential files are not visible to this user; log in "
+                                    "to validate it with its credentials".format(acct_name))
+            return None, cloud_account_not_found(acct_name, config), ""
+        prefix = acct_name.split("-", 1)[0]
+        if prefix in CLOUD_BACKEND_NAMES:
+            return prefix, None, ""
+        return None, None, ("cloud_account '{}': its type cannot be told from its name (<type>-<account>) and its "
+                            "file is not read here; log in to validate it with its credentials".format(acct_name))
+
     def _account_cloudtype_for(node):
         """The cloudtype a node's cloud_account resolves to, or None. Errors are
         reported once, in the per-node loop below — this only returns the type."""
@@ -380,9 +451,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         acct_name = _jq_or((nodes.get(node) or {}).get("cloud_account")) or _jq_or(common.get("cloud_account"))
         ct = None
         if not _empty(acct_name):
-            data, _e = try_load_cloud_account(acct_name, config=config)
-            if data:
-                ct = data.get("CLOUDTYPE") or None
+            ct = _account_type(acct_name)[0] or None
         node_account_cloudtype[node] = ct
         return ct
 
@@ -421,11 +490,12 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         cloud_account = _jq_or(node_cfg.get("cloud_account")) or _jq_or(common.get("cloud_account"))
         account_cloudtype = None
         if not _empty(cloud_account):
-            acct_data, acct_err = try_load_cloud_account(cloud_account, config=config)
+            account_cloudtype, acct_err, acct_note = _account_type(cloud_account)
             if acct_err:
                 err("nodes.{}: {}".format(node, acct_err))
+            elif acct_note:
+                warn("nodes.{}: {}".format(node, acct_note))
             else:
-                account_cloudtype = acct_data.get("CLOUDTYPE") or ""
                 if account_cloudtype not in CLOUD_BACKEND_NAMES:
                     err("nodes.{}: cloud_account '{}' has cloudtype '{}' — must be one of: {}".format(
                         node, cloud_account, account_cloudtype, ", ".join(sorted(CLOUD_BACKEND_NAMES))))
@@ -652,7 +722,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         exe = addon_installer(addon)
         if not exe:
             continue
-        result = subprocess.run([exe, "--validate", str(definition.source_path)], capture_output=True, text=True)
+        result = subprocess.run([exe, "--validate", str(definition.source_path)], **_CAPTURE_TEXT)
         if result.returncode != 0:
             combined = (result.stdout or "") + (result.stderr or "")
             # [WARNING] lines are version-matrix warnings, reported by section 4 with their placement.
@@ -686,7 +756,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                 ssh_test = subprocess.run(
                     ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
                      "-o", "ConnectTimeout=5", "-q", "root@{}".format(host), "echo ok"],
-                    capture_output=True, text=True,
+                    **_CAPTURE_TEXT,
                 )
                 ok = (ssh_test.stdout or "").strip() == "ok"
                 if not ok:
@@ -713,7 +783,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                     ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-q",
                      "root@{}".format(host),
                      "ls '{}/'*.qcow2 2>/dev/null | xargs -n1 basename".format(iso_loc)],
-                    capture_output=True, text=True,
+                    **_CAPTURE_TEXT,
                 )
                 avail = "  ".join((avail_proc.stdout or "").splitlines()[:10])
                 suffix = " — available: {}".format(avail) if avail else ""
@@ -765,7 +835,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                 ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
                  "-o", "ConnectTimeout=5", "-q", "root@{}".format(host),
                  "qemu-img info --output=json '{}/{}'".format(iso_loc, img)],
-                capture_output=True, text=True,
+                **_CAPTURE_TEXT,
             )
             if info.returncode != 0:
                 return  # can't introspect it (no qemu-img, odd format) — best-effort only
@@ -894,7 +964,9 @@ def _generate_unused_mac(used_macs, vm_name=""):
 # default, around two minutes, and a step that touches several hosts in a loop, such as writing a DNS record
 # to every master, stalls for that long per host per record. It bounds reaching the host, not the command,
 # so a long-running remote command is unaffected. Same value as the preflight's own probes.
-_SSH_BASE = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-q"]
+# LogLevel=ERROR rather than -q: it hides host-key notices and login banners but keeps ssh's own errors
+# ("Could not resolve hostname", "Permission denied"), which -q would also hide. Debug drops it (_ssh_opts()).
+_SSH_BASE = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR"]
 
 
 def node_commands(definition: dict, vm_name: str, phase: str) -> list:
@@ -959,7 +1031,7 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="roo
     Returns:
         subprocess.CompletedProcess
     """
-    args = _SSH_BASE + ["{}@{}".format(user, hostname), cmd]
+    args = _ssh_opts(_SSH_BASE) + ["{}@{}".format(user, hostname), cmd]
 
     # Quiet-by-default: when the caller isn't explicitly capturing and debug is
     # off, capture the output internally and only print it if the command fails
@@ -978,11 +1050,13 @@ def ssh_run(hostname, cmd, check=True, input_text=None, capture=False, user="roo
         if out and (result.returncode != 0 or _looks_noisy(out)):
             print(out)
     if check and result.returncode != 0:
-        raise RuntimeError(
-            "SSH command failed (rc={}) on {}:\n  {}".format(
-                result.returncode, hostname, cmd[:120]
-            )
-        )
+        msg = "SSH command failed (rc={}) on {}:\n  {}".format(result.returncode, hostname, cmd)
+        if result.returncode == SSH_NO_CONNECTION:
+            msg += "\n  rc=255: ssh could not connect (name resolution, network, authentication or host key), " \
+                   "or the remote command itself exited 255"
+            if capture and (result.stderr or "").strip():
+                msg += "\n  ssh: {}".format(result.stderr.strip())
+        raise RuntimeError(msg)
     return result
 
 
@@ -1007,7 +1081,7 @@ def detect_os(hostname):
     os_ver_id = parts[1] if len(parts) > 1 else ""
     os_like = parts[2] if len(parts) > 2 else ""
     os_ver_major = os_ver_id.split(".")[0] if os_ver_id else ""
-    print("# Detected remote OS: id={} version={} like={}".format(os_id, os_ver_id, os_like))
+    print("# Detected remote OS on {}: id={} version={} like={}".format(hostname, os_id, os_ver_id, os_like))
     return {"id": os_id, "ver_id": os_ver_id, "like": os_like, "ver_major": os_ver_major}
 
 
@@ -1114,9 +1188,10 @@ def scp_to(hostname, local_path, remote_path, user="root"):
     returncode (no `check` param here — every current caller wants to
     handle a transfer failure with its own message, not a generic one).
     """
-    args = ["scp", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5", "-q",
-            local_path, "{}@{}:{}".format(user, hostname, remote_path)]
-    return subprocess.run(args, capture_output=True, text=True)
+    args = _ssh_opts(["scp", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=5",
+                      "-o", "LogLevel=ERROR"]) + [
+        local_path, "{}@{}:{}".format(user, hostname, remote_path)]
+    return subprocess.run(args, **_CAPTURE_TEXT)
 
 
 def purge_known_host(*names):
@@ -1480,7 +1555,9 @@ def load_vm_vars(definition, vm_name, config=None):
     Load variables for a specific VM (mirrors load_vm_vars in bash).
 
     Merges 'common' keys with per-node keys, resolves kcluster → clu_name,
-    and auto-detects mydns, mygw, mydomain, mynet_reverse when absent.
+    and auto-detects mydns, mygw, mydomain, mynet_reverse when absent. An absent mydomain is the domain
+    the node names share (primary.node_name_domain()), else this host's own; names that do not share one
+    are fatal.
 
     Args:
         definition : Loaded lab definition dict.
@@ -1505,7 +1582,11 @@ def load_vm_vars(definition, vm_name, config=None):
     if not vars.get("mygw"):
         vars["mygw"] = _detect_gateway()
     if not vars.get("mydomain"):
-        vars["mydomain"] = _detect_domain()
+        from primary import node_name_domain
+        try:
+            vars["mydomain"] = node_name_domain(definition) or _detect_domain()
+        except ValueError as e:
+            die(str(e))
     if not vars.get("mynet_reverse") and vars.get("myip"):
         vars["mynet_reverse"] = _reverse_ip(vars["myip"])
     if not vars.get("mymask"):
@@ -1918,6 +1999,21 @@ def ssh_reachable(hostname, attempts=3, delay=2, user="root", probe=None):
         if attempt + 1 < max(1, attempts):
             time.sleep(delay)
     return False
+
+
+def require_ssh(hostname, user="root"):
+    """die() unless `hostname` answers SSH as `user` (ssh_reachable()'s retries), quoting ssh's own error."""
+    last = []
+
+    def probe(host):
+        result = ssh_run(host, "true", check=False, capture=True, user=user)
+        last[:] = [result]
+        return result
+
+    if ssh_reachable(hostname, user=user, probe=probe):
+        return
+    reason = ((last[0].stderr or last[0].stdout or "").strip() if last else "")
+    die("cannot reach '{}' over SSH as {}{}".format(hostname, user, ": " + reason if reason else ""))
 
 
 def clean_ssh_keys(vm_name, myip):

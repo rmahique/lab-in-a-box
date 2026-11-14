@@ -57,8 +57,15 @@ def parse_version(version: str) -> tuple:
 
 
 def _fields(field_list: list, prefix: str = "") -> dict:
-    """Field name -> the FIELD_KEYS properties it sets, for schema field objects `field_list`."""
-    return {prefix + f["name"]: {k: f[k] for k in FIELD_KEYS if k in f} for f in field_list}
+    """
+    Field name -> the FIELD_KEYS properties it sets, for schema field objects `field_list`. The item fields of an
+    array of mappings ("item_fields") are fields of their own, named "<field>[].<item field>".
+    """
+    out = {}
+    for f in field_list:
+        out[prefix + f["name"]] = {k: f[k] for k in FIELD_KEYS if k in f}
+        out.update(_fields(f.get("item_fields") or [], prefix + f["name"] + "[]."))
+    return out
 
 
 def schema_snapshot(name: str, schema: dict) -> dict:
@@ -181,15 +188,23 @@ def breaking_changes(old: dict, new: dict) -> list:
         dropped = [v for v in _enum_values(props) if now.get("enum") and v not in _enum_values(now)]
         if dropped:
             out.append("{} no longer accepts {}".format(field, ", ".join(dropped)))
-    out += ["{} added as required".format(f) for f, p in sorted(after.items()) if f not in before and p.get("required")]
+    out += ["{} added as required".format(f) for f, p in sorted(after.items())
+            if f not in before and p.get("required") and _parent(f) in before]
     return out
+
+
+def _parent(field: str) -> str:
+    """The field an item field "<field>[].<item field>" belongs to; `field` itself when it is not an item field. A
+    required item field of an array that is itself new breaks nothing: no existing definition has that array."""
+    return field.rsplit("[].", 1)[0] if "[]." in field else field
 
 
 def other_changes(old: dict, new: dict) -> list:
     """Changes from snapshot `old` to snapshot `new` that breaking_changes() does not report."""
     out = []
     before, after = old.get("fields", {}), new.get("fields", {})
-    out += ["{} added".format(f) for f, p in sorted(after.items()) if f not in before and not p.get("required")]
+    out += ["{} added".format(f) for f, p in sorted(after.items())
+            if f not in before and (not p.get("required") or _parent(f) not in before)]
     for field, props in sorted(before.items()):
         now = after.get(field)
         if now is None:

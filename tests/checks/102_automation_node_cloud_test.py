@@ -203,6 +203,70 @@ check("and nothing is waited for by name any more",
       "check_ssh_conn(vm_name)" not in setup_vm_src
       and setup_vm_src.count("check_ssh_conn(ssh_target)") == 2)
 
+# ── an instance that already exists is configured, not created again ──────
+class _FakeBackend:
+    def __init__(self, exists):
+        self.exists = exists
+
+    def vm_exists(self, _name):
+        return self.exists
+
+    def get_ip(self, _name):
+        return "198.51.100.7"
+
+    def get_private_ip(self, _name):
+        return "10.0.1.50"
+
+
+def _run_main(exists):
+    calls = {"provision": 0, "configure": []}
+    san.primary.load_defaults = lambda: {}
+    san.primary.load_config = lambda: {}
+    san.primary.load_definition = lambda _f: {"nodes": {"auto.mydemoaws.lab": {}}}
+    san.primary.wants_help = lambda _a: False
+    san.migrations.ensure_current = lambda _d, f: f
+    san.backends.effective_backend_name = lambda *_a: "aws"
+    san.backends.get_backend = lambda *_a, **_k: _FakeBackend(exists)
+    san.load_vm_vars = lambda *_a: {"mydomain": "mydemoaws.lab"}
+    san.provision_vm = lambda *_a, **_k: calls.__setitem__("provision", calls["provision"] + 1) or []
+    san.stage_inputs = lambda *_a: None
+    san.configure_node = lambda host, _stage: calls["configure"].append(host)
+    sys.argv = ["setup_automation_node.py", "lab.json", "auto.mydemoaws.lab"]
+    san.main()
+    return calls
+
+
+_calls = _run_main(exists=True)
+check("an instance that already exists is not provisioned again", _calls["provision"] == 0)
+check("...and is configured at its address", _calls["configure"] == ["198.51.100.7"])
+_calls = _run_main(exists=False)
+check("a node without an instance is provisioned, then configured",
+      _calls["provision"] == 1 and _calls["configure"] == ["198.51.100.7"])
+
+# ── the staged tree carries .lab-versions ─────────────────────────────────
+_git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "safe.directory=*"]
+_src = Path(tempfile.mkdtemp())
+subprocess.run(_git + ["init", "-q", str(_src)], check=True)
+(_src / "scripts").mkdir()
+(_src / "scripts" / "a.py").write_text("a\n")
+(_src / "b.txt").write_text("b\n")
+subprocess.run(_git + ["-C", str(_src), "add", "."], check=True)
+subprocess.run(_git + ["-C", str(_src), "commit", "-qm", "one"], check=True)
+_first = subprocess.run(_git + ["-C", str(_src), "rev-parse", "--short", "HEAD"], stdout=subprocess.PIPE,
+                        universal_newlines=True, check=True).stdout.strip()
+(_src / "b.txt").write_text("b2\n")
+subprocess.run(_git + ["-C", str(_src), "commit", "-qam", "two"], check=True)
+_second = subprocess.run(_git + ["-C", str(_src), "rev-parse", "--short", "HEAD"], stdout=subprocess.PIPE,
+                         universal_newlines=True, check=True).stdout.strip()
+san2 = _module()
+san2.repo_root = lambda: _src
+_stage = Path(tempfile.mkdtemp())
+san2.stage_inputs(_stage, settings)
+_versions = (_stage / san2.NODE_DIR.lstrip("/") / "lab-in-a-box" / ".lab-versions").read_text().splitlines()
+check("the staged tree's .lab-versions has every file and directory at its own last commit",
+      sorted(_versions) == sorted(["{} b.txt".format(_second), "{} scripts".format(_first),
+                                   "{} scripts/a.py".format(_first)]))
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)

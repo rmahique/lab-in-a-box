@@ -33,6 +33,15 @@ Usage: lab-builder-helper <command> [argument]
                               environment (LAB_CREDENTIALS_PASSPHRASE) so a lab
                               with encrypted credentials can be created
                               without a terminal; it is never logged or stored
+  lab-validate                run setup_lab.py's preflight as root on a lab
+                              definition, its cloud accounts read and
+                              decrypted; stdin: {"config": {...lab...},
+                              "passphrase": "..." or absent}. Answers
+                              {"ok", "output"}, or {"need_passphrase": true}
+                              when an account is encrypted and no passphrase
+                              was given, or {"wrong_passphrase": true} after
+                              a WRONG_PASSPHRASE_DELAY-second wait when the
+                              passphrase does not decrypt it
   lab-status JOB              a job's state, exit code and the end of its log
   lab-jobs                    every job, newest first
   pub-status JOB              a job's state and log for whoever holds its own
@@ -52,7 +61,9 @@ CREDENTIALS_PATH in /etc/lab_creation.cfg (credential files).
 
 __version__ = "__LABVERSION__"
 
+import contextlib
 import hmac
+import io
 import json
 import os
 import re
@@ -60,6 +71,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -81,6 +93,9 @@ SETUP_LAB = os.environ.get("LABBUILDER_SETUP_LAB", "/usr/local/bin/setup_lab.py"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CREDENTIAL_EXTS = (".yaml", ".yml", ".json", ".cfg")
 LOG_TAIL_LINES = 400
+# Seconds lab-validate waits before answering that a passphrase is wrong, so passphrases cannot be tried quickly.
+WRONG_PASSPHRASE_DELAY = 3
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class Refused(Exception):
@@ -315,6 +330,86 @@ def lab_create(name: str, keep: bool, passphrase: str = "") -> dict:
     return {"job": job, "status_url": url, "qr_svg": qr_util.render_svg(url)}
 
 
+class _NeedPassphrase(Exception):
+    """An encrypted cloud account and no passphrase to decrypt it with."""
+
+
+class _WrongPassphrase(Exception):
+    """The passphrase given does not decrypt a cloud account."""
+
+
+def cloud_accounts(lab: dict) -> list:
+    """Every cloud_account lab definition `lab` names, in common or on a node, each once."""
+    names = [(lab.get("common") or {}).get("cloud_account")]
+    names += [(cfg or {}).get("cloud_account") for cfg in (lab.get("nodes") or {}).values()]
+    return list(dict.fromkeys(str(n) for n in names if n))
+
+
+def unlock_account(name: str, config: dict, passphrase: str) -> None:
+    """
+    Load cloud account `name`, decrypting it with `passphrase` when it is encrypted, so the preflight that follows
+    finds it decrypted (primary caches a passphrase that worked). Raises _NeedPassphrase or _WrongPassphrase; any
+    other problem with the account is left to the preflight to report.
+    """
+    tried = []
+
+    def given(_label):
+        if tried:
+            raise _WrongPassphrase()
+        if not passphrase:
+            raise _NeedPassphrase()
+        tried.append(True)
+        return passphrase
+
+    primary.try_load_cloud_account(name, config=config, passphrase_prompt=given)
+
+
+def lab_validate(req: dict) -> dict:
+    """
+    setup_lab.py's preflight on the lab definition in req["config"], as root: host checks on and its cloud accounts
+    read, decrypted with req["passphrase"] when encrypted. The passphrase is used for this request only.
+    """
+    lab = req.get("config")
+    if not isinstance(lab, dict):
+        raise Refused("config must be a lab definition object")
+    passphrase = str(req.get("passphrase") or "")
+    os.environ.pop(crypto_store.PASSPHRASE_ENV, None)
+    config = primary.load_config() if Path("/etc/lab_creation.cfg").exists() else {}
+    try:
+        # The decrypt loop prints its own retry messages; stdout carries only this helper's JSON answer.
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name in cloud_accounts(lab):
+                unlock_account(name, config, passphrase)
+    except _NeedPassphrase:
+        return {"ok": False, "need_passphrase": True,
+                "output": "This lab's cloud credentials are encrypted: their passphrase is needed to validate them."}
+    except _WrongPassphrase:
+        time.sleep(WRONG_PASSPHRASE_DELAY)
+        return {"ok": False, "wrong_passphrase": True,
+                "output": "The passphrase does not decrypt this lab's cloud credentials."}
+
+    import lab_creation as lc
+
+    defaults = primary.load_defaults() if Path("/etc/lab_creation.defaults").exists() else {}
+    buf = io.StringIO()
+    fd, path = tempfile.mkstemp(prefix="lab-validate-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(lab, fh)
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                ok = lc.validate_lab_definition(
+                    primary.load_definition(path), config,
+                    defaults.get("ISO_LOC", "/var/lib/libvirt/images/sources"),
+                    defaults.get("LAB_SETUP_PATH", "/srv/www/htdocs/lab_creation"),
+                    vm_img_loc=defaults.get("VM_IMG_LOC", "/var/lib/libvirt/images/").rstrip("/"))
+            except SystemExit:
+                ok = False
+    finally:
+        os.unlink(path)
+    return {"ok": bool(ok), "output": _ANSI.sub("", buf.getvalue()).strip()}
+
+
 def lab_status(job: str) -> dict:
     """Job `job`'s state and the last LOG_TAIL_LINES lines of its log."""
     d = job_dir(job)
@@ -361,6 +456,8 @@ def run(args: list) -> dict:
         return credentials_delete(rest[0])
     if cmd == "lab-create" and rest and rest[1:] in ([], ["--keep"]):
         return lab_create(rest[0], rest[1:] == ["--keep"], read_stdin().get("passphrase", ""))
+    if cmd == "lab-validate" and not rest:
+        return lab_validate(read_stdin())
     if cmd == "lab-status" and len(rest) == 1:
         return lab_status(rest[0])
     if cmd == "lab-jobs" and not rest:
@@ -368,7 +465,7 @@ def run(args: list) -> dict:
     if cmd == "pub-status" and len(rest) == 1:
         return pub_status(rest[0], read_stdin().get("token", ""))
     raise Refused("usage: lab-builder-helper {credentials-list|credentials-add|credentials-encrypt FILE|"
-                  "credentials-delete FILE|lab-create FILE [--keep]|lab-status JOB|lab-jobs|"
+                  "credentials-delete FILE|lab-create FILE [--keep]|lab-validate|lab-status JOB|lab-jobs|"
                   "pub-status JOB}")
 
 

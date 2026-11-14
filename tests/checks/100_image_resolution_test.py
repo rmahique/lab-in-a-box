@@ -208,22 +208,29 @@ b = _backend()
 suse_catalogue.active_images = lambda provider, region="": IMAGES
 
 RESOLVES = {
-    ("sles16", "t3.medium"): "ami-sles16",
-    ("sles16", "t4g.nano"): "ami-sles16-arm",
-    ("sles15.7", "t3.medium"): "ami-sles15sp7",
-    ("sles", "t3.medium"): "ami-sles16",
-    ("slmicro6.1", "t3.medium"): "ami-micro61",
-    ("slmicro6.1", "t4g.nano"): "ami-micro61-arm",
-    ("micro", "t3.medium"): "ami-micro61",
+    # BYOS is the default (2026-11-12) wherever SUSE publishes one for that product/arch — no
+    # AWS Marketplace per-hour subscription charge on top of the instance price.
+    ("sles16", "t3.medium"): "ami-sles16-byos",
+    ("sles", "t3.medium"): "ami-sles16-byos",
+    ("slmicro6.1", "t3.medium"): "ami-micro61-byos",
+    ("micro", "t3.medium"): "ami-micro61-byos",
+    ("sles16-byos", "t3.medium"): "ami-sles16-byos",
+    ("sles-byos", "t3.medium"): "ami-sles16-byos",
+    ("slmicro6.1-byos", "t3.medium"): "ami-micro61-byos",
+    ("micro-byos", "t3.medium"): "ami-micro61-byos",
+    # "-payg" opts back into the pay-as-you-go image — auto-registered, no regcode needed.
+    ("sles16-payg", "t3.medium"): "ami-sles16",
+    ("sles16-payg", "t4g.nano"): "ami-sles16-arm",
+    ("sles15.7-payg", "t3.medium"): "ami-sles15sp7",
+    ("slmicro6.1-payg", "t3.medium"): "ami-micro61",
+    ("slmicro6.1-payg", "t4g.nano"): "ami-micro61-arm",
+    ("micro-payg", "t3.medium"): "ami-micro61",
+    # No licensing choice at all for these; unaffected by the default change.
     ("ubuntu24.04", "t3.medium"): "ami-from-ssm",
     ("rhel10", "t3.medium"): "ami-newest",
     ("leap", "t3.medium"): "ami-leap16",
     ("opensuse", "t3.medium"): "ami-leap16",
     ("leap16.0", "t3.medium"): "ami-leap16",
-    ("sles16-byos", "t3.medium"): "ami-sles16-byos",
-    ("sles-byos", "t3.medium"): "ami-sles16-byos",
-    ("slmicro6.1-byos", "t3.medium"): "ami-micro61-byos",
-    ("micro-byos", "t3.medium"): "ami-micro61-byos",
 }
 for (name, instance_type), expected in RESOLVES.items():
     check("resolve_image_name('{}', {}) is {}".format(name, instance_type, expected),
@@ -234,20 +241,25 @@ for literal in ("ami-0123456789abcdef0", "SL-Micro.x86_64-6.1-Default-qcow-GM.qc
     check("resolve_image_name() returns '{}' unchanged".format(literal),
           b.resolve_image_name(literal, instance_type="t3.medium") == literal)
 
-for name in ("leap16-byos", "opensuse-byos"):
+for name in ("leap16-byos", "opensuse-byos", "leap16-payg", "opensuse-payg"):
     try:
         b.resolve_image_name(name, instance_type="t3.medium")
-        check("resolve_image_name('{}') refuses: Leap has no BYOS image".format(name), False)
+        check("resolve_image_name('{}') refuses: Leap has only one image".format(name), False)
     except SystemExit:
-        check("resolve_image_name('{}') refuses: Leap has no BYOS image".format(name), True)
-try:
-    b.resolve_image_name("sles16-byos", instance_type="t4g.nano")
-    check("resolve_image_name('sles16-byos') on arm64 with no BYOS arm64 image dies rather than "
-          "picking a pay-as-you-go one", False)
-except SystemExit:
-    check("resolve_image_name('sles16-byos') on arm64 with no BYOS arm64 image dies rather than "
-          "picking a pay-as-you-go one", True)
-for name in ("sles16-byos", "sles15.7-byos", "slmicro6.1-byos"):
+        check("resolve_image_name('{}') refuses: Leap has only one image".format(name), True)
+for name, instance_type, why in (
+    ("sles16", "t4g.nano", "no BYOS arm64 image is published"),
+    ("sles16-byos", "t4g.nano", "no BYOS arm64 image is published"),
+    ("sles15.7", "t3.medium", "no BYOS image at all is published for 15.7 in this catalogue"),
+):
+    try:
+        b.resolve_image_name(name, instance_type=instance_type)
+        check("resolve_image_name('{}', {}) dies by default rather than silently falling back to "
+              "pay-as-you-go: {}".format(name, instance_type, why), False)
+    except SystemExit:
+        check("resolve_image_name('{}', {}) dies by default rather than silently falling back to "
+              "pay-as-you-go: {}".format(name, instance_type, why), True)
+for name in ("sles16-byos", "sles16-payg", "sles15.7-byos", "slmicro6.1-byos"):
     check("cloud_images lists '{}' so preflight treats it as a product name, not a file".format(name),
           name in cloud_images.product_names())
 

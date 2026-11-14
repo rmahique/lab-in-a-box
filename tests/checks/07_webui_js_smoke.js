@@ -66,6 +66,54 @@ check("pattern mismatch rejected",
 check("pattern match accepted",
   sandbox.validateFieldValue({ type: "string", pattern: "^\\d+\\.\\d+\\.\\d+\\.\\d+$" }, "10.0.0.1") === null);
 
+// -- list-of-items widget (item_fields): rows <-> items --------------------
+{
+  const field = { name: "ssh_authorized_keys", type: "array", item_shorthand: "key",
+    item_fields: [{ name: "key", required: true }, { name: "user" }] };
+  const rows = sandbox.itemsToRows(["ssh-ed25519 AAAA a@b", { key: "https://github.com/bob.keys", user: "bob" }], field);
+  check("items: a plain string becomes a row with only the shorthand field",
+    rows[0].key === "ssh-ed25519 AAAA a@b" && rows[0].user === undefined);
+  check("items: a mapping keeps its fields", rows[1].key === "https://github.com/bob.keys" && rows[1].user === "bob");
+  const items = sandbox.rowsToItems([{ key: " ssh-ed25519 AAAA a@b ", user: "" },
+    { key: "/root/team.pub", user: "alice" }, { key: "", user: "carol" }], field);
+  check("items: a row with only the key is written as the plain string", items[0] === "ssh-ed25519 AAAA a@b");
+  check("items: a row with a user is written as a mapping",
+    items[1].key === "/root/team.pub" && items[1].user === "alice");
+  check("items: a row missing its required key is dropped", items.length === 2);
+  check("items: no rows is no value", sandbox.rowsToItems([], field) === undefined);
+  check("readWidget: an items widget reads its rows back as items",
+    JSON.stringify(sandbox.readWidget({ value: JSON.stringify([{ key: "/k.pub", user: "" }]),
+      dataset: { ftype: "items" }, _field: field })) === JSON.stringify(["/k.pub"]));
+}
+
+// -- Validate with credentials: passphrase asked again when wrong, 3 wrong ends it --
+const credentialChecks = (async () => {
+  const lab = { common: {}, nodes: { a: { cloud_account: "aws-main" } } };
+  check("usesCloudAccount: a node's cloud_account counts", sandbox.usesCloudAccount(lab) === true);
+  check("usesCloudAccount: no cloud_account anywhere", sandbox.usesCloudAccount({ common: {}, nodes: { a: {} } }) === false);
+
+  const answers = (list) => { const calls = []; return { calls, call: async (p) => { calls.push(p); return list.shift(); } }; };
+  let s = answers([{ need_passphrase: true }, { wrong_passphrase: true }, { ok: true, output: "fine" }]);
+  const asked = [];
+  let r = await sandbox.validateWithCredentials(s.call, async (failed) => { asked.push(failed); return "pw" + failed; });
+  check("credentials: asked when needed, again after a wrong one, then the answer",
+    r.ok === true && JSON.stringify(s.calls) === JSON.stringify(["", "pw0", "pw1"]) && JSON.stringify(asked) === "[0,1]");
+
+  s = answers([{ need_passphrase: true }, { wrong_passphrase: true }, { wrong_passphrase: true }, { wrong_passphrase: true },
+    { ok: true }]);
+  r = await sandbox.validateWithCredentials(s.call, async () => "bad");
+  check("credentials: three wrong passphrases end it with a failure",
+    r.ok === false && /wrong 3 times/.test(r.output) && s.calls.length === 4);
+
+  s = answers([{ need_passphrase: true }]);
+  r = await sandbox.validateWithCredentials(s.call, async () => null);
+  check("credentials: cancelling the dialog ends it", r.ok === false && /cancelled/.test(r.output));
+
+  s = answers([{ ok: true, output: "no secrets" }]);
+  r = await sandbox.validateWithCredentials(s.call, async () => { throw new Error("must not ask"); });
+  check("credentials: plain credentials are validated without asking", r.ok === true && s.calls.length === 1);
+})();
+
 // -- applyFieldDefault: plain input placeholder --------------------------
 {
   const field = { name: "VM_MEM", type: "integer", default: 24576 };
@@ -640,7 +688,7 @@ async function urlParamChecks() {
   });
 }
 
-urlParamChecks().then(() => {
+Promise.all([urlParamChecks(), credentialChecks]).then(() => {
   if (failures) {
     console.error(failures + " check(s) failed");
     process.exit(1);

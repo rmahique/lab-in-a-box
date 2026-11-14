@@ -210,6 +210,25 @@
     </div>
   </dialog>
 
+  <!-- Validate with credentials: the passphrase of a lab's encrypted cloud credentials, asked at most 3 times -->
+  <dialog id="passDialog" class="editor small-dialog" aria-labelledby="passTitle">
+    <div class="editor-head"><h3 id="passTitle">Credential passphrase</h3></div>
+    <div class="dialog-body">
+      <p class="form-desc">This lab's cloud credentials are encrypted. Their passphrase is used for this validation
+        only: it is never saved, logged or shown again.</p>
+      <div class="cred-grid">
+        <label class="field"><span class="f-name">Passphrase</span>
+          <input type="password" id="passInput" autocomplete="off"></label>
+      </div>
+    </div>
+    <p id="passMsg" class="issue err dialog-msg" role="alert" hidden></p>
+    <div class="editor-foot">
+      <span class="spacer"></span>
+      <button type="button" id="passCancel" class="btn">Cancel</button>
+      <button type="button" id="passOk" class="btn primary">Validate</button>
+    </div>
+  </dialog>
+
   <footer class="foot">lab&#8209;in&#8209;a&#8209;box · lab-builder · <code>__LABVERSION__</code></footer>
 
   <div id="toast" class="toast" hidden></div>
