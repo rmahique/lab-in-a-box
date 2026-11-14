@@ -204,6 +204,14 @@ def load_config(paths=None):
     return _load_shell_vars_file(paths or _DEFAULT_CFG_PATHS, "lab_creation.cfg")
 
 
+def config_file_exists(paths=None):
+    """
+    True when a lab_creation.cfg exists in `paths` (the default search path when None). Lets a caller for whom the
+    file is optional skip load_config() rather than take its SystemExit.
+    """
+    return any(Path(p).is_file() for p in (paths or _DEFAULT_CFG_PATHS))
+
+
 def load_defaults(paths=None):
     """
     Load lab_creation.defaults (system-wide defaults: _lib_path, VM_IMG_LOC, delay_min, …).

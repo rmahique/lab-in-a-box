@@ -310,7 +310,8 @@ _PREFLIGHT_OWN_FIELDS = ("backend", "cloud_account", "config_method", "install_t
 
 
 def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_node=None,
-                            vm_img_loc=None, issues_out=None, host_checks=True, read_credentials=True):
+                            vm_img_loc=None, issues_out=None, host_checks=True, read_credentials=True,
+                            warn_unused_fields=True):
     """
     Preflight-validate an already loaded lab definition. Prints a full report of errors and warnings, and returns True when
     there are no errors. Warnings never block.
@@ -332,6 +333,9 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         read_credentials : when False, cloud accounts are never read or decrypted: an account is only looked for, and its
                          type is taken from its <type>-<account> file name. For a caller that may not read the credential
                          files and cannot ask for a passphrase (the lab-builder's public Validate).
+        warn_unused_fields : when False, advice about fields the lab sets and this run does not read is left out. For a
+                         caller running a definition the operator did not write (setup_lab.py --example), where the
+                         advice names fields they cannot act on.
 
     The function validates the definition's contents and does not re-read the file. Empty collections are skipped, so an empty
     nodes object is not reported as an error.
@@ -478,6 +482,8 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
                 node_hosts[node] = (None, None)
         return node_hosts[node]
 
+    cloud_nodes, managed_network_nodes = [], []
+
     for node in nodes_to_check:
         node_cfg = nodes.get(node) or {}
         myip = _jq_or(node_cfg.get("myip"))
@@ -509,6 +515,7 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         node_backend_eff = (account_cloudtype or _jq_or(node_cfg.get("backend")) or common_backend
                             or _jq_or(config.get("BACKEND")) or "libvirt")
         is_cloud_node = node_backend_eff in CLOUD_BACKEND_NAMES
+        (cloud_nodes if is_cloud_node else managed_network_nodes).append(node)
 
         if _empty(myip) and not is_cloud_node:
             # A lab may leave myip out and let the run allocate one from the network it already describes
@@ -675,6 +682,16 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
             members = [n for n, c in nodes.items() if (c or {}).get("kcluster") == clu]
             for w in _addon_version_issues(definition, addon_entry, members, ctype, crel):
                 warn("kclusters.{}: addon '{}' {}".format(clu, addon, w))
+
+    # common.mygw/mymask/mydns describe a network this toolkit addresses nodes on itself. A cloud provider assigns
+    # the addresses instead, and the lab's own zone is served by the cloud DNS VM of each site, so no node of an
+    # all-cloud lab reads them. Said only when the lab sets one and no node still on libvirt or Harvester uses them.
+    if warn_unused_fields and cloud_nodes and not managed_network_nodes:
+        unused = [f for f in ("mygw", "mymask", "mydns") if not _empty(_jq_or(common.get(f)))]
+        if unused:
+            warn("common: {} not read by this lab — every node is on a cloud backend, where the provider assigns "
+                 "the addresses and each site's cloud DNS VM serves the zone. 'mydomain' is used.".format(
+                     ", ".join("'{}'".format(f) for f in unused)))
 
     # Harvester clusters: AWS nodes from an AMI, with nested virtualization; see libs/harvester.py.
     import harvester

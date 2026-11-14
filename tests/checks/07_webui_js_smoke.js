@@ -633,8 +633,9 @@ async function urlParamChecks() {
         !/catch \(e\) \{\s*toast\(/.test(src) && !/=> toast\(/.test(src));
   check("every message raised from a failure is an error",
         (src.match(/toastError\(/g) || []).length > 15);
-  check("the create dialog looks for a job already running for this lab",
-        /job\.lab === name \+ "\.json" && job\.state === "running"/.test(src));
+  check("the create dialog looks for a job already running for this lab, saved or example",
+        /const labId = example \|\| name \+ "\.json"/.test(src)
+        && /job\.lab === labId && job\.state === "running"/.test(src));
   check("...and watches it instead of offering Create again", /watchJob\(running\.job/.test(src));
   check("a failed start is shown in the dialog too, where the reader is looking",
         /createMsg/.test(src) && /The lab was not started/.test(src));
