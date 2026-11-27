@@ -300,7 +300,8 @@
   "addon:openai": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
    {"version": "2.0", "breaking": true, "changes": "The LiteLLM proxy installs from the OCI chart openai_chart (default oci://ghcr.io/berriai/litellm-helm); openai_rel and openai_repo_url removed. No database; clients use the master key in the openai-proxy-master-key secret; the API key is kept in a secret; the ingress uses the chart's ingress.hosts.", "migration": "openai_2_0"},
-   {"version": "2.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
+   {"version": "2.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
+   {"version": "2.2", "breaking": false, "changes": "podman mode: openai_deployment, and openai_image, openai_image_tag and openai_port for the LiteLLM container a node runs when it lists openai in its own addons[]"}
   ],
   "addon:openldap": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}

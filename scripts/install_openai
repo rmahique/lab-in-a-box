@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 2.1
+# Schema version: 2.2
 #
-# JSON section: "openai" — OpenAI API proxy (LiteLLM)
+# JSON section: "openai" — OpenAI API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   openai_api_key   : [MANDATORY] OpenAI API key (from https://platform.openai.com)
 #   openai_model     : [OPTIONAL] default model (default: openai/gpt-5)
 #                       Examples: openai/gpt-5-mini, openai/gpt-5-nano, openai/o5
@@ -13,6 +13,16 @@
 #   openai_chart     : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   openai_ns        : [OPTIONAL] namespace (default: openai)
 #   openai_shorthn   : [OPTIONAL] hostname prefix (default: openai)
+#   openai_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                       when a kcluster lists "openai" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
+#   openai_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   openai_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   openai_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4001)
+#
+# In podman mode the proxy answers at http://<node>:<openai_port>/v1 on every node that lists "openai" in
+# its own addons[], and its master key is in /etc/litellm/openai/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the "gemini"/"anthropic" addons. Useful as a known-good baseline endpoint to compare
 # against the lab's own local models (ollama/deepseek/apertus/...) — everything speaks the same
@@ -22,8 +32,9 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "openai",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "aux_services": [],
 }
@@ -39,6 +50,7 @@ import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
 import litellm_common  # noqa: E402
+import placement  # noqa: E402
 from lab_creation import setup_helm  # noqa: E402
 
 
@@ -46,6 +58,7 @@ def _validate(v):
     v.vreq("openai", "openai_api_key")
     v.vns("openai")
     v.vver("openai")
+    litellm_common.validate_podman(v, "openai")
 
 
 def setup_openai(hostname: str, clu_name: str, mydomain: str, cfg: dict) -> str:
@@ -66,6 +79,11 @@ def main():
         sys.exit(1)
     lab_file = sys.argv[1]
     definition = primary.load_definition(lab_file)
+    cfg = definition.get("openai", {}) or {}
+    if placement.deployment(definition, "openai", cfg) != placement.KUBERNETES:
+        litellm_common.install_podman_nodes(definition, "openai", "gpt",
+                                            default_model="openai/gpt-5")
+        return
 
     target = k8s.first_server_node(definition)
     if not target:
@@ -74,7 +92,6 @@ def main():
 
     clu_name = k8s.get_vm_kcluster(definition, vm_name)
     clu_cfg = k8s.load_kclu_vars(definition, clu_name) if clu_name else {}
-    cfg = definition.get("openai", {}) or {}
     if not cfg.get("openai_api_key"):
         print("ERROR: openai.openai_api_key is mandatory.", file=sys.stderr)
         sys.exit(1)
