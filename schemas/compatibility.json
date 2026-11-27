@@ -198,7 +198,8 @@
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
    {"version": "1.1", "breaking": false, "changes": "Defaults written as literal values, or left unset where the code computes them: kimi_api_base."},
    {"version": "2.0", "breaking": true, "changes": "The LiteLLM proxy installs from the OCI chart kimi_chart (default oci://ghcr.io/berriai/litellm-helm); kimi_rel and kimi_repo_url removed. No database; clients use the master key in the kimi-proxy-master-key secret; the API key is kept in a secret; the ingress uses the chart's ingress.hosts.", "migration": "kimi_2_0"},
-   {"version": "2.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
+   {"version": "2.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
+   {"version": "2.2", "breaking": false, "changes": "podman mode: kimi_deployment, and kimi_image, kimi_image_tag and kimi_port for the LiteLLM container a node runs when it lists kimi in its own addons[]"}
   ],
   "addon:kubectl_apply": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}
