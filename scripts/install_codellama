@@ -14,6 +14,11 @@
 #   codellama_repo_url: [OPTIONAL] Helm repo URL (default: https://otwld.github.io/ollama-helm/)
 #   codellama_version : [OPTIONAL] Helm chart version (empty = latest)
 #
+# The model goes into the kcluster's one Ollama, the Helm release "ollama" shared with the ollama add-on and
+# the other model add-ons (libs/ollama_common.py), which pulls every model they ask for. Its namespace, chart
+# and hostname are the ollama add-on's when the kcluster lists it, else this section's own codellama_ns,
+# codellama_shorthn, codellama_rel, codellama_repo_url and codellama_version.
+#
 # This script installs Ollama (if not present) and pulls the configured Code Llama model — same
 # shape as the "deepseek"/"apertus"/"qwen"/"mistral" addons. Meta's code-focused Llama 2 derivative,
 # official Ollama-library model (ollama.com/library/codellama), broad language coverage (Python,
@@ -31,7 +36,6 @@ PLUGIN = {
     "aux_services": [],
 }
 
-import shlex
 import sys
 from pathlib import Path
 
@@ -40,43 +44,13 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
         sys.path.insert(0, _candidate)
 
 import addon_common as ac  # noqa: E402
+import ollama_common  # noqa: E402
 import primary  # noqa: E402
-import k8s  # noqa: E402
-from lab_creation import setup_helm, helm_repo_add, ssh_run  # noqa: E402
 
 
 def _validate(v):
     v.vns("codellama")
     v.vver("codellama")
-
-
-def setup_codellama_repo(hostname, codellama_rel=None, codellama_repo_url=None):
-    """Add the Ollama Helm repo."""
-    helm_repo_add(hostname, codellama_rel or "ollama-helm", codellama_repo_url or "https://otwld.github.io/ollama-helm/")
-
-
-def setup_codellama(hostname, clu_name, mydomain, codellama_rel=None, codellama_ns=None,
-                     codellama_version=None, codellama_shorthn=None, codellama_model=None):
-    """Install Ollama (if needed) and pull the configured Code Llama model."""
-    rel = codellama_rel or "ollama-helm"
-    ns = codellama_ns or "ollama"
-    ver_arg = "--version {}".format(shlex.quote(codellama_version)) if codellama_version else ""
-    model = codellama_model or "codellama"
-    fqdn = "{}.{}.{}".format(codellama_shorthn or "ollama", clu_name, mydomain)
-
-    ssh_run(hostname,
-            "helm upgrade -i ollama {}/ollama --namespace {} --create-namespace "
-            "--set ollama.models.pull={{{}}} "
-            "--set ingress.enabled=true "
-            "--set ingress.hosts[0].host={} "
-            "--set ingress.hosts[0].paths[0].path=/ "
-            "--set ingress.hosts[0].paths[0].pathType=Prefix "
-            "{}".format(rel, ns, shlex.quote(model), shlex.quote(fqdn), ver_arg))
-
-    print("Code Llama deployed via Ollama. Namespace: {}".format(ns))
-    print("API available at: http://{}".format(fqdn))
-    print("Model pre-pulled: {}".format(model))
-    return fqdn
 
 
 def main():
@@ -85,28 +59,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    lab_file = sys.argv[1]
-    definition = primary.load_definition(lab_file)
-
-    target = k8s.first_server_node(definition)
-    if not target:
-        sys.exit(1)
-    vm_name, _ssh_cmd = target
-
-    clu_name = k8s.get_vm_kcluster(definition, vm_name)
-    clu_cfg = k8s.load_kclu_vars(definition, clu_name) if clu_name else {}
-    cfg = definition.get("codellama", {}) or {}
-    online = definition.get("common", {}).get("online") == "1"
-
-    setup_helm(vm_name, clu_name, online=online)
-    setup_codellama_repo(vm_name, codellama_rel=cfg.get("codellama_rel"),
-                          codellama_repo_url=cfg.get("codellama_repo_url"))
-    fqdn = setup_codellama(vm_name, clu_name, clu_cfg.get("mydomain"),
-                            codellama_rel=cfg.get("codellama_rel"), codellama_ns=cfg.get("codellama_ns"),
-                            codellama_version=cfg.get("codellama_version"),
-                            codellama_shorthn=cfg.get("codellama_shorthn"),
-                            codellama_model=cfg.get("codellama_model"))
-    ac.register_service_dns(definition, clu_name, fqdn)
+    ollama_common.install(primary.load_definition(sys.argv[1]), "codellama")
 
 
 if __name__ == "__main__":
