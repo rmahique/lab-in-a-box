@@ -97,10 +97,10 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 import addon_common as ac  # noqa: E402
 import apps  # noqa: E402
 import k8s  # noqa: E402
+import placement  # noqa: E402
 import primary  # noqa: E402
 from lab_creation import die, ensure_podman, process_template, ssh_output, ssh_run  # noqa: E402
 
-_DEPLOYMENTS = ("podman", "kubernetes")
 _DEFAULT_IMAGE = "docker.io/searxng/searxng"
 _DEFAULT_VERSION = "latest"
 _DEFAULT_VALKEY_IMAGE = "docker.io/valkey/valkey"
@@ -131,37 +131,6 @@ def _as_list(value):
 def _truthy(value):
     """True when `value` is the string "true", in any case — the form every boolean field of this project takes."""
     return str(value or "").strip().lower() == "true"
-
-
-def _addon_entries(section):
-    """The addons[] entries of every kcluster or node in `section`."""
-    for entry in (section or {}).values():
-        for listed in (entry or {}).get("addons") or []:
-            yield listed
-
-
-def _listed_on_kcluster(definition):
-    """True when a kcluster lists "searxng" in its own addons[]."""
-    return any(apps.addon_entry_name(e) == "searxng" for e in _addon_entries(definition.get("kclusters")))
-
-
-def _listed(definition):
-    """True when any kcluster or node of the lab lists "searxng" in its own addons[]."""
-    return _listed_on_kcluster(definition) or any(
-        apps.addon_entry_name(e) == "searxng" for e in _addon_entries(definition.get("nodes")))
-
-
-def _deployment(definition, cfg):
-    """
-    Which mode installs this add-on: searxng_deployment when the lab sets it, otherwise "kubernetes" when a kcluster
-    lists "searxng" in its addons[] and "podman" when only a node does.
-    """
-    asked = str(cfg.get("searxng_deployment") or "").strip().lower()
-    if asked:
-        return asked
-    if os.environ.get("clu_name") or _listed_on_kcluster(definition):
-        return "kubernetes"
-    return "podman"
 
 
 def _wants_valkey(cfg):
@@ -259,10 +228,7 @@ def settings_yaml(cfg, base_url, secret, valkey_url=""):
 
 def _validate(v):
     cfg = v.definition.get("searxng", {}) or {}
-    deployment = str(cfg.get("searxng_deployment") or "").strip().lower()
-    if deployment and deployment not in _DEPLOYMENTS:
-        v.errors.append("[ERROR] searxng.searxng_deployment '{}' is invalid — use one of: {}".format(
-            deployment, ", ".join(_DEPLOYMENTS)))
+    placement.validate(v, "searxng")
     v.vns("searxng")
     v.vport("searxng", "searxng_port")
     for field in ("searxng_limiter", "searxng_public_instance", "searxng_image_proxy", "searxng_valkey"):
@@ -443,7 +409,7 @@ def _check(c):
     """Compare the deployed SearXNG with the lab's own "searxng" section, in whichever mode installed it."""
     definition = c.definition
     cfg = definition.get("searxng", {}) or {}
-    if not _listed(definition):
+    if not placement.location(definition, "searxng")[0]:
         c.ok("this lab installs no searxng, so there is nothing to check")
         return
     host = c.vm_name
@@ -451,7 +417,7 @@ def _check(c):
         c.fail("no target node to check: $_vm_name names none")
         return
 
-    if _deployment(definition, cfg) == "kubernetes":
+    if placement.deployment(definition, "searxng", cfg) == placement.KUBERNETES:
         ns = str(cfg.get("searxng_ns") or "searxng")
         ready = ssh_output(host, "kubectl -n {} get deployment searxng -o jsonpath='{{.status.readyReplicas}}' "
                                  "2>/dev/null".format(shlex.quote(ns))) or "0"
@@ -491,7 +457,7 @@ def main():
     defaults = primary.load_defaults()
     cfg = definition.get("searxng", {}) or {}
 
-    if _deployment(definition, cfg) == "kubernetes":
+    if placement.deployment(definition, "searxng", cfg) == placement.KUBERNETES:
         target = k8s.first_server_node(definition)
         if not target:
             sys.exit(1)

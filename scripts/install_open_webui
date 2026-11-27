@@ -22,15 +22,12 @@
 #   open_webui_shorthn         : [OPTIONAL] hostname prefix (default: openwebui)
 #   open_webui_rel             : [OPTIONAL] Helm repo alias (default: open-webui)
 #   open_webui_repo_url        : [OPTIONAL] Helm repo URL (default: https://helm.openwebui.com/)
-#   open_webui_ollama_url      : [OPTIONAL] external Ollama endpoint to attach — default is derived
-#                                 automatically as http://ollama.<ollama_ns>.svc.cluster.local:11434
-#                                 when this lab's own "ollama" addon section is present (in-cluster
-#                                 Service DNS, per the ollama-helm chart's own release/service naming —
-#                                 Verify with
-#                                 `kubectl get svc -n <ollama_ns>` if this doesn't resolve). Set
-#                                 explicitly to point at an Ollama instance outside this lab, or leave
-#                                 both this and the "ollama" section unset to use Open WebUI's own
-#                                 bundled Ollama subchart (chart default) instead.
+#   open_webui_ollama_url      : [OPTIONAL] Ollama endpoint to attach. Unset, it is this lab's own Ollama when
+#                                 this kcluster runs one, i.e. when it lists the ollama add-on or a model
+#                                 add-on served through it (codellama, starcoder2, deepseek, qwen, mistral,
+#                                 apertus): http://ollama.<namespace>.svc.cluster.local:11434. Set it for an
+#                                 Ollama outside this lab. With neither, Open WebUI's own bundled Ollama
+#                                 subchart (the chart default) is used instead.
 #   open_webui_openai_base_urls : [OPTIONAL] space-separated list of extra OpenAI-compatible endpoints
 #                                 to attach as additional model providers (e.g. this lab's own
 #                                 "gemini"/"kimi"/"anthropic"/"openai" LiteLLM-proxy addons' FQDNs, so
@@ -40,13 +37,11 @@
 #                                 accepts any bearer token, so "sk-anything" works unless the proxy was
 #                                 configured with LiteLLM's own key enforcement)
 #   open_webui_searxng_url     : [OPTIONAL] SearXNG instance to use as the web-search backend, which turns web
-#                                 search on. Derived automatically as
+#                                 search on. Unset, it is where this lab's own searxng add-on runs:
 #                                 http://searxng.<searxng_ns>.svc.cluster.local:<searxng_port>/search?q=<query>
-#                                 when this lab's own "searxng" addon section is present and installs on the
-#                                 kcluster; set it explicitly for an instance outside the cluster, e.g. one the
-#                                 searxng addon installed on a node with podman
-#                                 (http://node1.mydemo.lab:8080/search?q=<query>). The instance must serve the
-#                                 json format, which the searxng addon's own default does
+#                                 when a kcluster lists it, http://<node>:<searxng_port>/search?q=<query> when
+#                                 only a node lists it (podman). Set it for an instance outside this lab. The
+#                                 instance must serve the json format, which the searxng add-on's own default does
 #
 # The chart's PVCs need a StorageClass. requires_cluster below ("storageclass") makes
 # cluster_plan() (libs/k8s.py) add one automatically on a distribution that doesn't bundle its own
@@ -79,6 +74,8 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
+import ollama_common  # noqa: E402
+import placement  # noqa: E402
 from lab_creation import setup_helm, helm_repo_add, ssh_run, die  # noqa: E402
 import appco_common as appco  # noqa: E402
 
@@ -105,16 +102,21 @@ def setup_open_webui_repo(hostname, open_webui_rel=None, open_webui_repo_url=Non
 
 def searxng_query_url(definition, open_webui_searxng_url=None):
     """
-    The SEARXNG_QUERY_URL for Open WebUI's web search: the field when the lab sets one, else the in-cluster Service
-    URL of this lab's own "searxng" addon when it installs on the kcluster, else "" (web search stays off).
+    The SEARXNG_QUERY_URL for Open WebUI's web search: the field when the lab sets one, else where this lab's own
+    searxng add-on runs (its in-cluster Service on a kcluster, its node's own name and port with podman), else ""
+    (web search stays off).
     """
     if open_webui_searxng_url:
         return str(open_webui_searxng_url)
-    cfg = definition.get("searxng")
-    if cfg is None or str((cfg or {}).get("searxng_deployment") or "").strip().lower() == "podman":
-        return ""
-    return "http://searxng.{}.svc.cluster.local:{}/search?q=<query>".format(
-        (cfg or {}).get("searxng_ns") or "searxng", (cfg or {}).get("searxng_port") or "8080")
+    mode, place = placement.location(definition, "searxng")
+    if mode == placement.KUBERNETES:
+        cfg = definition.get("searxng") or {}
+        return "http://searxng.{}.svc.cluster.local:{}/search?q=<query>".format(
+            cfg.get("searxng_ns") or "searxng", cfg.get("searxng_port") or "8080")
+    if mode == placement.PODMAN:
+        cfg = k8s.addon_node_config(definition, "searxng", place)
+        return placement.node_url(place, cfg.get("searxng_port") or "8080", "/search?q=<query>")
+    return ""
 
 
 def setup_open_webui(hostname, clu_name, mydomain, definition, open_webui_rel=None, open_webui_ns=None,
@@ -127,11 +129,7 @@ def setup_open_webui(hostname, clu_name, mydomain, definition, open_webui_rel=No
     ver_arg = "--version {}".format(shlex.quote(open_webui_version)) if open_webui_version else ""
     fqdn = "{}.{}.{}".format(open_webui_shorthn or "openwebui", clu_name, mydomain)
 
-    ollama_url = open_webui_ollama_url
-    ollama_cfg = definition.get("ollama") if not ollama_url else None
-    if not ollama_url and ollama_cfg is not None:
-        ollama_ns = (ollama_cfg or {}).get("ollama_ns") or "ollama"
-        ollama_url = "http://ollama.{}.svc.cluster.local:11434".format(ollama_ns)
+    ollama_url = open_webui_ollama_url or ollama_common.service_url(definition, clu_name)
 
     set_args = [
         "--set ingress.enabled=true",

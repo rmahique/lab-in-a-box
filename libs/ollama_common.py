@@ -26,6 +26,7 @@ DEFAULT_NS = "ollama"
 DEFAULT_REL = "ollama-helm"
 DEFAULT_REPO_URL = "https://otwld.github.io/ollama-helm/"
 DEFAULT_MODEL = "llama3.2"
+PORT = 11434
 
 # Every add-on that serves a model through Ollama: (its model field, that field's default, the Ollama model name
 # the field's value becomes).
@@ -103,6 +104,18 @@ def release_settings(definition: dict, owner: str) -> dict:
         "shorthn": field("shorthn", OLLAMA),
         "source": source,
     }
+
+
+def service_url(definition: dict, clu_name: str) -> str:
+    """
+    The in-cluster URL of the kcluster's Ollama, "" when none of the kcluster's add-ons installs one: the release's
+    Service, named after it, in the release's namespace.
+    """
+    names = kcluster_addons(definition, clu_name)
+    if not any(name == OLLAMA or name in MODEL_ADDONS for name in names):
+        return ""
+    settings = release_settings(definition, release_owner(definition, clu_name, OLLAMA))
+    return "http://{}.{}.svc.cluster.local:{}".format(RELEASE, settings["ns"], PORT)
 
 
 def _chart(hostname: str, definition: dict, settings: dict) -> tuple:

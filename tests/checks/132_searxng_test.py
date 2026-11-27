@@ -276,13 +276,17 @@ check("podman: a re-run reuses the secret key already on the node",
 on_kcluster = {"kclusters": {"c1": {"addons": ["searxng"]}}, "nodes": {}}
 on_node = {"kclusters": {"c1": {"addons": ["rancher"]}},
            "nodes": {"vm1.mydemo.lab": {"addons": [{"searxng": {"searxng_port": "9000"}}]}}}
-check("mode: a kcluster listing searxng installs it on the cluster",
-      sx._deployment(on_kcluster, {}) == "kubernetes")
-check("mode: only a node listing searxng installs it with podman",
-      sx._deployment(on_node, {}) == "podman")
-check("mode: searxng_deployment overrides both ways",
-      sx._deployment(on_kcluster, {"searxng_deployment": "podman"}) == "podman"
-      and sx._deployment(on_node, {"searxng_deployment": "kubernetes"}) == "kubernetes")
+with mock.patch.dict(sx.os.environ, {}, clear=True):
+    check("mode: a kcluster listing searxng installs it on the cluster",
+          sx.placement.deployment(on_kcluster, "searxng", {}) == "kubernetes")
+    check("mode: only a node listing searxng installs it with podman",
+          sx.placement.deployment(on_node, "searxng", {}) == "podman")
+    check("mode: searxng_deployment overrides both ways",
+          sx.placement.deployment(on_kcluster, "searxng", {"searxng_deployment": "podman"}) == "podman"
+          and sx.placement.deployment(on_node, "searxng", {"searxng_deployment": "kubernetes"}) == "kubernetes")
+with mock.patch.dict(sx.os.environ, {"clu_name": "c1"}):
+    check("mode: run by setup_lab.py for a kcluster, it is the kcluster's",
+          sx.placement.deployment(on_node, "searxng", {}) == "kubernetes")
 
 # ── a list field takes a list or a string, with the same result ───────────────
 check("fields: a comma-separated string and a list mean the same",
@@ -299,7 +303,7 @@ def errors(cfg):
 
 
 check("validate: an empty section and both deployments are accepted",
-      errors({}) == [] and all(errors({"searxng_deployment": d}) == [] for d in sx._DEPLOYMENTS))
+      errors({}) == [] and all(errors({"searxng_deployment": d}) == [] for d in sx.placement.DEPLOYMENTS))
 check("validate: an unknown deployment is rejected", len(errors({"searxng_deployment": "docker"})) == 1)
 check("validate: an invalid namespace and a non-numeric port are rejected",
       len(errors({"searxng_ns": "Search_1"})) == 1 and len(errors({"searxng_port": "http"})) == 1)
@@ -318,25 +322,30 @@ check("validate: searxng_settings_extra must be a mapping",
 # ── open_webui's own web search ───────────────────────────────────────────────
 check("open_webui: no searxng section leaves web search off",
       owui.searxng_query_url({"ollama": {}}) == "")
-check("open_webui: a searxng section on the kcluster gives the in-cluster Service URL",
-      owui.searxng_query_url({"searxng": {}})
+searxng_on_kcluster = {"kclusters": {"c1": {"addons": ["searxng"]}}, "nodes": {}, "searxng": {}}
+check("open_webui: searxng on the kcluster gives the in-cluster Service URL",
+      owui.searxng_query_url(searxng_on_kcluster)
       == "http://searxng.searxng.svc.cluster.local:8080/search?q=<query>")
 check("open_webui: searxng_ns and searxng_port reach that URL",
-      owui.searxng_query_url({"searxng": {"searxng_ns": "search", "searxng_port": "9090"}})
+      owui.searxng_query_url(dict(searxng_on_kcluster, searxng={"searxng_ns": "search", "searxng_port": "9090"}))
       == "http://searxng.search.svc.cluster.local:9090/search?q=<query>")
-check("open_webui: a podman-mode searxng is not guessed at, it is set explicitly",
-      owui.searxng_query_url({"searxng": {"searxng_deployment": "podman"}}) == ""
-      and owui.searxng_query_url({"searxng": {"searxng_deployment": "podman"}},
-                                 "http://node1.mydemo.lab:8080/search?q=<query>")
-      == "http://node1.mydemo.lab:8080/search?q=<query>")
+check("open_webui: searxng only on a node is found there, at that node's own port",
+      owui.searxng_query_url(on_node) == "http://vm1.mydemo.lab:9000/search?q=<query>")
+check("open_webui: searxng_deployment podman is found on the node, even when a kcluster lists it too",
+      owui.searxng_query_url({"kclusters": {"c1": {"addons": ["searxng"]}},
+                              "nodes": {"vm1.mydemo.lab": {"addons": ["searxng"]}},
+                              "searxng": {"searxng_deployment": "podman"}})
+      == "http://vm1.mydemo.lab:8080/search?q=<query>")
+check("open_webui: a searxng section the lab installs nowhere turns no web search on",
+      owui.searxng_query_url({"searxng": {}}) == "")
 check("open_webui: an explicit URL wins over the derived one",
-      owui.searxng_query_url({"searxng": {}}, "http://elsewhere.lab/search?q=<query>")
+      owui.searxng_query_url(searxng_on_kcluster, "http://elsewhere.lab/search?q=<query>")
       == "http://elsewhere.lab/search?q=<query>")
 
 owui_cmds = []
 with mock.patch.object(owui, "ssh_run", side_effect=lambda host, cmd, **kw: owui_cmds.append(cmd)), \
         mock.patch("builtins.print"):
-    owui.setup_open_webui("node1", "c1", "mydemo.lab", {"searxng": {}})
+    owui.setup_open_webui("node1", "c1", "mydemo.lab", searxng_on_kcluster)
 helm = next(c for c in owui_cmds if c.startswith("helm upgrade"))
 check("open_webui: web search, the engine and the query URL reach the chart as environment variables",
       "--set extraEnvVars[0].name=ENABLE_WEB_SEARCH" in helm and "--set extraEnvVars[0].value=true" in helm
@@ -352,6 +361,26 @@ with mock.patch.object(owui, "ssh_run", side_effect=lambda host, cmd, **kw: owui
 helm = next(c for c in owui_cmds if c.startswith("helm upgrade"))
 check("open_webui: a lab without searxng gets no web-search environment at all",
       "extraEnvVars" not in helm and "WEB_SEARCH" not in helm)
+
+# ── open_webui attaches the kcluster's own Ollama ────────────────────────────
+
+
+def owui_helm(definition):
+    cmds = []
+    with mock.patch.object(owui, "ssh_run", side_effect=lambda host, cmd, **kw: cmds.append(cmd)), \
+            mock.patch("builtins.print"):
+        owui.setup_open_webui("node1", "c1", "mydemo.lab", definition)
+    return next(c for c in cmds if c.startswith("helm upgrade"))
+
+
+check("open_webui: a kcluster running only a model add-on still has its Ollama attached",
+      "ollamaUrls[0]=http://ollama.ollama.svc.cluster.local:11434" in owui_helm(
+          {"kclusters": {"c1": {"addons": ["codellama", "open_webui"]}}, "nodes": {}}))
+check("open_webui: the ollama add-on's namespace reaches the URL",
+      "ollamaUrls[0]=http://ollama.llm.svc.cluster.local:11434" in owui_helm(
+          {"kclusters": {"c1": {"addons": ["ollama", "open_webui"]}}, "nodes": {}, "ollama": {"ollama_ns": "llm"}}))
+check("open_webui: an ollama section the kcluster does not install attaches nothing",
+      "ollamaUrls" not in owui_helm({"kclusters": {"c1": {"addons": ["open_webui"]}}, "nodes": {}, "ollama": {}}))
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

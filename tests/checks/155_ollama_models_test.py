@@ -111,6 +111,13 @@ check("deepseek no longer installs an Ollama of its own", helm_of(calls).startsw
 check("a separate release an earlier run left is named, with how to remove it",
       any("ollama-deepseek" in w and "helm uninstall" in w for w in warnings))
 
+# ── where other add-ons reach it ─────────────────────────────────────────────
+check("the in-cluster URL is the release's Service, in the release's namespace",
+      oc.service_url(lab(["ollama"], ollama={"ollama_ns": "llm"}), "ai") == "http://ollama.llm.svc.cluster.local:11434")
+check("a kcluster with only a model add-on has that Ollama too",
+      oc.service_url(lab(["starcoder2"]), "ai") == "http://ollama.ollama.svc.cluster.local:11434")
+check("a kcluster with none of them has no Ollama to reach", oc.service_url(lab(["open_webui"]), "ai") == "")
+
 # ── the add-ons all go through it ────────────────────────────────────────────
 for addon in ("ollama", "apertus", "codellama", "deepseek", "mistral", "qwen", "starcoder2"):
     text = (_REPO / "scripts" / ("install_" + addon)).read_text()

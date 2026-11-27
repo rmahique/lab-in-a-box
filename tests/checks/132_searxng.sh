@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests-paths: scripts/install_searxng scripts/install_open_webui templates/addons/searxng
+# Tests-paths: scripts/install_searxng scripts/install_open_webui templates/addons/searxng libs/placement.py libs/ollama_common.py
 # install_searxng: the settings.yml it writes, the Kubernetes manifests it renders and applies, the companion Valkey
 # the limiter needs, podman mode, secret-key reuse, mode dispatch and validation; and install_open_webui's own
 # SearXNG web-search wiring. SSH is faked; the manifests are rendered from the real templates and parsed.
