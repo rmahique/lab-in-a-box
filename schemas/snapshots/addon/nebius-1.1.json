@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "nebius_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "nebius_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "nebius_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "nebius_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "nebius_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "nebius_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "nebius_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "nebius_ns": {
+   "default": "nebius",
+   "required": false,
+   "type": "namespace"
+  },
+  "nebius_port": {
+   "default": "4015",
+   "required": false,
+   "type": "port"
+  },
+  "nebius_shorthn": {
+   "default": "nebius",
+   "required": false,
+   "type": "string"
+  },
+  "nebius_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:nebius",
+ "version": "1.1"
+}
