@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.2
+# Schema version: 1.3
 #
-# JSON section: "apertus" — Apertus (Swiss AI Initiative) model, served via Ollama
+# JSON section: "apertus" — Apertus (Swiss AI Initiative) model, served via Ollama, on a kcluster or in a node's own podman Ollama
+#   apertus_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes" when
+#                       a kcluster lists "apertus" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
 #   apertus_tag         : [OPTIONAL] Ollama model tag; the default is a ~5.1GB quantized build, practical
 #                         for lab hardware (default: 8b-instruct-2509-q4_k_m)
 #                         Other options: 8b-instruct-2509-bf16 (~16GB, full precision), 70b-instruct-
@@ -21,6 +24,10 @@
 # and hostname are the ollama add-on's when the kcluster lists it, else this section's own apertus_ns,
 # apertus_shorthn, apertus_rel, apertus_repo_url and apertus_version.
 #
+# In podman mode the model goes into the node's own Ollama container instead, the ollama add-on's
+# (libs/ollama_common.py), which this add-on starts from the ollama section when it is not running yet.
+# The namespace, hostname and chart fields above apply in kubernetes mode only.
+#
 # This script installs Ollama (if not present) and pulls the configured Apertus model — same shape as
 # the "deepseek" addon.
 #
@@ -35,8 +42,10 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "apertus",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode pulls into the kcluster's Ollama release, podman mode into a node's Ollama container
+    # (libs/ollama_common.py's run() dispatches between them).
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress"],
     "aux_services": [],
@@ -57,6 +66,7 @@ import primary  # noqa: E402
 def _validate(v):
     v.vns("apertus")
     v.vver("apertus")
+    ollama_common.validate_podman(v, "apertus")
 
 
 def main():
@@ -65,7 +75,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    ollama_common.install(primary.load_definition(sys.argv[1]), "apertus")
+    ollama_common.run(primary.load_definition(sys.argv[1]), "apertus")
     print("Community GGUF package (not Ollama's own curated library, not the Apertus team): "
           "verify licensing and provenance before relying on it beyond a lab demo.")
 
