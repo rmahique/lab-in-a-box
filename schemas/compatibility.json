@@ -109,7 +109,8 @@
    {"version": "1.1", "breaking": false, "changes": "podman mode: ernie_deployment, and ernie_image, ernie_image_tag and ernie_port for the LiteLLM container a node runs when it lists ernie in its own addons[]"}
   ],
   "addon:fireworks": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: fireworks_deployment, and fireworks_image, fireworks_image_tag and fireworks_port for the LiteLLM container a node runs when it lists fireworks in its own addons[]"}
   ],
   "addon:fleet": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version: configures Fleet in Rancher (workspace, cluster labels, cluster groups, GitRepos, and the documented rancher/fleet-examples repo)."}

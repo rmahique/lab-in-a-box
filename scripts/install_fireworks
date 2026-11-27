@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "fireworks" — Fireworks AI API proxy (LiteLLM)
+# JSON section: "fireworks" — Fireworks AI API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   fireworks_api_key    : [MANDATORY] Fireworks AI API key (from https://fireworks.ai)
 #   fireworks_model      : [MANDATORY] the model to serve, written the way LiteLLM routes it, normally
 #                              "fireworks_ai/<model-id>". It is named rather than defaulted on purpose: a model id this
@@ -17,6 +17,16 @@
 #   fireworks_chart      : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   fireworks_ns         : [OPTIONAL] namespace (default: fireworks)
 #   fireworks_shorthn    : [OPTIONAL] hostname prefix (default: fireworks)
+#   fireworks_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                          when a kcluster lists "fireworks" in its addons[], "podman" when only a node does
+#                          (options: podman, kubernetes)
+#   fireworks_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   fireworks_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   fireworks_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4010)
+#
+# In podman mode the proxy answers at http://<node>:<fireworks_port>/v1 on every node that lists "fireworks" in
+# its own addons[], and its master key is in /etc/litellm/fireworks/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the anthropic, openai, gemini and kimi add-ons: LiteLLM in front of one hosted model,
 # reached by any OpenAI client at http://fireworks.<kcluster>.<domain>/v1. The provider's key
@@ -29,8 +39,9 @@ PROVIDER = "fireworks"
 
 PLUGIN = {
     "name": "fireworks",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The chart's values turn an ingress on, which is how the endpoint is reached.
     "requires_cluster": ["ingress"],
