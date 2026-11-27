@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.11
 # libs/ollama_common.py and the add-ons that serve a model through Ollama — see 155_ollama_models.sh.
 import importlib.util
+import os
 import re
 import sys
 from importlib.machinery import SourceFileLoader
@@ -164,11 +165,21 @@ check("podman: a node's own override of the section is used", "podman exec ollam
 seen = []
 with mock.patch.object(oc, "install", side_effect=lambda d, a: seen.append(("kubernetes", a))), \
         mock.patch.object(oc, "install_podman", side_effect=lambda d, a, h: seen.append(("podman", h))), \
-        mock.patch.dict(oc.os.environ, {}, clear=True):
+        mock.patch.dict(os.environ, {}, clear=True):
     oc.run(on_node(["ollama"]), "ollama")
     oc.run(lab(["ollama"]), "ollama")
 check("podman: run() installs on every node that lists it, and on the kcluster when a kcluster does",
       seen == [("podman", "ws1.mydemo.lab"), ("kubernetes", "ollama")])
+
+warned = []
+with mock.patch("lab_creation.warn", side_effect=warned.append), mock.patch.dict(os.environ, {}, clear=True), \
+        mock.patch("k8s.log"):
+    nodes = oc.placement.podman_nodes(on_node(["xfce"]), "ollama")
+check("podman: a run that finds no node to install on says so", nodes == [] and "no node lists it" in warned[0])
+with mock.patch("lab_creation.warn", side_effect=warned.append), \
+        mock.patch.dict(os.environ, {"_vm_name": "ws2.mydemo.lab"}), mock.patch("k8s.log"):
+    check("podman: setup_lab.py's own node is the one installed on",
+          oc.placement.podman_nodes(on_node(["ollama"]), "ollama") == ["ws2.mydemo.lab"])
 
 ol = _load("install_ollama")
 import addon_common as ac  # noqa: E402

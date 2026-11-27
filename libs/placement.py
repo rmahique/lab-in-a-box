@@ -79,6 +79,21 @@ def validate(v, addon: str) -> None:
             a=addon, m=mode, o=", ".join(DEPLOYMENTS)))
 
 
+def podman_nodes(definition: dict, addon: str) -> list:
+    """
+    The nodes a podman-mode run of `addon` installs on: the one setup_lab.py names in $_vm_name, else every node
+    that lists it. An empty answer is warned about, because the run then installs nothing.
+    """
+    import k8s
+    from lab_creation import warn
+
+    nodes = [vm for vm, _ssh in k8s.addon_nodes(definition, addon, vm_name=os.environ.get("_vm_name") or None)]
+    if not nodes:
+        warn("{a}: podman mode, and no node lists it in its own addons[], so nothing is installed. List it on a "
+             "node, or set {a}_deployment to kubernetes".format(a=addon))
+    return nodes
+
+
 def node_url(node: str, port, path: str = "") -> str:
     """The URL a podman-mode service answers on: the node's own name, which the lab DNS already resolves."""
     return "http://{}:{}{}".format(node, port, path)

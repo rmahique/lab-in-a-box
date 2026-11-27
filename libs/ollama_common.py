@@ -18,7 +18,6 @@ yet and pulls its own model into it; the models live in a host directory, so a n
 # Author/s: Raul Mahiques
 # License: GPLv3
 
-import os
 import shlex
 
 import apps
@@ -263,13 +262,11 @@ def run(definition: dict, addon: str) -> None:
     The whole of `addon`'s main(): on the kcluster's shared release (install()), or with podman on every node
     that lists it, as libs/placement.py decides.
     """
-    import k8s
-
     cfg = definition.get(addon) or {}
     if placement.deployment(definition, addon, cfg) == placement.KUBERNETES:
         install(definition, addon)
         return
-    for vm_name, _ssh_cmd in k8s.addon_nodes(definition, addon, vm_name=os.environ.get("_vm_name") or None):
+    for vm_name in placement.podman_nodes(definition, addon):
         install_podman(definition, addon, vm_name)
 
 

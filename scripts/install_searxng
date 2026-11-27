@@ -84,7 +84,6 @@ PLUGIN = {
     "check": True,
 }
 
-import os
 import secrets
 import shlex
 import sys
@@ -472,8 +471,7 @@ def main():
         ac.register_service_dns(definition, clu_name, fqdn)
         return
 
-    env_vm_name = os.environ.get("_vm_name") or None
-    for vm_name, _ssh_cmd in k8s.addon_nodes(definition, "searxng", vm_name=env_vm_name):
+    for vm_name in placement.podman_nodes(definition, "searxng"):
         setup_searxng_podman(vm_name, k8s.addon_node_config(definition, "searxng", vm_name))
 
 

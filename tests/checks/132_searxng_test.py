@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.11
 # install_searxng, and open_webui's SearXNG wiring — see 132_searxng.sh.
 import importlib.util
+import os
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -276,7 +277,7 @@ check("podman: a re-run reuses the secret key already on the node",
 on_kcluster = {"kclusters": {"c1": {"addons": ["searxng"]}}, "nodes": {}}
 on_node = {"kclusters": {"c1": {"addons": ["rancher"]}},
            "nodes": {"vm1.mydemo.lab": {"addons": [{"searxng": {"searxng_port": "9000"}}]}}}
-with mock.patch.dict(sx.os.environ, {}, clear=True):
+with mock.patch.dict(os.environ, {}, clear=True):
     check("mode: a kcluster listing searxng installs it on the cluster",
           sx.placement.deployment(on_kcluster, "searxng", {}) == "kubernetes")
     check("mode: only a node listing searxng installs it with podman",
@@ -284,7 +285,7 @@ with mock.patch.dict(sx.os.environ, {}, clear=True):
     check("mode: searxng_deployment overrides both ways",
           sx.placement.deployment(on_kcluster, "searxng", {"searxng_deployment": "podman"}) == "podman"
           and sx.placement.deployment(on_node, "searxng", {"searxng_deployment": "kubernetes"}) == "kubernetes")
-with mock.patch.dict(sx.os.environ, {"clu_name": "c1"}):
+with mock.patch.dict(os.environ, {"clu_name": "c1"}):
     check("mode: run by setup_lab.py for a kcluster, it is the kcluster's",
           sx.placement.deployment(on_node, "searxng", {}) == "kubernetes")
 
