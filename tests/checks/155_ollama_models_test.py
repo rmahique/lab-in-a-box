@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.11
 # libs/ollama_common.py and the add-ons that serve a model through Ollama — see 155_ollama_models.sh.
 import importlib.util
+import re
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -118,12 +119,83 @@ check("a kcluster with only a model add-on has that Ollama too",
       oc.service_url(lab(["starcoder2"]), "ai") == "http://ollama.ollama.svc.cluster.local:11434")
 check("a kcluster with none of them has no Ollama to reach", oc.service_url(lab(["open_webui"]), "ai") == "")
 
+# ── podman mode ──────────────────────────────────────────────────────────────
+
+
+def on_node(addons, **sections):
+    definition = {"common": {}, "kclusters": {},
+                  "nodes": {"ws1.mydemo.lab": {"addons": addons}, "ws2.mydemo.lab": {"addons": ["xfce"]}}}
+    definition.update(sections)
+    return definition
+
+
+def run_podman(definition, addon, running=False):
+    """install_podman() on ws1 with SSH and podman faked; returns (ssh commands, deploy calls)."""
+    calls, deploys = [], []
+    with mock.patch.object(oc, "ssh_run", side_effect=lambda host, cmd, **kw: calls.append(cmd)), \
+            mock.patch.object(oc.ps, "deploy", side_effect=lambda *a, **kw: deploys.append((a, kw))), \
+            mock.patch.object(oc.ps, "wait_for_http", return_value=True), \
+            mock.patch.object(oc.ps, "is_running", return_value=running), \
+            mock.patch.object(oc, "log"), mock.patch("builtins.print"):
+        url = oc.install_podman(definition, addon, "ws1.mydemo.lab")
+    return calls, deploys, url
+
+
+calls, deploys, url = run_podman(on_node(["ollama"], ollama={"ollama_port": "11500",
+                                                             "ollama_image_tag": "0.12.6"}), "ollama")
+args, kw = deploys[0]
+check("podman: the ollama add-on runs the container from its own section",
+      args[1:3] == ("ollama", "docker.io/ollama/ollama:0.12.6") and kw["ports"] == ["11500:11434"]
+      and kw["volumes"] == ["/var/lib/ollama:/root/.ollama:Z"])
+check("podman: and pulls its own model into it", "podman exec ollama ollama pull llama3.2" in calls)
+check("podman: other add-ons reach it at the node's own name and port", url == "http://ws1.mydemo.lab:11500")
+
+calls, deploys, url = run_podman(on_node(["ollama", "codellama"], codellama={"codellama_model": "codellama:13b"}),
+                                 "codellama", running=True)
+check("podman: a model add-on leaves a running Ollama alone and pulls its model into it",
+      deploys == [] and calls == ["podman exec ollama ollama pull codellama:13b"])
+calls, deploys, url = run_podman(on_node(["starcoder2"], ollama={"ollama_port": "11600"}), "starcoder2")
+check("podman: a model add-on starts Ollama, from the ollama section, when none runs yet",
+      len(deploys) == 1 and deploys[0][1]["ports"] == ["11600:11434"]
+      and "podman exec ollama ollama pull starcoder2" in calls)
+calls, _d, _u = run_podman(on_node([{"ollama": {"ollama_model": "phi3"}}]), "ollama")
+check("podman: a node's own override of the section is used", "podman exec ollama ollama pull phi3" in calls)
+
+seen = []
+with mock.patch.object(oc, "install", side_effect=lambda d, a: seen.append(("kubernetes", a))), \
+        mock.patch.object(oc, "install_podman", side_effect=lambda d, a, h: seen.append(("podman", h))), \
+        mock.patch.dict(oc.os.environ, {}, clear=True):
+    oc.run(on_node(["ollama"]), "ollama")
+    oc.run(lab(["ollama"]), "ollama")
+check("podman: run() installs on every node that lists it, and on the kcluster when a kcluster does",
+      seen == [("podman", "ws1.mydemo.lab"), ("kubernetes", "ollama")])
+
+ol = _load("install_ollama")
+import addon_common as ac  # noqa: E402
+
+
+def ollama_errors(definition):
+    v = ac.Validator(definition)
+    ol._validate(v)
+    return v.errors
+
+
+with mock.patch.object(ac.Validator, "vreq_or_credential", autospec=True,
+                       side_effect=lambda self, section, field, *a, **kw: self.errors.append(field)):
+    check("validate: the Application Collection account is only asked for when a kcluster installs it",
+          ollama_errors(on_node(["ollama"], ollama={})) == []
+          and "ollama_appcollection_user" in ollama_errors(lab(["ollama"], ollama={})))
+check("validate: an unknown deployment and a non-numeric port are rejected",
+      len(ollama_errors(on_node(["ollama"], ollama={"ollama_deployment": "docker", "ollama_port": "x"}))) == 2)
+check("ollama: offered on nodes too", {"vm", "baremetal"} <= set(ol.PLUGIN["targets"])
+      and "standalone-container" in ol.PLUGIN["layers"])
+
 # ── the add-ons all go through it ────────────────────────────────────────────
 for addon in ("ollama", "apertus", "codellama", "deepseek", "mistral", "qwen", "starcoder2"):
     text = (_REPO / "scripts" / ("install_" + addon)).read_text()
     check("{}: installs through ollama_common".format(addon),
-          'ollama_common.install(primary.load_definition(sys.argv[1]), "{}")'.format(addon) in text
-          and "helm upgrade" not in text)
+          re.search(r'ollama_common\.(install|run)\(primary\.load_definition\(sys\.argv\[1\]\), "{}"\)'.format(addon),
+                    text) is not None and "helm upgrade" not in text)
     module = _load("install_" + addon)
     check("{}: still loads with its PLUGIN".format(addon), module.PLUGIN["name"] == addon)
 

@@ -1279,6 +1279,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <hr />
 <h2 id="available-addons">Modules disponibles</h2>
 <p>Les modules sont référencés par leur nom dans la liste <code>addons</code> d'un kcluster ou d'un nœud. Le script <code>install_&lt;name&gt;</code> correspondant doit se trouver dans le <code>PATH</code>.</p>
+<p>Un addon qui peut s'exécuter des deux façons suit l'endroit où le lab le liste : dans les <code>addons</code> d'un kcluster, c'est une charge de travail Kubernetes sur ce kcluster ; dans les <code>addons</code> propres d'un nœud, un conteneur podman sur ce nœud, joignable par le nom du nœud et le port que fixe son champ <code>&lt;addon&gt;_port</code>. Son champ <code>&lt;addon&gt;_deployment</code> (<code>kubernetes</code> ou <code>podman</code>) l'emporte sur ce choix.</p>
 <p><sub>Aller à : <a href="#addons-k8s">Kubernetes et GitOps</a> · <a href="#addons-security">Sécurité et conformité</a> · <a href="#addons-smlm">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">Stockage et bases de données</a> · <a href="#addons-collaboration">Collaboration et partage de fichiers</a> · <a href="#addons-cicd">CI/CD et outils</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualisation</a> · <a href="#addons-desktop">Bureau</a> · <a href="#addons-demos">Applications de démonstration</a> · <a href="#addons-games">Jeux</a></sub></p>
 <p><a id="addons-k8s"></a></p>
 <details open>
@@ -1574,7 +1575,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <tbody>
 <tr>
 <td><a href="https://ollama.com/"><code>ollama</code></a></td>
-<td>Environnement d'exécution LLM local</td>
+<td>Environnement d'exécution LLM local. Sur un kcluster ou, listé sur un nœud, comme conteneur podman</td>
 </tr>
 <tr>
 <td><a href="https://docs.vllm.ai/"><code>vllm</code></a></td>

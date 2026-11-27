@@ -9,16 +9,23 @@ runs last, the release pulls every model of the kcluster and none replaces anoth
 
 The release's own settings (namespace, chart source, chart version, ingress hostname) are the ollama add-on's when
 the kcluster lists it, else those of the first model add-on the kcluster lists.
+
+Listed in a node's own addons[] instead, the same add-ons share one podman container on that node, "ollama", which
+the ollama add-on's section configures (image, port, model directory). Each add-on starts it when it is not running
+yet and pulls its own model into it; the models live in a host directory, so a new container keeps them.
 """
 # Part of lab-in-a-box
 # Author/s: Raul Mahiques
 # License: GPLv3
 
+import os
 import shlex
 
 import apps
 import appco_common as appco
-from lab_creation import die, helm_repo_add, ssh_output, ssh_run, warn
+import placement
+import podman_service as ps
+from lab_creation import die, helm_repo_add, log, ssh_output, ssh_run, warn
 
 RELEASE = "ollama"
 OLLAMA = "ollama"
@@ -27,6 +34,14 @@ DEFAULT_REL = "ollama-helm"
 DEFAULT_REPO_URL = "https://otwld.github.io/ollama-helm/"
 DEFAULT_MODEL = "llama3.2"
 PORT = 11434
+DEFAULT_IMAGE = "docker.io/ollama/ollama"
+DEFAULT_IMAGE_TAG = "latest"
+DEFAULT_DATA_DIR = "/var/lib/ollama"
+CONTAINER = "ollama"
+# Where the image keeps its models; fixed by the image.
+CONTAINER_DATA = "/root/.ollama"
+# How long a fresh container gets to answer before a pull is attempted anyway.
+START_WAIT = 300
 
 # Every add-on that serves a model through Ollama: (its model field, that field's default, the Ollama model name
 # the field's value becomes).
@@ -192,3 +207,74 @@ def install(definition: dict, addon: str) -> str:
     fqdn = install_release(vm_name, definition, clu_name, clu_cfg.get("mydomain", ""), addon)
     ac.register_service_dns(definition, clu_name, fqdn)
     return fqdn
+
+
+# ── podman mode ──────────────────────────────────────────────────────────────
+
+def podman_port(cfg: dict) -> int:
+    """The host port the podman-mode Ollama answers on, from the ollama add-on's section `cfg`."""
+    return int((cfg or {}).get("ollama_port") or PORT)
+
+
+def podman_url(node: str, cfg: dict) -> str:
+    """Where other add-ons reach the podman-mode Ollama of `node`."""
+    return placement.node_url(node, podman_port(cfg))
+
+
+def deploy_podman(hostname: str, cfg: dict) -> str:
+    """Run the Ollama container on `hostname` from the ollama add-on's section `cfg`, wait for it, return its URL."""
+    port = podman_port(cfg)
+    data_dir = str(cfg.get("ollama_data_dir") or DEFAULT_DATA_DIR)
+    image = "{}:{}".format(cfg.get("ollama_image") or DEFAULT_IMAGE, cfg.get("ollama_image_tag") or DEFAULT_IMAGE_TAG)
+    ssh_run(hostname, "mkdir -p {}".format(shlex.quote(data_dir)))
+    ps.deploy(hostname, CONTAINER, image, description="Ollama (lab-in-a-box)",
+              ports=["{}:{}".format(port, PORT)], volumes=["{}:{}:Z".format(data_dir, CONTAINER_DATA)])
+    ps.wait_for_http(hostname, "http://127.0.0.1:{}/api/version".format(port), timeout=START_WAIT, what="Ollama")
+    return podman_url(hostname, cfg)
+
+
+def pull_podman(hostname: str, model: str) -> None:
+    """Pull `model` into the Ollama container on `hostname`."""
+    log("- Pulling {} into Ollama on {}".format(model, hostname))
+    ssh_run(hostname, "podman exec {} ollama pull {}".format(CONTAINER, shlex.quote(model)))
+
+
+def install_podman(definition: dict, addon: str, hostname: str) -> str:
+    """
+    Install `addon` with podman on `hostname`: the ollama add-on (re)creates the container, a model add-on starts it
+    only when it is not running yet. Either then pulls its own model. Returns the URL Ollama answers on.
+    """
+    import k8s
+
+    ollama_cfg = k8s.addon_node_config(definition, OLLAMA, hostname)
+    if addon == OLLAMA or not ps.is_running(hostname, CONTAINER):
+        url = deploy_podman(hostname, ollama_cfg)
+    else:
+        url = podman_url(hostname, ollama_cfg)
+    pull_podman(hostname, model_of(addon, k8s.addon_node_config(definition, addon, hostname)))
+    print("Ollama API available at: {}".format(url))
+    print("The node itself must allow traffic on port {}: this add-on manages no firewall or security group".format(
+        podman_port(ollama_cfg)))
+    return url
+
+
+def run(definition: dict, addon: str) -> None:
+    """
+    The whole of `addon`'s main(): on the kcluster's shared release (install()), or with podman on every node
+    that lists it, as libs/placement.py decides.
+    """
+    import k8s
+
+    cfg = definition.get(addon) or {}
+    if placement.deployment(definition, addon, cfg) == placement.KUBERNETES:
+        install(definition, addon)
+        return
+    for vm_name, _ssh_cmd in k8s.addon_nodes(definition, addon, vm_name=os.environ.get("_vm_name") or None):
+        install_podman(definition, addon, vm_name)
+
+
+def validate_podman(v, addon: str) -> None:
+    """The preflight of the fields every add-on of this module adds for podman mode."""
+    placement.validate(v, addon)
+    if addon == OLLAMA:
+        v.vport(OLLAMA, "ollama_port")

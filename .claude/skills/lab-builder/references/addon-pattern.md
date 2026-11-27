@@ -106,6 +106,14 @@ if __name__ == "__main__":
    - Plain SSH (installing a package, writing a config file, running a binary directly
      on the VM): skip `setup_helm`/`PLUGIN["targets"]`/`"layers"` entirely and just
      `ssh_run()`/`ssh_output()` from `lab_creation`.
+   - Either, Kubernetes on a kcluster or a podman container on a node: the lab picks by
+     where it lists the addon. `placement.deployment(definition, "<name>", cfg)` gives this
+     run's mode (honouring `<name>_deployment`), `placement.location()` tells *another*
+     addon where this one runs, and `podman_service.deploy()` runs the container. Add
+     `"vm", "baremetal"` to `PLUGIN["targets"]` and `"standalone-container"` to
+     `"layers"`, an image/tag/port field set marked "in podman mode", and loop over
+     `k8s.addon_nodes(definition, "<name>", vm_name=os.environ.get("_vm_name"))` for the
+     podman branch. `libs/ollama_common.py`'s `run()` is the worked example.
    - Needs its own database: `from db_common import setup_mariadb_os` (or
      `setup_postgresql_os`) — never write a raw `CREATE DATABASE`/container setup inline.
 3. **Validate inputs up front, in `_validate(v)`.** Use `addon_common.Validator`'s own
@@ -115,7 +123,7 @@ if __name__ == "__main__":
 4. **Credentials**: if the addon needs a username/token (an Application Collection
    account, an API key, ...), support both inline fields (`<name>_user`/`<name>_password`)
    *and* a named credential-file account (`<name>_account`) via
-   `ac.resolve_credential(...)` — look at `install_ollama`'s `appco_common` usage for the
+   `ac.resolve_credential(...)` — look at `install_open_webui`'s `appco_common` usage for the
    exact pattern if the credential is an Application Collection account specifically.
 5. **DNS**: once the service has an FQDN, call `ac.register_service_dns(definition,
    clu_name, fqdn)` — don't construct DNS records by hand; that function already knows

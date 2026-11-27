@@ -1277,6 +1277,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <hr />
 <h2 id="available-addons">使用できるアドオン</h2>
 <p>アドオンは、kcluster またはノードの <code>addons</code> 配列で名前によって指定します。対応する <code>install_&lt;name&gt;</code> スクリプトが <code>PATH</code> 上にある必要があります。</p>
+<p>どちらの方法でも動作できるアドオンは、ラボがどこに記載したかに従います。kcluster の <code>addons</code> に記載するとその kcluster 上の Kubernetes ワークロードになり、ノード自身の <code>addons</code> に記載するとそのノード上の podman コンテナーになり、ノード名と <code>&lt;addon&gt;_port</code> フィールドで指定したポートでアクセスできます。<code>&lt;addon&gt;_deployment</code> フィールド（<code>kubernetes</code> または <code>podman</code>）を指定すると、これより優先されます。</p>
 <p><sub>移動先：<a href="#addons-k8s">Kubernetes と GitOps</a> · <a href="#addons-security">セキュリティとコンプライアンス</a> · <a href="#addons-smlm">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">ストレージとデータベース</a> · <a href="#addons-collaboration">コラボレーションとファイル共有</a> · <a href="#addons-cicd">CI/CD とツール</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">仮想化</a> · <a href="#addons-desktop">デスクトップ</a> · <a href="#addons-demos">デモアプリケーション</a> · <a href="#addons-games">ゲーム</a></sub></p>
 <p><a id="addons-k8s"></a></p>
 <details open>
@@ -1572,7 +1573,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <tbody>
 <tr>
 <td><a href="https://ollama.com/"><code>ollama</code></a></td>
-<td>ローカル LLM ランタイム</td>
+<td>ローカル LLM ランタイム。kcluster 上、またはノードに記載した場合は podman コンテナーとして動作</td>
 </tr>
 <tr>
 <td><a href="https://docs.vllm.ai/"><code>vllm</code></a></td>

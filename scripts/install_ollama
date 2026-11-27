@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 2.0
+# Schema version: 2.1
 #
-# JSON section: "ollama" — Local LLM runtime
+# JSON section: "ollama" — Local LLM runtime, on a kcluster or as a podman container on a node
+#   ollama_deployment   : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                         when a kcluster lists "ollama" in its addons[], "podman" when only a node does
+#                         (options: podman, kubernetes)
 #   ollama_version      : [OPTIONAL] Helm chart version (empty = latest, e.g. "0.51.0")
 #   ollama_ns           : [OPTIONAL] namespace (default: ollama)
 #   ollama_source : [OPTIONAL] where the chart comes from:
@@ -24,6 +27,15 @@
 #   ollama_repo_url     : [OPTIONAL] Helm repo URL (default: https://otwld.github.io/ollama-helm/)
 #   ollama_model        : [OPTIONAL] model to pre-pull on startup (default: llama3.2)
 #                         Examples: llama3.2, mistral, phi3, gemma2, qwen2.5
+#   ollama_image        : [OPTIONAL] container image, in podman mode (default: docker.io/ollama/ollama)
+#   ollama_image_tag    : [OPTIONAL] tag of that image, in podman mode (default: latest)
+#   ollama_port         : [OPTIONAL] host port the API answers on, in podman mode (default: 11434)
+#   ollama_data_dir     : [OPTIONAL] host directory holding the models, in podman mode, so a new
+#                         container keeps them (default: /var/lib/ollama)
+#
+# ollama_ns, ollama_shorthn, ollama_rel, ollama_repo_url, ollama_version and the ollama_source and
+# ollama_appcollection_* fields apply in kubernetes mode. In podman mode the API answers on the node's own
+# hostname, which already has a DNS record, so no service record is registered.
 #
 # The kcluster's model add-ons (codellama, starcoder2, deepseek, qwen, mistral, apertus) serve their models
 # through this same Ollama: one Helm release, "ollama", which every one of them installs with the whole list of
@@ -35,8 +47,10 @@ APPCOLLECTION_CHART = "ollama"
 
 PLUGIN = {
     "name": "ollama",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the Helm release on a kcluster; podman mode is one container on a node or an existing
+    # machine (libs/ollama_common.py's run() dispatches between them).
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress"],
     "aux_services": [],
@@ -53,6 +67,12 @@ import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import appco_common as appco  # noqa: E402
 import ollama_common  # noqa: E402
+import placement  # noqa: E402
+
+
+def _on_kubernetes(definition):
+    """True when this lab installs ollama on a kcluster, the only mode that uses a chart."""
+    return placement.location(definition, "ollama")[0] == placement.KUBERNETES
 
 
 def _validate(v):
@@ -61,7 +81,7 @@ def _validate(v):
     if source not in appco.SOURCES:
         v.errors.append("[ERROR] ollama.ollama_source '{}' is invalid — use one of: {}".format(
             source, ", ".join(appco.SOURCES)))
-    elif source == appco.SOURCE_APPCOLLECTION:
+    elif source == appco.SOURCE_APPCOLLECTION and _on_kubernetes(v.definition):
         v.vreq_or_credential("ollama", "ollama_appcollection_user", "appcollection",
                              account_field="ollama_appcollection_account")
         v.vreq_or_credential("ollama", "ollama_appcollection_password", "appcollection",
@@ -69,6 +89,7 @@ def _validate(v):
     v.vns("ollama")
     v.vver("ollama")
     v.vurl("ollama")
+    ollama_common.validate_podman(v, "ollama")
 
 
 def main():
@@ -77,7 +98,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    ollama_common.install(primary.load_definition(sys.argv[1]), "ollama")
+    ollama_common.run(primary.load_definition(sys.argv[1]), "ollama")
 
 
 if __name__ == "__main__":

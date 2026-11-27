@@ -1279,6 +1279,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <hr />
 <h2 id="available-addons">الإضافات المتاحة</h2>
 <p>يُشار إلى الإضافات بأسمائها في مصفوفة <code>addons</code> لعنقود kcluster أو لعقدة. ويجب أن يكون السكربت <code>install_&lt;name&gt;</code> المقابل في <code>PATH</code>.</p>
+<p>الإضافة التي يمكن تشغيلها بالطريقتين تتبع المكان الذي يدرجها فيه المختبر: في <code>addons</code> الخاصة بـ kcluster تكون حمل عمل Kubernetes على ذلك الـ kcluster، وفي <code>addons</code> الخاصة بعقدة تكون حاوية podman على تلك العقدة، يمكن الوصول إليها باسم العقدة والمنفذ الذي يحدده حقلها <code>&lt;addon&gt;_port</code>. ويتجاوز حقلها <code>&lt;addon&gt;_deployment</code> (<code>kubernetes</code> أو <code>podman</code>) ذلك.</p>
 <p><sub>انتقل إلى: <a href="#addons-k8s">Kubernetes وGitOps</a> · <a href="#addons-security">الأمن والامتثال</a> · <a href="#addons-smlm">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">التخزين وقواعد البيانات</a> · <a href="#addons-collaboration">التعاون ومشاركة الملفات</a> · <a href="#addons-cicd">CI/CD والأدوات</a> · <a href="#addons-ai">الذكاء الاصطناعي / تعلم الآلة</a> · <a href="#addons-virt">المحاكاة الافتراضية</a> · <a href="#addons-desktop">سطح المكتب</a> · <a href="#addons-demos">التطبيقات التجريبية</a> · <a href="#addons-games">الألعاب</a></sub></p>
 <p><a id="addons-k8s"></a></p>
 <details open>
@@ -1574,7 +1575,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <tbody>
 <tr>
 <td><a href="https://ollama.com/"><code>ollama</code></a></td>
-<td>بيئة تشغيل محلية لنماذج اللغة الكبيرة</td>
+<td>بيئة تشغيل محلية لنماذج اللغة الكبيرة. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://docs.vllm.ai/"><code>vllm</code></a></td>

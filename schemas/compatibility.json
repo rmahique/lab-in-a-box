@@ -277,7 +277,8 @@
   "addon:ollama": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
    {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
-   {"version": "2.0", "breaking": true, "changes": "The chart comes from the SUSE Application Collection unless ollama_source says otherwise, with ollama_appcollection_user/password/account for the account it needs. Breaking: a lab that relied on the upstream chart by saying nothing now needs ollama_source \"upstream\", which the migration writes.", "migration": "ollama_2_0"}
+   {"version": "2.0", "breaking": true, "changes": "The chart comes from the SUSE Application Collection unless ollama_source says otherwise, with ollama_appcollection_user/password/account for the account it needs. Breaking: a lab that relied on the upstream chart by saying nothing now needs ollama_source \"upstream\", which the migration writes.", "migration": "ollama_2_0"},
+   {"version": "2.1", "breaking": false, "changes": "podman mode: ollama_deployment, and ollama_image, ollama_image_tag, ollama_port and ollama_data_dir for the container a node runs when it lists ollama in its own addons[]"}
   ],
   "addon:open_saber": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},

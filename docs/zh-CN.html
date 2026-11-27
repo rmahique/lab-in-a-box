@@ -1274,6 +1274,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <hr />
 <h2 id="available-addons">可用附加组件</h2>
 <p>附加组件通过名称在 kcluster 或节点的 <code>addons</code> 数组中引用。对应的 <code>install_&lt;name&gt;</code> 脚本必须位于 <code>PATH</code> 中。</p>
+<p>可以两种方式运行的附加组件取决于实验室把它列在哪里：列在 kcluster 的 <code>addons</code> 中，它就是该 kcluster 上的 Kubernetes 工作负载；列在节点自己的 <code>addons</code> 中，它就是该节点上的 podman 容器，通过节点名称和其 <code>&lt;addon&gt;_port</code> 字段设置的端口访问。其 <code>&lt;addon&gt;_deployment</code> 字段（<code>kubernetes</code> 或 <code>podman</code>）可覆盖这一选择。</p>
 <p><sub>跳转到：<a href="#addons-k8s">Kubernetes 与 GitOps</a> · <a href="#addons-security">安全与合规</a> · <a href="#addons-smlm">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">存储与数据库</a> · <a href="#addons-collaboration">协作与文件共享</a> · <a href="#addons-cicd">CI/CD 与工具</a> · <a href="#addons-ai">AI / ML</a> · <a href="#addons-virt">虚拟化</a> · <a href="#addons-desktop">桌面</a> · <a href="#addons-demos">演示应用</a> · <a href="#addons-games">游戏</a></sub></p>
 <p><a id="addons-k8s"></a></p>
 <details open>
@@ -1569,7 +1570,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <tbody>
 <tr>
 <td><a href="https://ollama.com/"><code>ollama</code></a></td>
-<td>本地 LLM 运行时</td>
+<td>本地 LLM 运行时。在 kcluster 上运行，或列在节点上时作为 podman 容器运行</td>
 </tr>
 <tr>
 <td><a href="https://docs.vllm.ai/"><code>vllm</code></a></td>
