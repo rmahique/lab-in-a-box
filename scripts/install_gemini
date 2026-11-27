@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 2.1
+# Schema version: 2.2
 #
-# JSON section: "gemini" — Google Gemini API proxy (LiteLLM)
+# JSON section: "gemini" — Google Gemini API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   gemini_api_key      : [MANDATORY] Google Gemini API key (from https://aistudio.google.com)
 #   gemini_model        : [OPTIONAL] default Gemini model (default: gemini/gemini-2.5-flash)
 #                         Examples: gemini/gemini-2.5-pro, gemini/gemini-2.5-flash-lite
@@ -13,6 +13,16 @@
 #   gemini_chart        : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   gemini_ns           : [OPTIONAL] namespace (default: gemini)
 #   gemini_shorthn      : [OPTIONAL] hostname prefix (default: gemini)
+#   gemini_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                       when a kcluster lists "gemini" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
+#   gemini_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   gemini_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   gemini_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4002)
+#
+# In podman mode the proxy answers at http://<node>:<gemini_port>/v1 on every node that lists "gemini" in
+# its own addons[], and its master key is in /etc/litellm/gemini/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # This script deploys LiteLLM as an OpenAI-compatible proxy for Google Gemini.
 # The proxy exposes the same API as OpenAI so any OpenAI SDK can reach Gemini models.
@@ -21,8 +31,9 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "gemini",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "aux_services": [],
 }
@@ -38,6 +49,7 @@ import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
 import litellm_common  # noqa: E402
+import placement  # noqa: E402
 from lab_creation import setup_helm  # noqa: E402
 
 
@@ -45,6 +57,7 @@ def _validate(v):
     v.vreq("gemini", "gemini_api_key")
     v.vns("gemini")
     v.vver("gemini")
+    litellm_common.validate_podman(v, "gemini")
 
 
 def setup_gemini(hostname: str, clu_name: str, mydomain: str, cfg: dict) -> str:
@@ -65,6 +78,11 @@ def main():
         sys.exit(1)
     lab_file = sys.argv[1]
     definition = primary.load_definition(lab_file)
+    cfg = definition.get("gemini", {}) or {}
+    if placement.deployment(definition, "gemini", cfg) != placement.KUBERNETES:
+        litellm_common.install_podman_nodes(definition, "gemini", "gemini",
+                                            default_model="gemini/gemini-2.5-flash")
+        return
 
     target = k8s.first_server_node(definition)
     if not target:
@@ -73,7 +91,6 @@ def main():
 
     clu_name = k8s.get_vm_kcluster(definition, vm_name)
     clu_cfg = k8s.load_kclu_vars(definition, clu_name) if clu_name else {}
-    cfg = definition.get("gemini", {}) or {}
     if not cfg.get("gemini_api_key"):
         print("ERROR: gemini.gemini_api_key is mandatory.", file=sys.stderr)
         sys.exit(1)
