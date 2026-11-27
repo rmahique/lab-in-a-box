@@ -54,7 +54,8 @@
    {"version": "1.0", "breaking": false, "changes": "initial version: buffer_agents, buffer_users, buffer_api_key, buffer_account, buffer_mcp_url, buffer_server_name and buffer_path"}
   ],
   "addon:cerebras": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: cerebras_deployment, and cerebras_image, cerebras_image_tag and cerebras_port for the LiteLLM container a node runs when it lists cerebras in its own addons[]"}
   ],
   "addon:client_registration": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},

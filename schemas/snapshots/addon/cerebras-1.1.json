@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "cerebras_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "cerebras_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "cerebras_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "cerebras_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "cerebras_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "cerebras_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "cerebras_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "cerebras_ns": {
+   "default": "cerebras",
+   "required": false,
+   "type": "namespace"
+  },
+  "cerebras_port": {
+   "default": "4005",
+   "required": false,
+   "type": "port"
+  },
+  "cerebras_shorthn": {
+   "default": "cerebras",
+   "required": false,
+   "type": "string"
+  },
+  "cerebras_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:cerebras",
+ "version": "1.1"
+}
