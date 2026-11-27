@@ -2,7 +2,7 @@
   "common": {
     "lab_name": "AI workstation",
     "lab_description": "One node that is both a desktop and a single-node K3s cluster, with as much of this project's AI tooling on it as fits: Anthropic's own client tooling and a Claude API proxy, a local LLM runtime with a chat UI in front of it, two code models, a vector database, an MCP gateway, a private search engine, a speech service, a translation service and a secret scanner. Nothing here needs a credential file: the two Helm charts that would normally come from the SUSE Application Collection are taken from their projects' own upstream charts instead. The API keys are \"??\" placeholders, resolved from the credential store or your own edit before the lab is created; every tool that needs no key runs as it stands. Sized generously on purpose, because Ollama pulls multi-gigabyte models and a desktop session wants memory of its own: trim VM_MEM and drop the models you do not want before using this on a small host.",
-    "SOURCE_IMAGE": "openSUSE-Leap-16.0.x86_64-NoCloud.qcow2",
+    "SOURCE_IMAGE": "Leap-16.0-Minimal-VM.x86_64-Cloud.qcow2",
     "config_method": "cloud-init",
     "VM_MEM": "24576",
     "VM_DSK": "160",
@@ -15,8 +15,6 @@
   },
   "nodes": {
     "ai1.mydemo.lab": {
-      "myip": "192.168.88.71",
-      "mymac": "34:8a:b1:4b:1a:71",
       "kcluster": "ai",
       "KUBERNETES_NODE_TYPE": "server",
       "addons": [
