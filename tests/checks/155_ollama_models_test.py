@@ -190,6 +190,19 @@ check("validate: an unknown deployment and a non-numeric port are rejected",
 check("ollama: offered on nodes too", {"vm", "baremetal"} <= set(ol.PLUGIN["targets"])
       and "standalone-container" in ol.PLUGIN["layers"])
 
+for addon in sorted(oc.MODEL_ADDONS):
+    module = _load("install_" + addon)
+    if "vm" not in module.PLUGIN["targets"]:
+        continue
+    v = ac.Validator(on_node([addon], **{addon: {"{}_deployment".format(addon): "docker"}}))
+    module._validate(v)
+    check("{}: an unknown deployment is rejected".format(addon), len(v.errors) == 1)
+    check("{}: offered as a podman container too".format(addon),
+          "standalone-container" in module.PLUGIN["layers"] and "baremetal" in module.PLUGIN["targets"])
+    calls, deploys, _u = run_podman(on_node(["ollama", addon]), addon, running=True)
+    check("{}: on a node, pulls its default model into that node's Ollama".format(addon),
+          calls == ["podman exec ollama ollama pull {}".format(oc.model_of(addon, {}))] and deploys == [])
+
 # ── the add-ons all go through it ────────────────────────────────────────────
 for addon in ("ollama", "apertus", "codellama", "deepseek", "mistral", "qwen", "starcoder2"):
     text = (_REPO / "scripts" / ("install_" + addon)).read_text()

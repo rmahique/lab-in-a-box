@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.2
+# Schema version: 1.3
 #
-# JSON section: "codellama" — Code Llama model, served via Ollama
+# JSON section: "codellama" — Code Llama model, served via Ollama, on a kcluster or in a node's own podman Ollama
+#   codellama_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes" when
+#                         a kcluster lists "codellama" in its addons[], "podman" when only a node does
+#                         (options: podman, kubernetes)
 #   codellama_model   : [OPTIONAL] Code Llama model tag, the 7B instruct build by default (default: codellama)
 #                       Examples: codellama:13b, codellama:34b, codellama:70b, codellama:7b-python
 #   codellama_ns      : [OPTIONAL] Ollama namespace to pull into (default: ollama)
@@ -19,6 +22,10 @@
 # and hostname are the ollama add-on's when the kcluster lists it, else this section's own codellama_ns,
 # codellama_shorthn, codellama_rel, codellama_repo_url and codellama_version.
 #
+# In podman mode the model goes into the node's own Ollama container instead, the ollama add-on's
+# (libs/ollama_common.py), which this add-on starts from the ollama section when it is not running yet.
+# The namespace, hostname and chart fields above apply in kubernetes mode only.
+#
 # This script installs Ollama (if not present) and pulls the configured Code Llama model — same
 # shape as the "deepseek"/"apertus"/"qwen"/"mistral" addons. Meta's code-focused Llama 2 derivative,
 # official Ollama-library model (ollama.com/library/codellama), broad language coverage (Python,
@@ -29,8 +36,10 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "codellama",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode pulls into the kcluster's Ollama release, podman mode into a node's Ollama container
+    # (libs/ollama_common.py's run() dispatches between them).
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress"],
     "aux_services": [],
@@ -51,6 +60,7 @@ import primary  # noqa: E402
 def _validate(v):
     v.vns("codellama")
     v.vver("codellama")
+    ollama_common.validate_podman(v, "codellama")
 
 
 def main():
@@ -59,7 +69,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    ollama_common.install(primary.load_definition(sys.argv[1]), "codellama")
+    ollama_common.run(primary.load_definition(sys.argv[1]), "codellama")
 
 
 if __name__ == "__main__":
