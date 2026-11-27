@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.2
+# Schema version: 1.3
 #
-# JSON section: "mistral" — Mistral model, served via Ollama
+# JSON section: "mistral" — Mistral model, served via Ollama, on a kcluster or in a node's own podman Ollama
+#   mistral_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes" when
+#                       a kcluster lists "mistral" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
 #   mistral_model   : [OPTIONAL] Mistral model tag, the Apache-2.0 licensed 7B v0.3 model by default
 #                     (default: mistral)
 #                     Examples: mistral:7b-instruct, mixtral (the larger MoE variant)
@@ -20,6 +23,10 @@
 # and hostname are the ollama add-on's when the kcluster lists it, else this section's own mistral_ns,
 # mistral_shorthn, mistral_rel, mistral_repo_url and mistral_version.
 #
+# In podman mode the model goes into the node's own Ollama container instead, the ollama add-on's
+# (libs/ollama_common.py), which this add-on starts from the ollama section when it is not running yet.
+# The namespace, hostname and chart fields above apply in kubernetes mode only.
+#
 # This script installs Ollama (if not present) and pulls the configured Mistral model — same shape
 # as the "deepseek"/"apertus"/"qwen" addons. Official Ollama-library model (ollama.com/library/mistral),
 # no community-GGUF caveat needed.
@@ -28,8 +35,10 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "mistral",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode pulls into the kcluster's Ollama release, podman mode into a node's Ollama container
+    # (libs/ollama_common.py's run() dispatches between them).
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress"],
     "aux_services": [],
@@ -50,6 +59,7 @@ import primary  # noqa: E402
 def _validate(v):
     v.vns("mistral")
     v.vver("mistral")
+    ollama_common.validate_podman(v, "mistral")
 
 
 def main():
@@ -58,7 +68,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    ollama_common.install(primary.load_definition(sys.argv[1]), "mistral")
+    ollama_common.run(primary.load_definition(sys.argv[1]), "mistral")
 
 
 if __name__ == "__main__":
