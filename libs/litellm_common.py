@@ -6,18 +6,38 @@ each of which is a script that names its provider and delegates the whole instal
 
 The proxy runs without a database (no virtual keys or spend tracking). Clients authenticate with the master key kept in
 the <release>-master-key secret; the provider's API key is read from the <release>-provider secret.
+
+Listed in a node's own addons[] instead, the proxy is a podman container on that node, "<section>-proxy", answering
+at http://<node>:<section>_port/v1 (HOST_PORTS gives every add-on its own default, so several share a node). Its
+configuration is /etc/litellm/<section>/config.yaml there, and both keys are in /etc/litellm/<section>/env, a root-only
+file podman reads itself: the master key is generated once and kept, the provider key is the lab's.
 """
 # Part of lab-in-a-box
 # Author/s: Raul Mahiques
 # License: GPLv3
 
+import json
 import secrets
 import shlex
 
-from lab_creation import ssh_run
+import placement
+import podman_service as ps
+from lab_creation import ssh_output, ssh_run
 
 DEFAULT_CHART = "oci://ghcr.io/berriai/litellm-helm"
 PORT = 4000
+DEFAULT_IMAGE = "ghcr.io/berriai/litellm"
+DEFAULT_IMAGE_TAG = "main-stable"
+CONFIG_ROOT = "/etc/litellm"
+# The default host port of each add-on's podman-mode proxy, one per add-on so that any of them can share a node.
+HOST_PORTS = {
+    "anthropic": 4000, "openai": 4001, "gemini": 4002, "kimi": 4003, "ai21": 4004, "cerebras": 4005, "cohere": 4006,
+    "dashscope": 4007, "deepinfra": 4008, "ernie": 4009, "fireworks": 4010, "groq": 4011, "huggingface": 4012,
+    "hyperbolic": 4013, "jina": 4014, "nebius": 4015, "novita": 4016, "openrouter": 4017, "perplexity": 4018,
+    "replicate": 4019, "sambanova": 4020, "together": 4021, "voyage": 4022, "xai": 4023, "zai": 4024,
+}
+# How long a fresh proxy gets to answer.
+START_WAIT = 300
 
 # One hosted provider per add-on that delegates to install_provider(): its name as both the add-on and its JSON
 # section, then (label, LiteLLM route, where its API key comes from).
@@ -69,13 +89,33 @@ def validate_provider(v, section: str) -> None:
     v.vns(section)
     v.vver(section)
     v.vurl_field(section, "{}_api_base".format(section))
+    validate_podman(v, section)
+
+
+def validate_podman(v, section: str) -> None:
+    """The preflight of the podman-mode fields every proxy add-on carries."""
+    placement.validate(v, section)
+    v.vport(section, "{}_port".format(section))
+
+
+def _require(section: str, cfg: dict, default_model: str = "") -> None:
+    """Stop when `cfg` lacks the provider key, or the model when the add-on has no default for it."""
+    from lab_creation import die
+
+    label, console = (provider(section)[0], provider(section)[2]) if section in PROVIDERS else (section, "")
+    if not cfg.get("{}_api_key".format(section)):
+        die("{}: {}_api_key is mandatory{}".format(section, section,
+                                                  ": the {} key comes from {}".format(label, console) if console else ""))
+    if not default_model and not cfg.get("{}_model".format(section)):
+        die("{}: {}_model is mandatory: the model is named rather than defaulted because a guessed model id fails at "
+            "the provider, not here".format(section, section))
 
 
 def install_provider(definition: dict, section: str) -> str:
     """
     Install the LiteLLM proxy for the provider add-on `section` on the lab's kcluster, register its hostname in
-    DNS, and return that hostname. The whole body of such an add-on's main(), so each one is its own header,
-    PLUGIN and provider name and nothing else.
+    DNS, and return that hostname; or, in podman mode, on every node that lists it, returning "". The whole body of
+    such an add-on's main(), so each one is its own header, PLUGIN and provider name and nothing else.
     """
     import addon_common as ac
     import k8s
@@ -83,10 +123,10 @@ def install_provider(definition: dict, section: str) -> str:
 
     label, _route, console = provider(section)
     cfg = definition.get(section, {}) or {}
-    for field in ("{}_api_key".format(section), "{}_model".format(section)):
-        if not cfg.get(field):
-            die("{}: {} is mandatory — the {} key comes from {}, and the model is named rather than defaulted "
-                "because a guessed model id fails at the provider, not here".format(section, field, label, console))
+    if placement.deployment(definition, section, cfg) != placement.KUBERNETES:
+        install_podman_nodes(definition, section, section)
+        return ""
+    _require(section, cfg)
 
     target = k8s.first_server_node(definition)
     if not target:
@@ -168,3 +208,72 @@ def setup_litellm_proxy(hostname: str, release: str, ns: str, fqdn: str, model_n
     print("API key: kubectl -n {} get secret {}-master-key -o jsonpath='{{.data.masterkey}}' | base64 -d".format(ns, release))
     print("Usage: curl http://{}/v1/chat/completions -H \"Authorization: Bearer <API key>\" -H 'Content-Type: application/json' "
           "-d '{{\"model\": \"{}\", \"messages\": [{{\"role\": \"user\", \"content\": \"Hello\"}}]}}'".format(fqdn, model_name))
+
+
+# ── podman mode ──────────────────────────────────────────────────────────────
+
+def podman_port(section: str, cfg: dict) -> int:
+    """The host port `section`'s podman-mode proxy answers on: <section>_port, else its HOST_PORTS default."""
+    return int((cfg or {}).get("{}_port".format(section)) or HOST_PORTS.get(section, PORT))
+
+
+def config_yaml(model_name: str, model: str, api_base: str = "") -> str:
+    """The proxy's config.yaml: one model reading the provider key, and the master key, both from the environment."""
+    params = [("model", model), ("api_key", "os.environ/PROVIDER_API_KEY")]
+    if api_base:
+        params.append(("api_base", api_base))
+    lines = ["model_list:", "  - model_name: {}".format(json.dumps(model_name)), "    litellm_params:"]
+    lines += ["      {}: {}".format(k, json.dumps(v)) for k, v in params]
+    lines += ["general_settings:", "  master_key: \"os.environ/LITELLM_MASTER_KEY\"", ""]
+    return "\n".join(lines)
+
+
+def setup_litellm_podman(hostname: str, section: str, model_name: str, model: str, api_key: str, cfg: dict,
+                         api_base: str = "") -> str:
+    """Run `section`'s proxy as a podman container on `hostname`, serving `model` as `model_name`; returns its URL."""
+    conf_dir = "{}/{}".format(CONFIG_ROOT, section)
+    env_file = "{}/env".format(conf_dir)
+    port = podman_port(section, cfg)
+    image = "{}:{}".format(cfg.get("{}_image".format(section)) or DEFAULT_IMAGE,
+                           cfg.get("{}_image_tag".format(section)) or DEFAULT_IMAGE_TAG)
+    ssh_run(hostname, "mkdir -p {d} && chmod 0700 {d}".format(d=shlex.quote(conf_dir)))
+    master_key = ssh_output(hostname, "sed -n 's/^LITELLM_MASTER_KEY=//p' {} 2>/dev/null".format(
+        shlex.quote(env_file))).strip() or "sk-" + secrets.token_hex(16)
+    ssh_run(hostname, "umask 077 && cat > {}".format(shlex.quote(env_file)),
+            input_text="PROVIDER_API_KEY={}\nLITELLM_MASTER_KEY={}\n".format(api_key, master_key))
+    ssh_run(hostname, "cat > {}/config.yaml".format(shlex.quote(conf_dir)),
+            input_text=config_yaml(model_name, model, api_base))
+    ps.deploy(hostname, "{}-proxy".format(section.replace("_", "-")), image,
+              description="LiteLLM proxy for {} (lab-in-a-box)".format(section),
+              ports=["{}:{}".format(port, PORT)], env_file=env_file,
+              volumes=["{}/config.yaml:/app/config.yaml:ro,Z".format(conf_dir)],
+              args=["--config", "/app/config.yaml", "--port", str(PORT)])
+    ps.wait_for_http(hostname, "http://127.0.0.1:{}/health/liveliness".format(port), timeout=START_WAIT,
+                     what="LiteLLM proxy for {}".format(section))
+    url = placement.node_url(hostname, port, "/v1")
+    print("LiteLLM proxy for {} on {}. OpenAI-compatible endpoint: {}  (model: {})".format(
+        section, hostname, url, model_name))
+    print("API key: sed -n 's/^LITELLM_MASTER_KEY=//p' {} on {}".format(env_file, hostname))
+    print("The node itself must allow traffic on port {}: this add-on manages no firewall or security group".format(
+        port))
+    return url
+
+
+def install_podman_nodes(definition: dict, section: str, model_name: str, default_model: str = "",
+                         default_api_base: str = "") -> list:
+    """
+    Run `section`'s proxy on every node a podman-mode run installs on, each with its own view of the section
+    (k8s.addon_node_config()). `default_model` and `default_api_base` are the add-on's own defaults, "" for a
+    PROVIDERS add-on, whose model is mandatory. Returns the URLs.
+    """
+    import k8s
+
+    urls = []
+    for node in placement.podman_nodes(definition, section):
+        cfg = k8s.addon_node_config(definition, section, node)
+        _require(section, cfg, default_model)
+        urls.append(setup_litellm_podman(
+            node, section, model_name, str(cfg.get("{}_model".format(section)) or default_model),
+            str(cfg["{}_api_key".format(section)]), cfg,
+            api_base=str(cfg.get("{}_api_base".format(section)) or default_api_base)))
+    return urls

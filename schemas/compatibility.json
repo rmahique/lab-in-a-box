@@ -19,7 +19,8 @@
   "addon:anthropic": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
    {"version": "2.0", "breaking": true, "changes": "The LiteLLM proxy installs from the OCI chart anthropic_chart (default oci://ghcr.io/berriai/litellm-helm); anthropic_rel and anthropic_repo_url removed. No database; clients use the master key in the anthropic-proxy-master-key secret; the API key is kept in a secret; the ingress uses the chart's ingress.hosts.", "migration": "anthropic_2_0"},
-   {"version": "2.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
+   {"version": "2.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
+   {"version": "2.2", "breaking": false, "changes": "podman mode: anthropic_deployment, and anthropic_image, anthropic_image_tag and anthropic_port for the LiteLLM container a node runs when it lists anthropic in its own addons[]"}
   ],
   "addon:anthropic_tools": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}

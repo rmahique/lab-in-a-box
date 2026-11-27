@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.11
 # The hosted-provider add-ons that delegate to litellm_common.install_provider() — see 137_litellm_providers.sh.
 import importlib.util
+import os
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -36,7 +37,7 @@ _schema = _load(_REPO / "scripts" / "lab_schema")
 def run_install(section, cfg, clu="c1", domain="mydemo.lab"):
     """install_provider() against mocked SSH; returns (commands, printed, registered DNS names, fqdn)."""
     commands, printed, dns = [], [], []
-    definition = {section: cfg, "kclusters": {clu: {"mydomain": domain}}}
+    definition = {section: cfg, "kclusters": {clu: {"mydomain": domain, "addons": [section]}}}
     with mock.patch.object(ll, "ssh_run", side_effect=lambda host, cmd, **kw: commands.append(cmd)), \
             mock.patch.object(k8s, "first_server_node", return_value=("node1.mydemo.lab", "ssh")), \
             mock.patch.object(k8s, "get_vm_kcluster", return_value=clu), \
@@ -82,9 +83,15 @@ for name, path in sorted(scripts.items()):
     schema = _schema.parse_script(str(path))
     fields = dict((f["name"], f) for f in schema["fields"])
     check("{}: its JSON section is the provider name".format(name), schema["section"] == name)
-    check("{}: documents exactly the seven fields of this shape".format(name),
+    shape = ("api_key", "model", "api_base", "version", "chart", "ns", "shorthn")
+    podman_shape = ("deployment", "image", "image_tag", "port")
+    check("{}: documents exactly the fields of this shape, with the podman-mode ones when it offers that mode".format(
+              name),
           sorted(fields) == sorted("{}_{}".format(name, s) for s in
-                                   ("api_key", "model", "api_base", "version", "chart", "ns", "shorthn")))
+                                   shape + (podman_shape if "vm" in module.PLUGIN["targets"] else ())))
+    check("{}: offered on nodes exactly when it documents the podman-mode fields".format(name),
+          ("vm" in module.PLUGIN["targets"]) == ("standalone-container" in module.PLUGIN["layers"])
+          == ("{}_deployment".format(name) in fields))
     check("{}: the key and the model are both mandatory, so nothing is guessed".format(name),
           fields["{}_api_key".format(name)]["required"] and fields["{}_model".format(name)]["required"])
     check("{}: its key field says where the key is obtained, since nothing can guess that".format(name),
@@ -166,6 +173,26 @@ for missing in ({"groq_model": "groq/m"}, {"groq_api_key": "k"}):
         check("installing without the key or the model dies rather than deploying a broken proxy", False)
     except SystemExit:
         pass
+
+# ── podman mode ──────────────────────────────────────────────────────────────
+seen = []
+with mock.patch.object(ll, "setup_litellm_podman",
+                       side_effect=lambda h, sec, n, m, k, c, api_base="": seen.append((h, sec, n, m, api_base))), \
+        mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(k8s, "log"):
+    fqdn = ll.install_provider({"kclusters": {}, "nodes": {"ws1.mydemo.lab": {"addons": ["groq"]}},
+                                "groq": dict(good, groq_api_base="https://api.groq.com/openai/v1")}, "groq")
+check("podman: a provider listed only on a node runs there, served under its own name, with its api_base",
+      seen == [("ws1.mydemo.lab", "groq", "groq", "groq/some-model", "https://api.groq.com/openai/v1")]
+      and fqdn == "")
+try:
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(k8s, "log"):
+        ll.install_provider({"kclusters": {}, "nodes": {"ws1.mydemo.lab": {"addons": ["groq"]}},
+                             "groq": {"groq_api_key": "k"}}, "groq")
+    check("podman: a provider without its model stops, as on a kcluster", False)
+except SystemExit:
+    pass
+check("validate: an unknown deployment and a non-numeric port are rejected",
+      len(errors("groq", dict(good, groq_deployment="docker", groq_port="x"))) == 2)
 
 if failures:
     print("{} check(s) failed".format(len(failures)))
