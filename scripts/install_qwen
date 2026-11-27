@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.1
+# Schema version: 1.2
 #
-# JSON section: "qwen" — Qwen2.5 model, served via Ollama
+# JSON section: "qwen" — Qwen2.5 model, served via Ollama, on a kcluster or in a node's own podman Ollama
+#   qwen_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes" when
+#                    a kcluster lists "qwen" in its addons[], "podman" when only a node does
+#                    (options: podman, kubernetes)
 #   qwen_model      : [OPTIONAL] Qwen model tag (default: qwen2.5:7b)
 #                     Examples: qwen2.5:0.5b, qwen2.5:14b, qwen2.5:32b, qwen2.5:72b,
 #                     qwen2.5-coder:7b (coding-focused variant)
@@ -20,6 +23,10 @@
 # and hostname are the ollama add-on's when the kcluster lists it, else this section's own qwen_ns,
 # qwen_shorthn, qwen_rel, qwen_repo_url and qwen_version.
 #
+# In podman mode the model goes into the node's own Ollama container instead, the ollama add-on's
+# (libs/ollama_common.py), which this add-on starts from the ollama section when it is not running yet.
+# The namespace, hostname and chart fields above apply in kubernetes mode only.
+#
 # This script installs Ollama (if not present) and pulls the configured Qwen2.5 model — same shape
 # as the "deepseek"/"apertus" addons. Qwen2.5 (Alibaba) ships base and instruction-tuned sizes from
 # 0.5B to 72B, confirmed on Ollama's own curated library (ollama.com/library/qwen2.5), so — unlike
@@ -29,8 +36,10 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "qwen",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode pulls into the kcluster's Ollama release, podman mode into a node's Ollama container
+    # (libs/ollama_common.py's run() dispatches between them).
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress"],
     "aux_services": [],
@@ -51,6 +60,7 @@ import primary  # noqa: E402
 def _validate(v):
     v.vns("qwen")
     v.vver("qwen")
+    ollama_common.validate_podman(v, "qwen")
 
 
 def main():
@@ -59,7 +69,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    ollama_common.install(primary.load_definition(sys.argv[1]), "qwen")
+    ollama_common.run(primary.load_definition(sys.argv[1]), "qwen")
 
 
 if __name__ == "__main__":

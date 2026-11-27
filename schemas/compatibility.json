@@ -328,7 +328,8 @@
   ],
   "addon:qwen": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
-   {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
+   {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
+   {"version": "1.2", "breaking": false, "changes": "podman mode: qwen_deployment; listed in a node's own addons[], the model is pulled into that node's Ollama container"}
   ],
   "addon:rancher": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
