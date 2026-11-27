@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "cohere_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "cohere_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "cohere_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "cohere_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "cohere_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "cohere_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "cohere_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "cohere_ns": {
+   "default": "cohere",
+   "required": false,
+   "type": "namespace"
+  },
+  "cohere_port": {
+   "default": "4006",
+   "required": false,
+   "type": "port"
+  },
+  "cohere_shorthn": {
+   "default": "cohere",
+   "required": false,
+   "type": "string"
+  },
+  "cohere_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:cohere",
+ "version": "1.1"
+}

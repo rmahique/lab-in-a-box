@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "cohere" — Cohere API proxy (LiteLLM)
+# JSON section: "cohere" — Cohere API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   cohere_api_key       : [MANDATORY] Cohere API key (from https://dashboard.cohere.com)
 #   cohere_model         : [MANDATORY] the model to serve, written the way LiteLLM routes it, normally
 #                           "cohere/<model-id>". It is named rather than defaulted on purpose: a model id this
@@ -17,6 +17,16 @@
 #   cohere_chart         : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   cohere_ns            : [OPTIONAL] namespace (default: cohere)
 #   cohere_shorthn       : [OPTIONAL] hostname prefix (default: cohere)
+#   cohere_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                       when a kcluster lists "cohere" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
+#   cohere_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   cohere_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   cohere_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4006)
+#
+# In podman mode the proxy answers at http://<node>:<cohere_port>/v1 on every node that lists "cohere" in
+# its own addons[], and its master key is in /etc/litellm/cohere/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the anthropic, openai, gemini and kimi add-ons: LiteLLM in front of one hosted model,
 # reached by any OpenAI client at http://cohere.<kcluster>.<domain>/v1. The provider's key
@@ -29,8 +39,9 @@ PROVIDER = "cohere"
 
 PLUGIN = {
     "name": "cohere",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The chart's values turn an ingress on, which is how the endpoint is reached.
     "requires_cluster": ["ingress"],
