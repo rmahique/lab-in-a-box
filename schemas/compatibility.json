@@ -6,7 +6,8 @@
    {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
   ],
   "addon:ai21": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: ai21_deployment, and ai21_image, ai21_image_tag and ai21_port for the LiteLLM container a node runs when it lists ai21 in its own addons[]"}
   ],
   "addon:ansible_control_node": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
