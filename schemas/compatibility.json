@@ -87,7 +87,8 @@
    {"version": "2.0", "breaking": true, "changes": "The chart comes from the SUSE Application Collection unless coredns_source says otherwise, with coredns_appcollection_user/password/account for the account it needs. Breaking: a lab that relied on the upstream chart by saying nothing now needs coredns_source \"upstream\", which the migration writes.", "migration": "coredns_2_0"}
   ],
   "addon:dashscope": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: dashscope_deployment, and dashscope_image, dashscope_image_tag and dashscope_port for the LiteLLM container a node runs when it lists dashscope in its own addons[]"}
   ],
   "addon:deepinfra": [
    {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
