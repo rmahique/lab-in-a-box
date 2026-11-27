@@ -192,7 +192,8 @@
    {"version": "1.1", "breaking": false, "changes": "New jenkins_ns and jenkins_shorthn. Installs from <jenkins_rel>/jenkins with jenkins_version, through the chart's own ingress (service jenkins:8080) instead of an ingress to jenkins-server:443, and registers the hostname in DNS."}
   ],
   "addon:jina": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: jina_deployment, and jina_image, jina_image_tag and jina_port for the LiteLLM container a node runs when it lists jina in its own addons[]"}
   ],
   "addon:kagent": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
