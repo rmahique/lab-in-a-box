@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "groq" — Groq API proxy (LiteLLM)
+# JSON section: "groq" — Groq API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   groq_api_key         : [MANDATORY] Groq API key (from https://console.groq.com)
 #   groq_model           : [MANDATORY] the model to serve, written the way LiteLLM routes it, normally
 #                         "groq/<model-id>". It is named rather than defaulted on purpose: a model id this
@@ -17,6 +17,16 @@
 #   groq_chart           : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   groq_ns              : [OPTIONAL] namespace (default: groq)
 #   groq_shorthn         : [OPTIONAL] hostname prefix (default: groq)
+#   groq_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                     when a kcluster lists "groq" in its addons[], "podman" when only a node does
+#                     (options: podman, kubernetes)
+#   groq_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   groq_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   groq_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4011)
+#
+# In podman mode the proxy answers at http://<node>:<groq_port>/v1 on every node that lists "groq" in
+# its own addons[], and its master key is in /etc/litellm/groq/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the anthropic, openai, gemini and kimi add-ons: LiteLLM in front of one hosted model,
 # reached by any OpenAI client at http://groq.<kcluster>.<domain>/v1. The provider's key
@@ -29,8 +39,9 @@ PROVIDER = "groq"
 
 PLUGIN = {
     "name": "groq",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The chart's values turn an ingress on, which is how the endpoint is reached.
     "requires_cluster": ["ingress"],

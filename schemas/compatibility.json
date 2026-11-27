@@ -148,7 +148,8 @@
    {"version": "1.2", "breaking": false, "changes": "A one-line description in the section header, so the add-on says what it installs wherever it is listed."}
   ],
   "addon:groq": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: groq_deployment, and groq_image, groq_image_tag and groq_port for the LiteLLM container a node runs when it lists groq in its own addons[]"}
   ],
   "addon:harbor": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
