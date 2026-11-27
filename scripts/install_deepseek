@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.1
+# Schema version: 1.2
 #
-# JSON section: "deepseek" — DeepSeek model, served via Ollama
+# JSON section: "deepseek" — DeepSeek model, served via Ollama, on a kcluster or in a node's own podman Ollama
+#   deepseek_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes" when
+#                        a kcluster lists "deepseek" in its addons[], "podman" when only a node does
+#                        (options: podman, kubernetes)
 #   deepseek_model      : [OPTIONAL] DeepSeek model tag (default: deepseek-r1:7b)
 #                         Examples: deepseek-r1:7b, deepseek-r1:14b, deepseek-coder-v2
 #   deepseek_ns         : [OPTIONAL] Ollama namespace to pull into (default: ollama)
@@ -19,14 +22,20 @@
 # and hostname are the ollama add-on's when the kcluster lists it, else this section's own deepseek_ns,
 # deepseek_shorthn, deepseek_rel, deepseek_repo_url and deepseek_version.
 #
+# In podman mode the model goes into the node's own Ollama container instead, the ollama add-on's
+# (libs/ollama_common.py), which this add-on starts from the ollama section when it is not running yet.
+# The namespace, hostname and chart fields above apply in kubernetes mode only.
+#
 # This script installs Ollama (if not present) and pulls the configured DeepSeek model.
 
 __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "deepseek",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode pulls into the kcluster's Ollama release, podman mode into a node's Ollama container
+    # (libs/ollama_common.py's run() dispatches between them).
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress"],
     "aux_services": [],
@@ -47,6 +56,7 @@ import primary  # noqa: E402
 def _validate(v):
     v.vns("deepseek")
     v.vver("deepseek")
+    ollama_common.validate_podman(v, "deepseek")
 
 
 def main():
@@ -55,7 +65,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: {} <lab-file>".format(Path(sys.argv[0]).name))
         sys.exit(1)
-    ollama_common.install(primary.load_definition(sys.argv[1]), "deepseek")
+    ollama_common.run(primary.load_definition(sys.argv[1]), "deepseek")
 
 
 if __name__ == "__main__":
