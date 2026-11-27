@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "novita_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "novita_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "novita_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "novita_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "novita_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "novita_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "novita_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "novita_ns": {
+   "default": "novita",
+   "required": false,
+   "type": "namespace"
+  },
+  "novita_port": {
+   "default": "4016",
+   "required": false,
+   "type": "port"
+  },
+  "novita_shorthn": {
+   "default": "novita",
+   "required": false,
+   "type": "string"
+  },
+  "novita_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:novita",
+ "version": "1.1"
+}

@@ -285,7 +285,8 @@
    {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
   ],
   "addon:novita": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: novita_deployment, and novita_image, novita_image_tag and novita_port for the LiteLLM container a node runs when it lists novita in its own addons[]"}
   ],
   "addon:nv-demo-helm": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}
