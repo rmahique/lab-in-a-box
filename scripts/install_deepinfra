@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "deepinfra" — DeepInfra API proxy (LiteLLM)
+# JSON section: "deepinfra" — DeepInfra API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   deepinfra_api_key    : [MANDATORY] DeepInfra API key (from https://deepinfra.com/dash/api_keys)
 #   deepinfra_model      : [MANDATORY] the model to serve, written the way LiteLLM routes it, normally
 #                              "deepinfra/<model-id>". It is named rather than defaulted on purpose: a model id this
@@ -17,6 +17,16 @@
 #   deepinfra_chart      : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   deepinfra_ns         : [OPTIONAL] namespace (default: deepinfra)
 #   deepinfra_shorthn    : [OPTIONAL] hostname prefix (default: deepinfra)
+#   deepinfra_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                          when a kcluster lists "deepinfra" in its addons[], "podman" when only a node does
+#                          (options: podman, kubernetes)
+#   deepinfra_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   deepinfra_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   deepinfra_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4008)
+#
+# In podman mode the proxy answers at http://<node>:<deepinfra_port>/v1 on every node that lists "deepinfra" in
+# its own addons[], and its master key is in /etc/litellm/deepinfra/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the anthropic, openai, gemini and kimi add-ons: LiteLLM in front of one hosted model,
 # reached by any OpenAI client at http://deepinfra.<kcluster>.<domain>/v1. The provider's key
@@ -29,8 +39,9 @@ PROVIDER = "deepinfra"
 
 PLUGIN = {
     "name": "deepinfra",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The chart's values turn an ingress on, which is how the endpoint is reached.
     "requires_cluster": ["ingress"],
