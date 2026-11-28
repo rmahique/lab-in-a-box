@@ -401,6 +401,7 @@ function wizardButtons({ back = false, next = false, open = false, create = fals
 function renderWizard() {
   const body = $("#wizardBody");
   body.innerHTML = "";
+  wizardSay("");
   if (!wiz.workflow) {
     renderWizardStrip(false);
     renderWizardSoFar(false);
@@ -673,8 +674,37 @@ function wizardToCanvas() {
   toast("On the canvas: every field can be changed before you create it");
 }
 
+// Why the step builder's lab cannot be created from here, or "": the canvas's Create lab rules (serverLock(), the
+// lab's own errors), checked before the step builder closes so a refusal is said where the reader is.
+function wizardCreateBlocker() {
+  const lock = serverLock();
+  if (lock) return lock;
+  const errors = lintLab(decompileLab(wiz.config)).errors;
+  return errors.length ? "Open it in the canvas and fix this first: " + errors.join(" ") : "";
+}
+
+// Shows `text` under the step builder's question, or hides the line when it is "".
+function wizardSay(text) {
+  const msg = $("#wizardMsg");
+  if (!msg) return;
+  msg.textContent = text;
+  msg.hidden = !text;
+}
+
 async function wizardCreate() {
   if (!wiz.config) return;
+  wizardSay("");
+  const why = wizardCreateBlocker();
+  if (why) { wizardSay(why); return; }
+  // No login yet: an admin call is what makes the browser ask for one, and Create lab only goes on once it is given.
+  if (!(state.auth && state.auth.user)) {
+    try {
+      await adminCall("jobs");
+    } catch (e) {
+      wizardSay("Creating a lab needs a login: " + e.message);
+      return;
+    }
+  }
   // Straight into the canvas's own Create lab, which saves the definition, asks for the passphrase it needs and
   // follows the job: one path, whichever way the lab was written.
   wizardToCanvas();

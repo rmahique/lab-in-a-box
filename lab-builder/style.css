@@ -460,3 +460,4 @@ h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mu
 .wizard-summary dt { font-weight: 640; margin-top: .5rem }
 .wizard-summary dd { margin: 0 0 0 1rem; color: var(--muted) }
 .wizard-blocked { border: 1px solid var(--warn, #c77); border-radius: 8px; padding: .6rem .8rem; margin: 0 0 .8rem }
+.wizard-msg { margin: 0 1rem .6rem }
