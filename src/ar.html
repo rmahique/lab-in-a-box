@@ -1100,6 +1100,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <hr />
 <h2 id="available-addons">الإضافات المتاحة</h2>
 <p>يُشار إلى الإضافات بأسمائها في مصفوفة <code>addons</code> لعنقود kcluster أو لعقدة. ويجب أن يكون السكربت <code>install_&lt;name&gt;</code> المقابل في <code>PATH</code>.</p>
+<p>الإضافة التي يمكن تشغيلها بالطريقتين تتبع المكان الذي يدرجها فيه المختبر: في <code>addons</code> الخاصة بـ kcluster تكون حمل عمل Kubernetes على ذلك الـ kcluster، وفي <code>addons</code> الخاصة بعقدة تكون حاوية podman على تلك العقدة، يمكن الوصول إليها باسم العقدة والمنفذ الذي يحدده حقلها <code>&lt;addon&gt;_port</code>. ويتجاوز حقلها <code>&lt;addon&gt;_deployment</code> (<code>kubernetes</code> أو <code>podman</code>) ذلك.</p>
 <p><sub>انتقل إلى: <a href="#addons-k8s">Kubernetes وGitOps</a> · <a href="#addons-security">الأمن والامتثال</a> · <a href="#addons-smlm">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">التخزين وقواعد البيانات</a> · <a href="#addons-collaboration">التعاون ومشاركة الملفات</a> · <a href="#addons-cicd">CI/CD والأدوات</a> · <a href="#addons-ai">الذكاء الاصطناعي / تعلم الآلة</a> · <a href="#addons-virt">المحاكاة الافتراضية</a> · <a href="#addons-desktop">سطح المكتب</a> · <a href="#addons-demos">التطبيقات التجريبية</a> · <a href="#addons-games">الألعاب</a></sub></p>
 <p><a id="addons-k8s"></a></p>
 <details open>
@@ -1395,7 +1396,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <tbody>
 <tr>
 <td><a href="https://ollama.com/"><code>ollama</code></a></td>
-<td>بيئة تشغيل محلية لنماذج اللغة الكبيرة</td>
+<td>بيئة تشغيل محلية لنماذج اللغة الكبيرة. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://docs.vllm.ai/"><code>vllm</code></a></td>
@@ -1403,107 +1404,107 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://github.com/open-webui/mcpo"><code>mcpo</code></a></td>
-<td>ينشر خوادم MCP كنقاط نهاية أدوات OpenAPI</td>
+<td>ينشر خوادم MCP كنقاط نهاية أدوات OpenAPI. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://studio.ai21.com"><code>ai21</code></a></td>
-<td>وكيل لواجهة AI21 البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة AI21 البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://cloud.cerebras.ai"><code>cerebras</code></a></td>
-<td>وكيل لواجهة Cerebras البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Cerebras البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://dashboard.cohere.com"><code>cohere</code></a></td>
-<td>وكيل لواجهة Cohere البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Cohere البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://dashscope.console.aliyun.com"><code>dashscope</code></a></td>
-<td>وكيل لواجهة Alibaba Cloud DashScope البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Alibaba Cloud DashScope البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://deepinfra.com/dash/api_keys"><code>deepinfra</code></a></td>
-<td>وكيل لواجهة DeepInfra البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة DeepInfra البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://console.bce.baidu.com"><code>ernie</code></a></td>
-<td>وكيل لواجهة Baidu ERNIE البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Baidu ERNIE البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://fireworks.ai"><code>fireworks</code></a></td>
-<td>وكيل لواجهة Fireworks AI البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Fireworks AI البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://console.groq.com"><code>groq</code></a></td>
-<td>وكيل لواجهة Groq البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Groq البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://huggingface.co/settings/tokens"><code>huggingface</code></a></td>
-<td>وكيل لواجهة Hugging Face Inference البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Hugging Face Inference البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://app.hyperbolic.xyz"><code>hyperbolic</code></a></td>
-<td>وكيل لواجهة Hyperbolic البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Hyperbolic البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://jina.ai"><code>jina</code></a></td>
-<td>وكيل لواجهة تضمينات Jina AI البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة تضمينات Jina AI البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://studio.nebius.com"><code>nebius</code></a></td>
-<td>وكيل لواجهة Nebius AI Studio البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Nebius AI Studio البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://novita.ai"><code>novita</code></a></td>
-<td>وكيل لواجهة Novita AI البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Novita AI البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://openrouter.ai/keys"><code>openrouter</code></a></td>
-<td>وكيل لواجهة OpenRouter البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة OpenRouter البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://www.perplexity.ai/settings/api"><code>perplexity</code></a></td>
-<td>وكيل لواجهة Perplexity البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Perplexity البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://replicate.com/account/api-tokens"><code>replicate</code></a></td>
-<td>وكيل لواجهة Replicate البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Replicate البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://cloud.sambanova.ai"><code>sambanova</code></a></td>
-<td>وكيل لواجهة SambaNova Cloud البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة SambaNova Cloud البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://api.together.ai"><code>together</code></a></td>
-<td>وكيل لواجهة Together AI البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Together AI البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://dash.voyageai.com"><code>voyage</code></a></td>
-<td>وكيل لواجهة تضمينات Voyage AI البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة تضمينات Voyage AI البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://console.x.ai"><code>xai</code></a></td>
-<td>وكيل لواجهة xAI Grok البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة xAI Grok البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://z.ai"><code>zai</code></a></td>
-<td>وكيل لواجهة Z.ai GLM البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Z.ai GLM البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://www.deepseek.com/"><code>deepseek</code></a></td>
-<td>نموذج DeepSeek، يُقدَّم عبر Ollama</td>
+<td>نموذج DeepSeek، يُقدَّم عبر Ollama. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://www.swiss-ai.org/apertus"><code>apertus</code></a></td>
-<td>نموذج Apertus ‏(Swiss AI Initiative)، يُقدَّم عبر Ollama</td>
+<td>نموذج Apertus ‏(Swiss AI Initiative)، يُقدَّم عبر Ollama. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://ai.google.dev/gemini-api"><code>gemini</code></a></td>
-<td>وكيل لواجهة Google Gemini البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Google Gemini البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://www.anthropic.com/"><code>anthropic</code></a></td>
-<td>وكيل لواجهة Anthropic Claude البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة Anthropic Claude البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://www.anthropic.com/claude-code"><code>anthropic_tools</code></a></td>
@@ -1519,15 +1520,15 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://openai.com/"><code>openai</code></a></td>
-<td>وكيل لواجهة OpenAI البرمجية (LiteLLM)</td>
+<td>وكيل لواجهة OpenAI البرمجية (LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://www.moonshot.ai/"><code>kimi</code></a></td>
-<td>وكيل لواجهة Kimi البرمجية من Moonshot AI ‏(LiteLLM)</td>
+<td>وكيل لواجهة Kimi البرمجية من Moonshot AI ‏(LiteLLM). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://openwebui.com/"><code>open_webui</code></a></td>
-<td>واجهة دردشة لـ Ollama ونقاط النهاية المتوافقة مع OpenAI</td>
+<td>واجهة دردشة لـ Ollama ونقاط النهاية المتوافقة مع OpenAI. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://searxng.org/"><code>searxng</code></a></td>
@@ -1535,7 +1536,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://github.com/NousResearch/hermes-agent"><code>hermes</code></a></td>
-<td>Hermes Agent: وكيل الذكاء الاصطناعي الشخصي ذاتي التحسن من Nous Research (روبوت Telegram/Discord/Slack + لوحة معلومات ويب)</td>
+<td>Hermes Agent: وكيل الذكاء الاصطناعي الشخصي ذاتي التحسن من Nous Research (روبوت Telegram/Discord/Slack + لوحة معلومات ويب). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://github.com/NVIDIA/OpenShell"><code>openshell</code></a></td>
@@ -1551,7 +1552,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://qdrant.tech/"><code>qdrant</code></a></td>
-<td>قاعدة بيانات المتجهات Qdrant ‏(RAG/البحث بالتضمينات)</td>
+<td>قاعدة بيانات المتجهات Qdrant ‏(RAG/البحث بالتضمينات). على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://weaviate.io/"><code>weaviate</code></a></td>
@@ -1563,19 +1564,19 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://qwenlm.github.io/"><code>qwen</code></a></td>
-<td>نموذج Qwen2.5، يُقدَّم عبر Ollama</td>
+<td>نموذج Qwen2.5، يُقدَّم عبر Ollama. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://mistral.ai/"><code>mistral</code></a></td>
-<td>نموذج Mistral، يُقدَّم عبر Ollama</td>
+<td>نموذج Mistral، يُقدَّم عبر Ollama. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://github.com/meta-llama/codellama"><code>codellama</code></a></td>
-<td>نموذج Code Llama، يُقدَّم عبر Ollama</td>
+<td>نموذج Code Llama، يُقدَّم عبر Ollama. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://github.com/bigcode-project/starcoder2"><code>starcoder2</code></a></td>
-<td>نموذج StarCoder2، يُقدَّم عبر Ollama</td>
+<td>نموذج StarCoder2، يُقدَّم عبر Ollama. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 </tbody>
 </table>
@@ -1705,7 +1706,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://github.com/edisgreat/skynet-simulator"><code>skynet_simulator</code></a></td>
-<td>Skynet Simulator، لعبة ألغاز/خمول مفتوحة المصدر في المتصفح تستضيفها بنفسك</td>
+<td>Skynet Simulator، لعبة ألغاز/خمول مفتوحة المصدر في المتصفح تستضيفها بنفسك. على kcluster، أو كحاوية podman عند إدراجها على عقدة</td>
 </tr>
 <tr>
 <td><a href="https://github.com/leandrodreamer/BeepSaber"><code>open_saber</code></a></td>

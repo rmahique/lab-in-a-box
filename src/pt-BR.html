@@ -1100,6 +1100,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <hr />
 <h2 id="available-addons">Complementos disponíveis</h2>
 <p>Os complementos são referenciados pelo nome na lista <code>addons</code> de um kcluster ou de um nó. O script <code>install_&lt;name&gt;</code> correspondente precisa estar no <code>PATH</code>.</p>
+<p>Um addon que pode rodar das duas formas segue o lugar onde o lab o lista: nos <code>addons</code> de um kcluster, é uma carga de trabalho do Kubernetes nesse kcluster; nos <code>addons</code> próprios de um nó, um contêiner podman nesse nó, acessível pelo nome do nó e pela porta definida no seu campo <code>&lt;addon&gt;_port</code>. O seu campo <code>&lt;addon&gt;_deployment</code> (<code>kubernetes</code> ou <code>podman</code>) substitui essa escolha.</p>
 <p><sub>Ir para: <a href="#addons-k8s">Kubernetes e GitOps</a> · <a href="#addons-security">Segurança e conformidade</a> · <a href="#addons-smlm">SUSE Multi-Linux Manager / Uyuni</a> · <a href="#addons-storage">Armazenamento e bancos de dados</a> · <a href="#addons-collaboration">Colaboração e compartilhamento de arquivos</a> · <a href="#addons-cicd">CI/CD e ferramentas</a> · <a href="#addons-ai">IA / ML</a> · <a href="#addons-virt">Virtualização</a> · <a href="#addons-desktop">Área de trabalho</a> · <a href="#addons-demos">Aplicações de demonstração</a> · <a href="#addons-games">Jogos</a></sub></p>
 <p><a id="addons-k8s"></a></p>
 <details open>
@@ -1395,7 +1396,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 <tbody>
 <tr>
 <td><a href="https://ollama.com/"><code>ollama</code></a></td>
-<td>Ambiente local de execução de LLM</td>
+<td>Ambiente local de execução de LLM. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://docs.vllm.ai/"><code>vllm</code></a></td>
@@ -1403,107 +1404,107 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://github.com/open-webui/mcpo"><code>mcpo</code></a></td>
-<td>Publica servidores MCP como endpoints de ferramentas OpenAPI</td>
+<td>Publica servidores MCP como endpoints de ferramentas OpenAPI. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://studio.ai21.com"><code>ai21</code></a></td>
-<td>Proxy da API da AI21 (LiteLLM)</td>
+<td>Proxy da API da AI21 (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://cloud.cerebras.ai"><code>cerebras</code></a></td>
-<td>Proxy da API da Cerebras (LiteLLM)</td>
+<td>Proxy da API da Cerebras (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://dashboard.cohere.com"><code>cohere</code></a></td>
-<td>Proxy da API da Cohere (LiteLLM)</td>
+<td>Proxy da API da Cohere (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://dashscope.console.aliyun.com"><code>dashscope</code></a></td>
-<td>Proxy da API da Alibaba Cloud DashScope (LiteLLM)</td>
+<td>Proxy da API da Alibaba Cloud DashScope (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://deepinfra.com/dash/api_keys"><code>deepinfra</code></a></td>
-<td>Proxy da API da DeepInfra (LiteLLM)</td>
+<td>Proxy da API da DeepInfra (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://console.bce.baidu.com"><code>ernie</code></a></td>
-<td>Proxy da API da Baidu ERNIE (LiteLLM)</td>
+<td>Proxy da API da Baidu ERNIE (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://fireworks.ai"><code>fireworks</code></a></td>
-<td>Proxy da API da Fireworks AI (LiteLLM)</td>
+<td>Proxy da API da Fireworks AI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://console.groq.com"><code>groq</code></a></td>
-<td>Proxy da API da Groq (LiteLLM)</td>
+<td>Proxy da API da Groq (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://huggingface.co/settings/tokens"><code>huggingface</code></a></td>
-<td>Proxy da API da Hugging Face Inference (LiteLLM)</td>
+<td>Proxy da API da Hugging Face Inference (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://app.hyperbolic.xyz"><code>hyperbolic</code></a></td>
-<td>Proxy da API da Hyperbolic (LiteLLM)</td>
+<td>Proxy da API da Hyperbolic (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://jina.ai"><code>jina</code></a></td>
-<td>Proxy da API de embeddings da Jina AI (LiteLLM)</td>
+<td>Proxy da API de embeddings da Jina AI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://studio.nebius.com"><code>nebius</code></a></td>
-<td>Proxy da API da Nebius AI Studio (LiteLLM)</td>
+<td>Proxy da API da Nebius AI Studio (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://novita.ai"><code>novita</code></a></td>
-<td>Proxy da API da Novita AI (LiteLLM)</td>
+<td>Proxy da API da Novita AI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://openrouter.ai/keys"><code>openrouter</code></a></td>
-<td>Proxy da API da OpenRouter (LiteLLM)</td>
+<td>Proxy da API da OpenRouter (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://www.perplexity.ai/settings/api"><code>perplexity</code></a></td>
-<td>Proxy da API da Perplexity (LiteLLM)</td>
+<td>Proxy da API da Perplexity (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://replicate.com/account/api-tokens"><code>replicate</code></a></td>
-<td>Proxy da API da Replicate (LiteLLM)</td>
+<td>Proxy da API da Replicate (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://cloud.sambanova.ai"><code>sambanova</code></a></td>
-<td>Proxy da API da SambaNova Cloud (LiteLLM)</td>
+<td>Proxy da API da SambaNova Cloud (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://api.together.ai"><code>together</code></a></td>
-<td>Proxy da API da Together AI (LiteLLM)</td>
+<td>Proxy da API da Together AI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://dash.voyageai.com"><code>voyage</code></a></td>
-<td>Proxy da API de embeddings da Voyage AI (LiteLLM)</td>
+<td>Proxy da API de embeddings da Voyage AI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://console.x.ai"><code>xai</code></a></td>
-<td>Proxy da API da xAI Grok (LiteLLM)</td>
+<td>Proxy da API da xAI Grok (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://z.ai"><code>zai</code></a></td>
-<td>Proxy da API da Z.ai GLM (LiteLLM)</td>
+<td>Proxy da API da Z.ai GLM (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://www.deepseek.com/"><code>deepseek</code></a></td>
-<td>Modelo DeepSeek, servido pelo Ollama</td>
+<td>Modelo DeepSeek, servido pelo Ollama. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://www.swiss-ai.org/apertus"><code>apertus</code></a></td>
-<td>Modelo Apertus (Swiss AI Initiative), servido pelo Ollama</td>
+<td>Modelo Apertus (Swiss AI Initiative), servido pelo Ollama. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://ai.google.dev/gemini-api"><code>gemini</code></a></td>
-<td>Proxy da API do Google Gemini (LiteLLM)</td>
+<td>Proxy da API do Google Gemini (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://www.anthropic.com/"><code>anthropic</code></a></td>
-<td>Proxy da API do Anthropic Claude (LiteLLM)</td>
+<td>Proxy da API do Anthropic Claude (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://www.anthropic.com/claude-code"><code>anthropic_tools</code></a></td>
@@ -1519,15 +1520,15 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://openai.com/"><code>openai</code></a></td>
-<td>Proxy da API da OpenAI (LiteLLM)</td>
+<td>Proxy da API da OpenAI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://www.moonshot.ai/"><code>kimi</code></a></td>
-<td>Proxy da API Kimi da Moonshot AI (LiteLLM)</td>
+<td>Proxy da API Kimi da Moonshot AI (LiteLLM). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://openwebui.com/"><code>open_webui</code></a></td>
-<td>Interface de chat para Ollama e endpoints compatíveis com OpenAI</td>
+<td>Interface de chat para Ollama e endpoints compatíveis com OpenAI. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://searxng.org/"><code>searxng</code></a></td>
@@ -1535,7 +1536,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://github.com/NousResearch/hermes-agent"><code>hermes</code></a></td>
-<td>Hermes Agent: o agente de IA pessoal e autoaperfeiçoável da Nous Research (bot de Telegram/Discord/Slack + painel web)</td>
+<td>Hermes Agent: o agente de IA pessoal e autoaperfeiçoável da Nous Research (bot de Telegram/Discord/Slack + painel web). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://github.com/NVIDIA/OpenShell"><code>openshell</code></a></td>
@@ -1551,7 +1552,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://qdrant.tech/"><code>qdrant</code></a></td>
-<td>Banco de dados vetorial Qdrant (RAG/busca por embeddings)</td>
+<td>Banco de dados vetorial Qdrant (RAG/busca por embeddings). Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://weaviate.io/"><code>weaviate</code></a></td>
@@ -1563,19 +1564,19 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://qwenlm.github.io/"><code>qwen</code></a></td>
-<td>Modelo Qwen2.5, servido pelo Ollama</td>
+<td>Modelo Qwen2.5, servido pelo Ollama. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://mistral.ai/"><code>mistral</code></a></td>
-<td>Modelo Mistral, servido pelo Ollama</td>
+<td>Modelo Mistral, servido pelo Ollama. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://github.com/meta-llama/codellama"><code>codellama</code></a></td>
-<td>Modelo Code Llama, servido pelo Ollama</td>
+<td>Modelo Code Llama, servido pelo Ollama. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://github.com/bigcode-project/starcoder2"><code>starcoder2</code></a></td>
-<td>Modelo StarCoder2, servido pelo Ollama</td>
+<td>Modelo StarCoder2, servido pelo Ollama. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 </tbody>
 </table>
@@ -1705,7 +1706,7 @@ build_man_pages.py --installed      # write them again after an upgrade
 </tr>
 <tr>
 <td><a href="https://github.com/edisgreat/skynet-simulator"><code>skynet_simulator</code></a></td>
-<td>Skynet Simulator, um jogo de navegador de quebra-cabeça/idle de código aberto, hospedado por você</td>
+<td>Skynet Simulator, um jogo de navegador de quebra-cabeça/idle de código aberto, hospedado por você. Em um kcluster ou, listado em um nó, como contêiner podman</td>
 </tr>
 <tr>
 <td><a href="https://github.com/leandrodreamer/BeepSaber"><code>open_saber</code></a></td>
