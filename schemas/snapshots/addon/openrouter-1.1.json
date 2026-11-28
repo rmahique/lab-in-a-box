@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "openrouter_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "openrouter_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "openrouter_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "openrouter_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "openrouter_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "openrouter_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "openrouter_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "openrouter_ns": {
+   "default": "openrouter",
+   "required": false,
+   "type": "namespace"
+  },
+  "openrouter_port": {
+   "default": "4017",
+   "required": false,
+   "type": "port"
+  },
+  "openrouter_shorthn": {
+   "default": "openrouter",
+   "required": false,
+   "type": "string"
+  },
+  "openrouter_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:openrouter",
+ "version": "1.1"
+}

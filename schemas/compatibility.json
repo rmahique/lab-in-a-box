@@ -320,7 +320,8 @@
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}
   ],
   "addon:openrouter": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: openrouter_deployment, and openrouter_image, openrouter_image_tag and openrouter_port for the LiteLLM container a node runs when it lists openrouter in its own addons[]"}
   ],
   "addon:openshell": [
    {"version": "1.0", "breaking": false, "changes": "Initial openshell addon: kubernetes (Helm chart) and host (upstream installer) modes"},
