@@ -343,7 +343,8 @@
   ],
   "addon:qdrant": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
-   {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
+   {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
+   {"version": "1.2", "breaking": false, "changes": "podman mode: qdrant_deployment, and qdrant_image, qdrant_image_tag, qdrant_port, qdrant_grpc_port and qdrant_data_dir for the container a node runs when it lists qdrant in its own addons[]"}
   ],
   "addon:qwen": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},

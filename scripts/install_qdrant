@@ -3,25 +3,40 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.1
+# Schema version: 1.2
 #
-# JSON section: "qdrant" — Qdrant vector database (RAG/embedding search)
+# JSON section: "qdrant" — Qdrant vector database (RAG/embedding search), on a kcluster or as a podman container on a node
+#   qdrant_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes" when a
+#                       kcluster lists "qdrant" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
 #   qdrant_version    : [OPTIONAL] Helm chart version (empty = latest)
 #   qdrant_ns         : [OPTIONAL] namespace (default: qdrant)
 #   qdrant_rel        : [OPTIONAL] Helm repo alias (default: qdrant)
 #   qdrant_repo_url   : [OPTIONAL] Helm repo URL (default: https://qdrant.github.io/qdrant-helm)
 #   qdrant_replicas   : [OPTIONAL] StatefulSet replica count, as the chart's default (default: 1)
+#   qdrant_image      : [OPTIONAL] container image, in podman mode (default: docker.io/qdrant/qdrant)
+#   qdrant_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: latest)
+#   qdrant_port       : [OPTIONAL] host port of the REST API and the web UI, in podman mode (default: 6333)
+#   qdrant_grpc_port  : [OPTIONAL] host port of the gRPC API, in podman mode (default: 6334)
+#   qdrant_data_dir   : [OPTIONAL] host directory holding the collections, in podman mode, so a new container
+#                       keeps them (default: /var/lib/qdrant)
 #
 # Chart repo and version follow qdrant/qdrant-helm's README. The chart's README notes that it needs
 # Kubernetes v1.24+ (gRPC readiness probe support) and a PersistentVolume provisioner. Both are already
 # assumed by the RKE2 and K3s addons of this project.
+#
+# In podman mode Qdrant runs as one container on every node that lists "qdrant" in its own addons[], answering
+# on that node's own hostname, which already has a DNS record. qdrant_version, qdrant_ns, qdrant_rel,
+# qdrant_repo_url and qdrant_replicas apply in kubernetes mode. Neither mode sets an API key, as the chart's own
+# default does not: keep the ports on the lab network.
 
 __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "qdrant",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the qdrant-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["storageclass"],
     "aux_services": [],
@@ -38,12 +53,27 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
+import placement  # noqa: E402
+import podman_service as ps  # noqa: E402
 from lab_creation import setup_helm, helm_repo_add, ssh_run  # noqa: E402
+
+DEFAULT_IMAGE = "docker.io/qdrant/qdrant"
+DEFAULT_IMAGE_TAG = "latest"
+DEFAULT_PORT = 6333
+DEFAULT_GRPC_PORT = 6334
+DEFAULT_DATA_DIR = "/var/lib/qdrant"
+CONTAINER = "qdrant"
+# Where the image keeps its collections, and how long a fresh container gets to answer; both fixed here.
+CONTAINER_DATA = "/qdrant/storage"
+START_WAIT = 300
 
 
 def _validate(v):
     v.vns("qdrant")
     v.vver("qdrant")
+    placement.validate(v, "qdrant")
+    v.vport("qdrant", "qdrant_port")
+    v.vport("qdrant", "qdrant_grpc_port")
 
 
 def setup_qdrant_repo(hostname, qdrant_rel=None, qdrant_repo_url=None):
@@ -66,6 +96,24 @@ def setup_qdrant(hostname, qdrant_rel=None, qdrant_ns=None, qdrant_version=None,
     print("In-cluster endpoint: qdrant.{}.svc.cluster.local:6333 (REST), :6334 (gRPC)".format(ns))
 
 
+def setup_qdrant_podman(hostname: str, cfg: dict) -> str:
+    """Run Qdrant as a podman container on `hostname` from the section `cfg`; returns its REST URL."""
+    port = int(cfg.get("qdrant_port") or DEFAULT_PORT)
+    grpc_port = int(cfg.get("qdrant_grpc_port") or DEFAULT_GRPC_PORT)
+    data_dir = str(cfg.get("qdrant_data_dir") or DEFAULT_DATA_DIR)
+    image = "{}:{}".format(cfg.get("qdrant_image") or DEFAULT_IMAGE, cfg.get("qdrant_image_tag") or DEFAULT_IMAGE_TAG)
+    ssh_run(hostname, "mkdir -p {}".format(shlex.quote(data_dir)))
+    ps.deploy(hostname, CONTAINER, image, description="Qdrant (lab-in-a-box)",
+              ports=["{}:{}".format(port, DEFAULT_PORT), "{}:{}".format(grpc_port, DEFAULT_GRPC_PORT)],
+              volumes=["{}:{}:Z".format(data_dir, CONTAINER_DATA)])
+    ps.wait_for_http(hostname, "http://127.0.0.1:{}/".format(port), timeout=START_WAIT, what="Qdrant")
+    url = placement.node_url(hostname, port)
+    print("Qdrant on {}: REST {}  gRPC {}:{}  web UI {}/dashboard".format(hostname, url, hostname, grpc_port, url))
+    print("The node itself must allow traffic on ports {} and {}: this add-on manages no firewall or security "
+          "group".format(port, grpc_port))
+    return url
+
+
 def main():
     ac.handle_common_args(__file__, __version__, validate_fn=_validate, plugin=PLUGIN)
 
@@ -74,6 +122,10 @@ def main():
         sys.exit(1)
     lab_file = sys.argv[1]
     definition = primary.load_definition(lab_file)
+    if placement.deployment(definition, "qdrant", definition.get("qdrant") or {}) != placement.KUBERNETES:
+        for vm_name in placement.podman_nodes(definition, "qdrant"):
+            setup_qdrant_podman(vm_name, k8s.addon_node_config(definition, "qdrant", vm_name))
+        return
 
     target = k8s.first_server_node(definition)
     if not target:
