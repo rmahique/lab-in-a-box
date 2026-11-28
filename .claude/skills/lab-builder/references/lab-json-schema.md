@@ -45,6 +45,11 @@ covers the fields you'll touch routinely.
 `mydomain` left out: the domain every node name shares is used (`node1.mydemo.lab` gives
 `mydemo.lab`), or the automation node's own domain when the names are short. Node names in
 different domains (or FQDNs mixed with short names) are an error until `mydomain` is set.
+A lab that names no domain anywhere (common, a node, a kcluster, FQDN node names), or has a
+kcluster without `mydomain` while common has none, is given `common.mydomain` when it is
+first written (lab builder Save/Download/Send/Create, `setup_lab.py` into the
+`.system_modified` sibling): the node names' shared domain, else `<lab name>-<6 random>.lab`
+(`primary.default_domain()`, mirrored by `defaultDomain()` in app.js).
 
 `ssh_authorized_keys` (common and per node, merged): extra SSH keys added over SSH once each
 VM is up. Each entry is a key line, an https URL (e.g. `https://github.com/<user>.keys`) or an

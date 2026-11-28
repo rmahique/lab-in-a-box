@@ -7,6 +7,7 @@
 # from 10_lab_creation_core.sh, in its own container — see tests/run_tests.sh.
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -336,6 +337,28 @@ for _label, _nodes in (("different domains", {"a.sko.lab": {}, "b.other.lab": {}
         _msg = str(e)
     check("node_name_domain: {} raise, asking for mydomain".format(_label),
           "cannot determine the default domain name" in _msg and "mydomain" in _msg)
+
+# default_domain: a lab that names a domain keeps resolving it; only one that names none, or has a kcluster without
+# one while common has none, is given common.mydomain when it is written.
+_dd = primary.default_domain
+check("default_domain: a lab without nodes or kclusters needs none", _dd({"common": {}}, "x") == "")
+check("default_domain: a lab with common.mydomain needs none",
+      _dd({"common": {"mydomain": "set.lab"}, "nodes": {"a": {}}}, "x") == "")
+check("default_domain: FQDN node names need none",
+      _dd({"nodes": {"a.sko.lab": {}}}, "x") == "")
+check("default_domain: a node's own mydomain needs none",
+      _dd({"nodes": {"a": {"mydomain": "own.lab"}, "b": {}}}, "x") == "")
+check("default_domain: every kcluster with its own mydomain needs none",
+      _dd({"nodes": {"a": {}}, "kclusters": {"k1": {"mydomain": "k.lab"}}}, "x") == "")
+check("default_domain: a kcluster without mydomain takes the node names' domain",
+      _dd({"nodes": {"a.sko.lab": {}}, "kclusters": {"k1": {"clu_type": "rke2"}}}, "x") == "sko.lab")
+_gen = _dd({"nodes": {"a": {}, "b": {}}}, "My Lab_1")
+check("default_domain: a lab naming no domain gets <name>-<6 random>.lab ({})".format(_gen),
+      re.match(r"^my-lab-1-[a-z0-9]{6}\.lab$", _gen) is not None)
+check("default_domain: a lab without a usable name is 'lab'",
+      re.match(r"^lab-[a-z0-9]{6}\.lab$", _dd({"nodes": {"a": {}}}, "__")) is not None)
+check("default_domain: node names in different domains give none, for the preflight to report",
+      _dd({"nodes": {"a.sko.lab": {}, "b.other.lab": {}}, "kclusters": {"k1": {}}}, "x") == "")
 
 env = lc.load_vm_vars({"common": {}, "nodes": {"rodeo1.mydemosko.lab": {}}}, "rodeo1.mydemosko.lab")
 check("load_vm_vars: no mydomain takes the node names' shared domain, not this host's",

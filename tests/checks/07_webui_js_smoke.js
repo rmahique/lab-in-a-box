@@ -387,18 +387,45 @@ check("lint: an add-on where its layers do not allow it is an error", lint.error
 check("lint: two VMs with one IP is an error", lint.errors.some((e) => e.includes("same myip 10.0.0.1")));
 check("lint: an add-on's required field is an error", lint.errors.some((e) => e.includes("rancher: rancher_password")));
 st.model.items.push({ id: "c3", type: "cluster", name: "inherits", cfg: { clu_type: "k3s", clu_rel: "stable", mydomain: "" }, parent: null });
+const inherits = st.model.items[st.model.items.length - 1];
+const vms = st.model.items.filter((i) => i.type === "node");
+const names = vms.map((i) => i.name);
 lint = JSON.parse(JSON.stringify(sandbox.lintLab(st.model)));
-check("lint: a Kubernetes cluster with no mydomain and none in Common settings is an error",
+check("lint: a Kubernetes cluster with no mydomain is fine when the lab will be given one",
+  !lint.errors.some((e) => e.includes("inherits: mydomain")) && sandbox.missingRequired(inherits) === 0);
+vms[0].name = names[0] + ".sko.lab";
+lint = JSON.parse(JSON.stringify(sandbox.lintLab(st.model)));
+check("lint: a Kubernetes cluster with no mydomain is an error when the node names mix domains",
   lint.errors.some((e) => e.includes("Kubernetes cluster inherits: mydomain is not set")));
-check("lint: missingRequired counts that cluster's mydomain", sandbox.missingRequired(st.model.items[st.model.items.length - 1]) === 1);
+check("lint: missingRequired counts that cluster's mydomain", sandbox.missingRequired(inherits) === 1);
 st.model.common.mydomain = "sko.lab";
 lint = JSON.parse(JSON.stringify(sandbox.lintLab(st.model)));
 check("lint: a Kubernetes cluster with no mydomain takes the Common settings one",
   !lint.errors.some((e) => e.includes("inherits: mydomain")));
-check("lint: missingRequired does not count it then", sandbox.missingRequired(st.model.items[st.model.items.length - 1]) === 0);
+check("lint: missingRequired does not count it then", sandbox.missingRequired(inherits) === 0);
 delete st.model.common.mydomain;
+vms.forEach((i, n) => { i.name = names[n]; });
 st.model.items.pop();
 check("lint: add-on settings nothing lists are a warning", lint.warnings.some((w) => w.includes("Add-on rancher has settings")));
+
+// defaultDomain/fillDefaultDomain: same rule as primary.default_domain().
+const dd = (lab, name) => sandbox.defaultDomain(lab, name);
+check("defaultDomain: a lab without nodes or Kubernetes clusters needs none", dd({ common: {} }, "n") === "");
+check("defaultDomain: a lab with common.mydomain needs none", dd({ common: { mydomain: "a.lab" }, nodes: { x: {} } }, "n") === "");
+check("defaultDomain: FQDN node names need none", dd({ nodes: { "x.sko.lab": {} } }, "n") === "");
+check("defaultDomain: a node's own mydomain needs none", dd({ nodes: { x: { mydomain: "o.lab" }, y: {} } }, "n") === "");
+check("defaultDomain: a kcluster without mydomain takes the node names' domain",
+  dd({ nodes: { "x.sko.lab": {} }, kclusters: { k1: { clu_type: "rke2" } } }, "n") === "sko.lab");
+check("defaultDomain: a lab naming no domain gets <name>-<6 random>.lab",
+  /^my-lab-1-[a-z0-9]{6}\.lab$/.test(dd({ nodes: { x: {} } }, "My Lab_1")));
+check("defaultDomain: no usable name gives lab-<random>.lab", /^lab-[a-z0-9]{6}\.lab$/.test(dd({ nodes: { x: {} } }, "__")));
+check("defaultDomain: node names in different domains give none",
+  dd({ nodes: { "a.sko.lab": {}, "b.o.lab": {} }, kclusters: { k1: {} } }, "n") === "");
+const filled = sandbox.fillDefaultDomain({ common: { VM_MEM: 1 }, nodes: { x: {} } }, "w");
+check("fillDefaultDomain: writes the domain into common and keeps the rest",
+  /^w-[a-z0-9]{6}\.lab$/.test(filled.common.mydomain) && filled.common.VM_MEM === 1);
+check("fillDefaultDomain: leaves a lab with a domain alone",
+  sandbox.fillDefaultDomain({ common: { mydomain: "k.lab" } }, "w").common.mydomain === "k.lab");
 
 const labIn = {
   common: { SOURCE_IMAGE: "x.qcow2", VM_MEM: 2048 },

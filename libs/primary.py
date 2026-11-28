@@ -13,6 +13,8 @@ Typical usage:
 import json
 import os
 import re
+import secrets
+import string
 import sys
 from pathlib import Path
 
@@ -141,6 +143,36 @@ def node_name_domain(definition) -> str:
         return domains.pop()
     raise ValueError("cannot determine the default domain name: the node names use {}; please specify it with "
                      "mydomain".format(", ".join(sorted(d or "short names" for d in domains))))
+
+
+def default_domain(definition, lab_name: str) -> str:
+    """
+    The common.mydomain a lab is given when it is written, or "" when it needs none. A lab that names a domain
+    anywhere (common, a node or kcluster mydomain, FQDN node names) keeps resolving it as it does without one, so it
+    needs none, unless one of its kclusters sets no mydomain and common sets none either. The value is the domain the
+    node names share, else "<lab name>-<6 random characters>.lab" ("lab" for a lab without a usable name).
+    A lab without nodes or kclusters needs none. Node names in different domains give "", so the preflight still
+    reports them.
+    """
+    common = definition.get("common") or {}
+    if common.get("mydomain"):
+        return ""
+    nodes = list((definition.get("nodes") or {}).values())
+    kclusters = list((definition.get("kclusters") or {}).values())
+    if not nodes and not kclusters:
+        return ""
+    try:
+        shared = node_name_domain(definition)
+    except ValueError:
+        return ""
+    named = bool(shared) or any((cfg or {}).get("mydomain") for cfg in nodes + kclusters)
+    if named and all((cfg or {}).get("mydomain") for cfg in kclusters):
+        return ""
+    if shared:
+        return shared
+    label = re.sub(r"[^a-z0-9]+", "-", str(lab_name or "").lower()).strip("-")[:40].strip("-") or "lab"
+    suffix = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6))
+    return "{}-{}.lab".format(label, suffix)
 
 
 def save_definition(definition):

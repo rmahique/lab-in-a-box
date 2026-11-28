@@ -640,6 +640,21 @@ def _create_one_vm(definition, config, defaults, lab_file, keep, vm_name, node_c
 
 
 
+def phase_default_domain(definition, lab_file):
+    """
+    Give a lab that sets no domain its common.mydomain (primary.default_domain()) and save it, so every later run and
+    every add-on, which reads the lab from disk, uses the same domain. Returns the path the rest of the run must use:
+    the sibling file the domain was saved to, or `lab_file` unchanged when the lab needed none.
+    """
+    domain = primary.default_domain(definition, lab_registry.lab_name(lab_file))
+    if not domain:
+        return lab_file
+    definition["common"] = dict(definition.get("common") or {}, mydomain=domain)
+    saved = str(primary.save_definition(definition))
+    lc.log("The lab sets no mydomain: it is '{}' from now on, saved in '{}'".format(domain, saved))
+    return saved
+
+
 def phase_allocate_ips(definition, config, lab_file):
     """
     Give every node that has no myip one, from the network the definition already describes. A cloud node is left
@@ -1183,6 +1198,7 @@ def main():
     # A node with no myip gets one before anything is validated, so the preflight sees the addresses the run will
     # actually use and the lab's own file can be written without any (see libs/ipalloc.py). Deterministic, so the
     # same definition always resolves to the same addresses.
+    lab_file = phase_default_domain(definition, lab_file)
     lab_file = phase_allocate_ips(definition, config, lab_file)
 
     preflight_issues = []

@@ -856,6 +856,20 @@ for p in patches:
     p.stop()
 
 
+# ── phase_default_domain: a lab naming no domain gets one, saved to the sibling the run then uses ──────────────────
+_saved = []
+with mock.patch.object(setup_lab.primary, "save_definition", side_effect=lambda d: _saved.append(dict(d)) or "lab.json.system_modified.json"):
+    _named = {"common": {"mydomain": "set.lab"}, "nodes": {"a": {}}}
+    check("phase_default_domain: a lab with a domain is left as it is",
+          setup_lab.phase_default_domain(_named, "/labs/demo.json") == "/labs/demo.json" and not _saved)
+    _bare = {"nodes": {"a": {}}}
+    _path = setup_lab.phase_default_domain(_bare, "/labs/demo.json")
+    check("phase_default_domain: a lab naming no domain is saved with demo-<random>.lab and the run uses that file",
+          _path == "lab.json.system_modified.json" and _saved
+          and str(_saved[0]["common"]["mydomain"]).startswith("demo-")
+          and _bare["common"]["mydomain"] == _saved[0]["common"]["mydomain"])
+
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)
