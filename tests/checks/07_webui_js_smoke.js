@@ -991,6 +991,31 @@ const wizardCreateChecks = async () => {
   st.auth = saved.auth;
 };
 
+// -- a missing credential links to the form that adds it, in a new tab -----
+const credentialLinkChecks = () => {
+  const nodes = stubNodes();
+  setWiz({ workflow: "multi-linux", index: 0, answers: { product: "smlm" },
+           steps: [{ name: "clients", title: "Clients", kind: "count", min: 0, max: 5 }],
+           prerequisites: [{ what: "a registration credential", why: "w.", fix: "f.", credential: "scc" }] });
+  const body = sandbox.document.querySelector("#wizardBody");
+  body.childNodes = [];
+  sandbox.renderWizardStep(body, vm.runInContext("wiz.steps[0]", sandbox));
+  const warn = body.childNodes[0];
+  const link = warn.childNodes.find((c) => c.tagName === "A");
+  check("a missing credential is linked to the Credentials form, in a new tab",
+        !!link && link.href === "?credentials=scc" && link.target === "_blank" && link.rel === "noopener");
+  vm.runInContext("wiz.prerequisites = []", sandbox);
+
+  const st = vm.runInContext("state", sandbox);
+  st.credTypes = { cloud: { aws: [] }, service: { appcollection: [], scc: [] } };
+  st.credPreset = "scc";
+  nodes["#credKind"] = Object.assign(sandbox.document.querySelector("#credKind"), { value: "cloud" });
+  sandbox.Option = function (text, value) { return Object.assign(makeElement("option"), { textContent: text, value }); };
+  sandbox.renderCredTypes();
+  check("?credentials=<type> chooses that type in the form, and its kind",
+        nodes["#credKind"].value === "service" && nodes["#credType"].value === "scc" && !st.credPreset);
+};
+
 // One stubbed document between them, so they take turns rather than overwrite each other's elements.
 const domChecks = (async () => {
   await wizardChecks();
@@ -998,6 +1023,7 @@ const domChecks = (async () => {
   releaseChoiceChecks();
   stepBuilderChecks();
   await wizardCreateChecks();
+  credentialLinkChecks();
 })();
 
 Promise.all([urlParamChecks(), credentialChecks, domChecks]).then(() => {

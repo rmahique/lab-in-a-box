@@ -30,7 +30,7 @@ def _wizard(action, method, params, data, clouds, services):
     admin.ACTIONS entry and is gated there, as before.
     """
     if action == "wizard" and method == "GET":
-        return {"workflows": discovery.wizard_workflows(service_accounts=services),
+        return {"workflows": discovery.wizard_workflows(),
                 "network": discovery.lab_network(), "accounts": bool(clouds)}
     if action == "wizard-steps" and method == "GET":
         # The answers so far ride along as JSON, because a GET is what the browser reads steps with and a later

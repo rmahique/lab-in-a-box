@@ -241,22 +241,25 @@ def _image_options(images):
     return [{"value": image, "label": image, "help": ""} for image in sorted(set(images or []))]
 
 
-def prerequisites(workflow, service_accounts=None):
+def prerequisites(workflow, service_accounts=None, answers=None):
     """
-    What this installation is missing before `workflow` can produce a lab that validates, as
-    [{"what", "why", "fix"}]. Empty when there is nothing in the way.
+    What this installation is missing before `workflow`, as answered so far in `answers`, can produce a lab that
+    validates, as [{"what", "why", "fix", "credential"}]; "credential" is the credential type that would supply it,
+    for a link to the form that adds one. Empty when there is nothing in the way.
 
-    Only one workflow has such a prerequisite today: a SUSE Multi-Linux Manager server needs a registration
-    credential, which nothing here can invent. Reporting it up front is the difference between a form that
-    cannot work and a generated lab that fails its own preflight.
+    Only one answer has such a prerequisite today: a SUSE Multi-Linux Manager server needs a registration
+    credential, which nothing here can invent, so it is reported once that server is the one chosen. Reporting it
+    up front is the difference between a form that cannot work and a generated lab that fails its own preflight.
     """
     missing = []
-    if workflow == "multi-linux" and not (service_accounts or {}).get("scc"):
+    if (workflow == "multi-linux" and str((answers or {}).get("product") or "") == "smlm"
+            and not (service_accounts or {}).get("scc")):
         missing.append({
             "what": "a registration credential",
             "why": "SUSE Multi-Linux Manager registers against the SUSE Customer Center, and its own --validate "
                    "refuses a lab with no credential to do it with.",
-            "fix": "Add one under Credentials, of kind 'scc'. Uyuni, its upstream, needs none.",
+            "fix": "Add one under Credentials, of kind 'scc'.",
+            "credential": "scc",
         })
     return missing
 

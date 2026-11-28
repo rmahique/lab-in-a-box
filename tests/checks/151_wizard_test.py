@@ -221,12 +221,17 @@ check("a name that is not a DNS label becomes one", wizard.build("vm", {"name": 
 
 
 # ── prerequisites: what an installation may be missing before a workflow can work ──
-check("a Multi-Linux Manager lab needs a registration credential, which nothing here can invent",
-      [m["what"] for m in wizard.prerequisites("multi-linux", {})] == ["a registration credential"])
-check("...and says how to fix it, since the operator is the only one who can",
-      all(m.get("why") and m.get("fix") for m in wizard.prerequisites("multi-linux", {})))
+_smlm = {"product": "smlm"}
+check("a SUSE Multi-Linux Manager server needs a registration credential, which nothing here can invent",
+      [m["what"] for m in wizard.prerequisites("multi-linux", {}, _smlm)] == ["a registration credential"])
+check("...and says how to fix it, naming the credential type the form adds",
+      all(m.get("why") and m.get("fix") and m.get("credential") == "scc"
+          for m in wizard.prerequisites("multi-linux", {}, _smlm)))
+check("it is said only once that server is chosen: not before, and not for Uyuni",
+      wizard.prerequisites("multi-linux", {}) == []
+      and wizard.prerequisites("multi-linux", {}, {"product": "uyuni"}) == [])
 check("with one in the store there is nothing in the way",
-      wizard.prerequisites("multi-linux", SERVICE_ACCOUNTS) == [])
+      wizard.prerequisites("multi-linux", SERVICE_ACCOUNTS, _smlm) == [])
 check("no other workflow asks for anything this installation might not have",
       all(wizard.prerequisites(w, {}) == [] for w in ("kubernetes", "virtualization", "vm")))
 
@@ -281,7 +286,7 @@ check("the cloud accounts the helper reports are the ones offered as a backend",
       [o["value"] for o in logged_in("wizard-steps", params={"name": ["vm"]})["steps"][1]["options"]]
       == ["libvirt", "account:aws-tmm", "account:gcp-tmm"])
 check("a service credential it reports satisfies the workflow that needs one",
-      logged_in("wizard")["workflows"][1]["prerequisites"] == [])
+      logged_in("wizard-steps", params={"name": ["multi-linux"], "answers": [json.dumps(_smlm)]})["prerequisites"] == [])
 check("...and a build uses them too, so the account chosen in the form is one the lab can name",
       logged_in("wizard-build", "POST", body=json.dumps({"workflow": "vm", "answers": {
           "name": "cloudy", "backend": "account:aws-tmm", "count": 1}}).encode())["config"]["common"]["cloud_account"]

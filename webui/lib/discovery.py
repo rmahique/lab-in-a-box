@@ -629,21 +629,10 @@ def _image_names():
     return names
 
 
-def wizard_workflows(service_accounts=None):
-    """
-    The workflows the step-by-step builder offers, each with whatever stands in its way on this installation.
-
-    `service_accounts` comes from the caller because the credential files are root-only: the web process reads
-    them through lab-builder-helper (webui/lib/admin.py) and passes the names in. Reading them here is the
-    fallback for a caller that runs as root itself.
-    """
-    wizard = _wizard()
-    accounts = service_accounts if service_accounts is not None else globals()["service_accounts"]()
-    out = []
-    for workflow in wizard.workflows():
-        workflow["prerequisites"] = wizard.prerequisites(workflow["name"], accounts)
-        out.append(workflow)
-    return out
+def wizard_workflows():
+    """The workflows the step-by-step builder offers. What stands in one's way depends on its answers, so
+    wizard_steps() reports it."""
+    return _wizard().workflows()
 
 
 def wizard_steps(workflow, answers=None, cloud_accounts=None, service_accounts=None):
@@ -657,7 +646,7 @@ def wizard_steps(workflow, answers=None, cloud_accounts=None, service_accounts=N
     clouds = cloud_accounts if cloud_accounts is not None else globals()["cloud_accounts"]()
     return {
         "workflow": workflow,
-        "prerequisites": wizard.prerequisites(workflow, accounts),
+        "prerequisites": wizard.prerequisites(workflow, accounts, answers=answers or {}),
         "steps": wizard.steps(workflow, catalogue=catalogue(), accounts=clouds,
                               images=_image_names(), addable=addable_addons(),
                               service_accounts=accounts, examples=examples(), answers=answers or {}),
