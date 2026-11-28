@@ -956,16 +956,28 @@ function getPath(obj, path) {
   return o;
 }
 
+// Kubernetes-cluster fields that take the Common settings value when the cluster leaves them empty
+// (same rule as k8s.load_kclu_vars).
+const CLUSTER_FROM_COMMON = new Set(["mydomain"]);
+const isSet = (o, k) => !!o && o[k] !== undefined && o[k] !== null && o[k] !== "";
+// Whether Kubernetes cluster setting `name` has a value, its own or the one it takes from `common`.
+function clusterFieldSet(cfg, name, common) {
+  return isSet(cfg, name) || (CLUSTER_FROM_COMMON.has(name) && isSet(common, name));
+}
+
 // "needs input" markers: required fields with no value and no schema default.
 function missingRequired(item) {
   const secs = state.base && state.base.sections;
   if (!secs) return 0;
   const m = state.model;
-  const miss = (fields, cfg) => (fields || []).filter((f) => f.required && (f.default === undefined || f.default === "")
-    && (cfg[f.name] === undefined || cfg[f.name] === "")).length;
+  const needed = (fields) => (fields || []).filter((f) => f.required && (f.default === undefined || f.default === ""));
+  const miss = (fields, cfg) => needed(fields).filter((f) => cfg[f.name] === undefined || cfg[f.name] === "").length;
   if (item === "common") return miss(secs.common.fields, m.common);
   if (item.type === "node") return miss(secs.nodes.fields, item.cfg) + (item.name ? 0 : 1);
-  if (item.type === "cluster") return miss(secs.kclusters.fields, item.cfg) + (item.name ? 0 : 1);
+  if (item.type === "cluster") {
+    return needed(secs.kclusters.fields).filter((f) => !clusterFieldSet(item.cfg, f.name, m.common)).length
+      + (item.name ? 0 : 1);
+  }
   const sc = state.schemaCache[item.comp];
   return sc ? miss(sc.fields, m.addonCfg[item.section] || {}) : 0;
 }
@@ -1087,7 +1099,7 @@ function lintLab(model) {
       }
     });
     clusters.forEach((c) => {
-      secs.kclusters.fields.filter((f) => f.required && !has(c.cfg, f.name)).forEach((f) => {
+      secs.kclusters.fields.filter((f) => f.required && !clusterFieldSet(c.cfg, f.name, model.common)).forEach((f) => {
         errors.push("Kubernetes cluster " + c.name + ": " + f.name + " is not set.");
       });
     });
