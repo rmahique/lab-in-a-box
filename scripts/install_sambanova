@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "sambanova" — SambaNova Cloud API proxy (LiteLLM)
+# JSON section: "sambanova" — SambaNova Cloud API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   sambanova_api_key    : [MANDATORY] SambaNova Cloud API key (from https://cloud.sambanova.ai)
 #   sambanova_model      : [MANDATORY] the model to serve, written the way LiteLLM routes it, normally
 #                              "sambanova/<model-id>". It is named rather than defaulted on purpose: a model id this
@@ -17,6 +17,16 @@
 #   sambanova_chart      : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   sambanova_ns         : [OPTIONAL] namespace (default: sambanova)
 #   sambanova_shorthn    : [OPTIONAL] hostname prefix (default: sambanova)
+#   sambanova_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                          when a kcluster lists "sambanova" in its addons[], "podman" when only a node does
+#                          (options: podman, kubernetes)
+#   sambanova_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   sambanova_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   sambanova_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4020)
+#
+# In podman mode the proxy answers at http://<node>:<sambanova_port>/v1 on every node that lists "sambanova" in
+# its own addons[], and its master key is in /etc/litellm/sambanova/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the anthropic, openai, gemini and kimi add-ons: LiteLLM in front of one hosted model,
 # reached by any OpenAI client at http://sambanova.<kcluster>.<domain>/v1. The provider's key
@@ -29,8 +39,9 @@ PROVIDER = "sambanova"
 
 PLUGIN = {
     "name": "sambanova",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The chart's values turn an ingress on, which is how the endpoint is reached.
     "requires_cluster": ["ingress"],

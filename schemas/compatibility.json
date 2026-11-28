@@ -371,7 +371,8 @@
    {"version": "1.0", "breaking": false, "changes": "First recorded version."}
   ],
   "addon:sambanova": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: sambanova_deployment, and sambanova_image, sambanova_image_tag and sambanova_port for the LiteLLM container a node runs when it lists sambanova in its own addons[]"}
   ],
   "addon:seafile": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
