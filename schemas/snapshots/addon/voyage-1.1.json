@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "voyage_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "voyage_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "voyage_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "voyage_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "voyage_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "voyage_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "voyage_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "voyage_ns": {
+   "default": "voyage",
+   "required": false,
+   "type": "namespace"
+  },
+  "voyage_port": {
+   "default": "4022",
+   "required": false,
+   "type": "port"
+  },
+  "voyage_shorthn": {
+   "default": "voyage",
+   "required": false,
+   "type": "string"
+  },
+  "voyage_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:voyage",
+ "version": "1.1"
+}

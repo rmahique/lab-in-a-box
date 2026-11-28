@@ -3,9 +3,9 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "voyage" — Voyage AI embeddings API proxy (LiteLLM)
+# JSON section: "voyage" — Voyage AI embeddings API proxy (LiteLLM), on a kcluster or as a podman container on a node
 #   voyage_api_key       : [MANDATORY] Voyage AI embeddings API key (from https://dash.voyageai.com)
 #   voyage_model         : [MANDATORY] the model to serve, written the way LiteLLM routes it, normally
 #                           "voyage/<model-id>". It is named rather than defaulted on purpose: a model id this
@@ -17,6 +17,16 @@
 #   voyage_chart         : [OPTIONAL] litellm-helm chart (default: oci://ghcr.io/berriai/litellm-helm)
 #   voyage_ns            : [OPTIONAL] namespace (default: voyage)
 #   voyage_shorthn       : [OPTIONAL] hostname prefix (default: voyage)
+#   voyage_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it: "kubernetes"
+#                       when a kcluster lists "voyage" in its addons[], "podman" when only a node does
+#                       (options: podman, kubernetes)
+#   voyage_image      : [OPTIONAL] LiteLLM container image, in podman mode (default: ghcr.io/berriai/litellm)
+#   voyage_image_tag  : [OPTIONAL] tag of that image, in podman mode (default: main-stable)
+#   voyage_port       : [OPTIONAL] host port the proxy answers on, in podman mode (default: 4022)
+#
+# In podman mode the proxy answers at http://<node>:<voyage_port>/v1 on every node that lists "voyage" in
+# its own addons[], and its master key is in /etc/litellm/voyage/env there (libs/litellm_common.py). The
+# chart, namespace and hostname fields apply in kubernetes mode.
 #
 # Same shape as the anthropic, openai, gemini and kimi add-ons: LiteLLM in front of one hosted model,
 # reached by any OpenAI client at http://voyage.<kcluster>.<domain>/v1, and its embeddings at /v1/embeddings. The provider's key
@@ -29,8 +39,9 @@ PROVIDER = "voyage"
 
 PLUGIN = {
     "name": "voyage",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the litellm-helm chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The chart's values turn an ingress on, which is how the endpoint is reached.
     "requires_cluster": ["ingress"],
