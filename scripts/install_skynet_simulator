@@ -6,11 +6,16 @@
 # Project: https://github.com/edisgreat/skynet-simulator, also listed at
 # https://edisgreat.itch.io/skynet-simulator
 #
-# Schema version: 1.1
+# Schema version: 1.2
 #
-# JSON section: "skynet_simulator" — Skynet Simulator, a self-hosted open-source browser puzzle/idle game
-#   skynet_simulator_ns      : [OPTIONAL] namespace (default: skynet-simulator)
-#   skynet_simulator_shorthn : [OPTIONAL] hostname prefix for ingress (default: skynet-simulator)
+# JSON section: "skynet_simulator" — Skynet Simulator, a self-hosted browser puzzle game, on a kcluster or with podman
+#   skynet_simulator_deployment : [OPTIONAL] how it is installed. Unset follows where the lab places it:
+#                                 "kubernetes" when a kcluster lists "skynet_simulator" in its addons[], "podman"
+#                                 when only a node does (options: podman, kubernetes)
+#   skynet_simulator_ns      : [OPTIONAL] namespace, in kubernetes mode (default: skynet-simulator)
+#   skynet_simulator_shorthn : [OPTIONAL] hostname prefix for ingress, in kubernetes mode
+#                              (default: skynet-simulator)
+#   skynet_simulator_port    : [OPTIONAL] host port the game is served on, in podman mode (default: 8090)
 #
 # LICENSE: MIT. Self-hosting the game is permitted.
 #
@@ -20,13 +25,18 @@
 # into a shared volume; an ordinary nginx container serves it. The repo also ships a small optional
 # PHP/MySQL logging feature (update.php/log.sql) — deliberately NOT wired up here (no PHP/DB
 # runtime in this addon's nginx-only pod); the game itself works fully without it.
+#
+# In podman mode the same fetch script runs once in a throwaway container on every node that lists
+# "skynet_simulator" in its own addons[], into /var/lib/skynet-simulator/html, and an nginx container serves it
+# at http://<node>:<skynet_simulator_port>/ (libs/static_webgame_common.py's deploy_podman()).
 
 __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "skynet_simulator",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is a Deployment behind an ingress, podman mode an nginx container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "aux_services": [],
 }
@@ -41,6 +51,7 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
+import placement  # noqa: E402
 import static_webgame_common  # noqa: E402
 from lab_creation import ssh_run  # noqa: E402
 
@@ -53,10 +64,13 @@ tar -xzf /tmp/g.tar.gz -C /tmp/extract
 cp -a /tmp/extract/*/. /shared/
 rm -rf /tmp/g.tar.gz /tmp/extract
 """.strip()
+DEFAULT_PORT = 8090
 
 
 def _validate(v):
     v.vns("skynet_simulator")
+    placement.validate(v, "skynet_simulator")
+    v.vport("skynet_simulator", "skynet_simulator_port")
 
 
 def setup_skynet_simulator(hostname, clu_name, mydomain, cfg):
@@ -82,6 +96,14 @@ def main():
         sys.exit(1)
     lab_file = sys.argv[1]
     definition = primary.load_definition(lab_file)
+    if placement.deployment(definition, "skynet_simulator",
+                            definition.get("skynet_simulator") or {}) != placement.KUBERNETES:
+        for vm_name in placement.podman_nodes(definition, "skynet_simulator"):
+            cfg = k8s.addon_node_config(definition, "skynet_simulator", vm_name)
+            url = static_webgame_common.deploy_podman(vm_name, "skynet-simulator", _FETCH_SCRIPT,
+                                                      int(cfg.get("skynet_simulator_port") or DEFAULT_PORT))
+            print("Skynet Simulator available at: {}".format(url))
+        return
 
     target = k8s.first_server_node(definition)
     if not target:

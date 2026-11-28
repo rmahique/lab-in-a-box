@@ -385,7 +385,8 @@
   ],
   "addon:skynet_simulator": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
-   {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
+   {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
+   {"version": "1.2", "breaking": false, "changes": "podman mode: skynet_simulator_deployment, and skynet_simulator_port for the nginx container a node runs when it lists skynet_simulator in its own addons[]"}
   ],
   "addon:smlm": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
