@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 2.1
+# Schema version: 2.2
 #
-# JSON section: "open_webui" — Chat frontend for Ollama / OpenAI-compatible endpoints
+# JSON section: "open_webui" — Chat frontend for Ollama / OpenAI-compatible endpoints, on a kcluster or with podman
+#   open_webui_deployment      : [OPTIONAL] how it is installed. Unset follows where the lab places it:
+#                                 "kubernetes" when a kcluster lists "open_webui" in its addons[], "podman" when
+#                                 only a node does (options: podman, kubernetes)
 #   open_webui_version         : [OPTIONAL] Helm chart version (empty = latest)
 #   open_webui_ns              : [OPTIONAL] namespace (default: open-webui)
 #   open_webui_source : [OPTIONAL] where the chart comes from:
@@ -22,12 +25,14 @@
 #   open_webui_shorthn         : [OPTIONAL] hostname prefix (default: openwebui)
 #   open_webui_rel             : [OPTIONAL] Helm repo alias (default: open-webui)
 #   open_webui_repo_url        : [OPTIONAL] Helm repo URL (default: https://helm.openwebui.com/)
-#   open_webui_ollama_url      : [OPTIONAL] Ollama endpoint to attach. Unset, it is this lab's own Ollama when
-#                                 this kcluster runs one, i.e. when it lists the ollama add-on or a model
-#                                 add-on served through it (codellama, starcoder2, deepseek, qwen, mistral,
-#                                 apertus): http://ollama.<namespace>.svc.cluster.local:11434. Set it for an
-#                                 Ollama outside this lab. With neither, Open WebUI's own bundled Ollama
-#                                 subchart (the chart default) is used instead.
+#   open_webui_ollama_url      : [OPTIONAL] Ollama endpoint to attach. Unset, it is this lab's own Ollama, the
+#                                 one the ollama add-on or a model add-on served through it (codellama,
+#                                 starcoder2, deepseek, qwen, mistral, apertus) installs: on this kcluster,
+#                                 http://ollama.<namespace>.svc.cluster.local:11434; on a node with podman,
+#                                 http://<node>:<ollama_port>, that node first when Open WebUI runs there too;
+#                                 on a kcluster seen from a podman Open WebUI, its ingress hostname. Set it for an
+#                                 Ollama outside this lab. With neither, the chart's own bundled Ollama subchart
+#                                 is used in kubernetes mode, and no Ollama at all in podman mode.
 #   open_webui_openai_base_urls : [OPTIONAL] space-separated list of extra OpenAI-compatible endpoints
 #                                 to attach as additional model providers (e.g. this lab's own
 #                                 "gemini"/"kimi"/"anthropic"/"openai" LiteLLM-proxy addons' FQDNs, so
@@ -40,8 +45,18 @@
 #                                 search on. Unset, it is where this lab's own searxng add-on runs:
 #                                 http://searxng.<searxng_ns>.svc.cluster.local:<searxng_port>/search?q=<query>
 #                                 when a kcluster lists it, http://<node>:<searxng_port>/search?q=<query> when
-#                                 only a node lists it (podman). Set it for an instance outside this lab. The
+#                                 only a node lists it (podman), and its ingress hostname when a podman Open WebUI
+#                                 reaches one on a kcluster. Set it for an instance outside this lab. The
 #                                 instance must serve the json format, which the searxng add-on's own default does
+#   open_webui_image           : [OPTIONAL] container image, in podman mode (default: ghcr.io/open-webui/open-webui)
+#   open_webui_image_tag       : [OPTIONAL] tag of that image, in podman mode (default: main)
+#   open_webui_port            : [OPTIONAL] host port the UI answers on, in podman mode (default: 3000)
+#   open_webui_data_dir        : [OPTIONAL] host directory holding the users, chats and settings, in podman
+#                                 mode, so a new container keeps them (default: /var/lib/open-webui)
+#
+# In podman mode Open WebUI runs as one container on every node that lists "open_webui" in its own addons[],
+# at http://<node>:<open_webui_port>/, with the OpenAI-compatible keys in the root-only /etc/open-webui/env
+# there. The chart, namespace, hostname and Application Collection fields apply in kubernetes mode.
 #
 # The chart's PVCs need a StorageClass. requires_cluster below ("storageclass") makes
 # cluster_plan() (libs/k8s.py) add one automatically on a distribution that doesn't bundle its own
@@ -56,8 +71,9 @@ APPCOLLECTION_PREFIX = "open_webui"
 
 PLUGIN = {
     "name": "open_webui",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is the chart on a kcluster, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress", "storageclass"],
     "aux_services": [],
@@ -76,8 +92,21 @@ import primary  # noqa: E402
 import k8s  # noqa: E402
 import ollama_common  # noqa: E402
 import placement  # noqa: E402
+import podman_service as ps  # noqa: E402
 from lab_creation import setup_helm, helm_repo_add, ssh_run, die  # noqa: E402
 import appco_common as appco  # noqa: E402
+
+_DEFAULT_IMAGE = "ghcr.io/open-webui/open-webui"
+_DEFAULT_IMAGE_TAG = "main"
+_DEFAULT_PORT = 3000
+_DEFAULT_DATA_DIR = "/var/lib/open-webui"
+_CONTAINER = "open-webui"
+_ENV_FILE = "/etc/open-webui/env"
+# The port and the data directory inside the image, and how long a first start (it fetches its own embedding
+# model) gets to answer.
+_CONTAINER_PORT = 8080
+_CONTAINER_DATA = "/app/backend/data"
+_START_WAIT = 600
 
 
 def _validate(v):
@@ -86,13 +115,16 @@ def _validate(v):
     if source not in appco.SOURCES:
         v.errors.append("[ERROR] open_webui.open_webui_source '{}' is invalid — use one of: {}".format(
             source, ", ".join(appco.SOURCES)))
-    elif source == appco.SOURCE_APPCOLLECTION:
+    elif source == appco.SOURCE_APPCOLLECTION and placement.location(v.definition, "open_webui")[0] == \
+            placement.KUBERNETES:
         v.vreq_or_credential("open_webui", "open_webui_appcollection_user", "appcollection",
                              account_field="open_webui_appcollection_account")
         v.vreq_or_credential("open_webui", "open_webui_appcollection_password", "appcollection",
                              account_field="open_webui_appcollection_account")
     v.vns("open_webui")
     v.vver("open_webui")
+    placement.validate(v, "open_webui")
+    v.vport("open_webui", "open_webui_port")
 
 
 def setup_open_webui_repo(hostname, open_webui_rel=None, open_webui_repo_url=None):
@@ -100,17 +132,21 @@ def setup_open_webui_repo(hostname, open_webui_rel=None, open_webui_repo_url=Non
     helm_repo_add(hostname, open_webui_rel or "open-webui", open_webui_repo_url or "https://helm.openwebui.com/")
 
 
-def searxng_query_url(definition, open_webui_searxng_url=None):
+def searxng_query_url(definition, open_webui_searxng_url=None, outside_cluster=False):
     """
     The SEARXNG_QUERY_URL for Open WebUI's web search: the field when the lab sets one, else where this lab's own
-    searxng add-on runs (its in-cluster Service on a kcluster, its node's own name and port with podman), else ""
-    (web search stays off).
+    searxng add-on runs (on a kcluster its in-cluster Service, or its ingress hostname for an Open WebUI
+    `outside_cluster`; with podman its node's own name and port), else "" (web search stays off).
     """
     if open_webui_searxng_url:
         return str(open_webui_searxng_url)
     mode, place = placement.location(definition, "searxng")
     if mode == placement.KUBERNETES:
         cfg = definition.get("searxng") or {}
+        if outside_cluster:
+            domain = ((definition.get("kclusters") or {}).get(place) or {}).get("mydomain")
+            host = ".".join(p for p in (cfg.get("searxng_shorthn") or "searxng", place, domain) if p)
+            return "http://{}/search?q=<query>".format(host)
         return "http://searxng.{}.svc.cluster.local:{}/search?q=<query>".format(
             cfg.get("searxng_ns") or "searxng", cfg.get("searxng_port") or "8080")
     if mode == placement.PODMAN:
@@ -129,7 +165,8 @@ def setup_open_webui(hostname, clu_name, mydomain, definition, open_webui_rel=No
     ver_arg = "--version {}".format(shlex.quote(open_webui_version)) if open_webui_version else ""
     fqdn = "{}.{}.{}".format(open_webui_shorthn or "openwebui", clu_name, mydomain)
 
-    ollama_url = open_webui_ollama_url or ollama_common.service_url(definition, clu_name)
+    ollama_url = (open_webui_ollama_url or ollama_common.service_url(definition, clu_name)
+                  or ollama_common.podman_url_for(definition))
 
     set_args = [
         "--set ingress.enabled=true",
@@ -171,6 +208,50 @@ def setup_open_webui(hostname, clu_name, mydomain, definition, open_webui_rel=No
     return fqdn
 
 
+def podman_env(definition, cfg, hostname):
+    """
+    The environment of the podman-mode container: Ollama, the OpenAI-compatible endpoints and their keys, and web
+    search, found as in kubernetes mode but from outside any cluster (see the field descriptions).
+    """
+    env = {}
+    ollama_url = (cfg.get("open_webui_ollama_url") or ollama_common.podman_url_for(definition, prefer=hostname)
+                  or ollama_common.ingress_url(definition))
+    if ollama_url:
+        env["OLLAMA_BASE_URL"] = str(ollama_url)
+    base_urls = str(cfg.get("open_webui_openai_base_urls") or "").split()
+    if base_urls:
+        env["OPENAI_API_BASE_URLS"] = ";".join(base_urls)
+        env["OPENAI_API_KEYS"] = ";".join(str(cfg.get("open_webui_openai_api_keys") or "").split())
+    searxng_url = searxng_query_url(definition, cfg.get("open_webui_searxng_url"), outside_cluster=True)
+    if searxng_url:
+        env.update({"ENABLE_WEB_SEARCH": "true", "WEB_SEARCH_ENGINE": "searxng", "SEARXNG_QUERY_URL": searxng_url})
+    return env
+
+
+def setup_open_webui_podman(hostname, definition, cfg):
+    """Run Open WebUI as a podman container on `hostname` from the section `cfg`; returns the URL it answers on."""
+    port = int(cfg.get("open_webui_port") or _DEFAULT_PORT)
+    data_dir = str(cfg.get("open_webui_data_dir") or _DEFAULT_DATA_DIR)
+    image = "{}:{}".format(cfg.get("open_webui_image") or _DEFAULT_IMAGE,
+                           cfg.get("open_webui_image_tag") or _DEFAULT_IMAGE_TAG)
+    env = podman_env(definition, cfg, hostname)
+    ps.write_env_file(hostname, _ENV_FILE, env)
+    ssh_run(hostname, "mkdir -p {}".format(shlex.quote(data_dir)))
+    ps.deploy(hostname, _CONTAINER, image, description="Open WebUI (lab-in-a-box)",
+              ports=["{}:{}".format(port, _CONTAINER_PORT)], env_file=_ENV_FILE,
+              volumes=["{}:{}:Z".format(data_dir, _CONTAINER_DATA)])
+    ps.wait_for_http(hostname, "http://127.0.0.1:{}/health".format(port), timeout=_START_WAIT, what="Open WebUI")
+    url = placement.node_url(hostname, port, "/")
+    print("Chat UI available at: {}".format(url))
+    if env.get("OLLAMA_BASE_URL"):
+        print("Attached Ollama endpoint: {}".format(env["OLLAMA_BASE_URL"]))
+    if env.get("SEARXNG_QUERY_URL"):
+        print("Web search enabled, through SearXNG at: {}".format(env["SEARXNG_QUERY_URL"]))
+    print("The node itself must allow traffic on port {}: this add-on manages no firewall or security group".format(
+        port))
+    return url
+
+
 def main():
     ac.handle_common_args(__file__, __version__, validate_fn=_validate, plugin=PLUGIN)
 
@@ -179,6 +260,10 @@ def main():
         sys.exit(1)
     lab_file = sys.argv[1]
     definition = primary.load_definition(lab_file)
+    if placement.deployment(definition, "open_webui", definition.get("open_webui") or {}) != placement.KUBERNETES:
+        for vm_name in placement.podman_nodes(definition, "open_webui"):
+            setup_open_webui_podman(vm_name, definition, k8s.addon_node_config(definition, "open_webui", vm_name))
+        return
 
     target = k8s.first_server_node(definition)
     if not target:

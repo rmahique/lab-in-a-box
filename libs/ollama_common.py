@@ -132,6 +132,18 @@ def service_url(definition: dict, clu_name: str) -> str:
     return "http://{}.{}.svc.cluster.local:{}".format(RELEASE, settings["ns"], PORT)
 
 
+def ingress_url(definition: dict) -> str:
+    """
+    The URL of a kcluster's Ollama from outside that kcluster, its ingress hostname: the first kcluster one of
+    whose add-ons installs it. "" when no kcluster does.
+    """
+    for clu_name, clu in (definition.get("kclusters") or {}).items():
+        if any(name == OLLAMA or name in MODEL_ADDONS for name in kcluster_addons(definition, clu_name)):
+            settings = release_settings(definition, release_owner(definition, clu_name, OLLAMA))
+            return "http://" + ".".join(p for p in (settings["shorthn"], clu_name, (clu or {}).get("mydomain")) if p)
+    return ""
+
+
 def _chart(hostname: str, definition: dict, settings: dict) -> tuple:
     """(chart reference, extra --set flags) for the release, with its repository or registry made ready first."""
     if settings["source"] != appco.SOURCE_APPCOLLECTION:
@@ -268,6 +280,30 @@ def run(definition: dict, addon: str) -> None:
         return
     for vm_name in placement.podman_nodes(definition, addon):
         install_podman(definition, addon, vm_name)
+
+
+def podman_nodes_running(definition: dict) -> list:
+    """The nodes that run a podman Ollama: those listing ollama or a model add-on that is not forced onto Kubernetes."""
+    nodes = []
+    for addon in (OLLAMA,) + tuple(sorted(MODEL_ADDONS)):
+        if placement.asked(addon, definition.get(addon) or {}) == placement.KUBERNETES:
+            continue
+        nodes += [n for n in placement.nodes_listing(definition, addon) if n not in nodes]
+    return nodes
+
+
+def podman_url_for(definition: dict, prefer: str = "") -> str:
+    """
+    The URL of a podman Ollama another add-on reaches: the one on `prefer` when that node runs one, else the first
+    node's that does. "" when no node runs one.
+    """
+    import k8s
+
+    nodes = podman_nodes_running(definition)
+    if not nodes:
+        return ""
+    node = prefer if prefer in nodes else nodes[0]
+    return podman_url(node, k8s.addon_node_config(definition, OLLAMA, node))
 
 
 def validate_podman(v, addon: str) -> None:

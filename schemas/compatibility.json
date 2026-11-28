@@ -310,7 +310,8 @@
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
    {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."},
    {"version": "2.0", "breaking": true, "changes": "The chart comes from the SUSE Application Collection unless open_webui_source says otherwise, with open_webui_appcollection_user/password/account for the account it needs. Breaking: a lab that relied on the upstream chart by saying nothing now needs open_webui_source \"upstream\", which the migration writes.", "migration": "open_webui_2_0"},
-   {"version": "2.1", "breaking": false, "changes": "Add open_webui_searxng_url: SearXNG as the web-search backend, derived from the lab's own searxng section."}
+   {"version": "2.1", "breaking": false, "changes": "Add open_webui_searxng_url: SearXNG as the web-search backend, derived from the lab's own searxng section."},
+   {"version": "2.2", "breaking": false, "changes": "podman mode: open_webui_deployment, and open_webui_image, open_webui_image_tag, open_webui_port and open_webui_data_dir for the container a node runs when it lists open_webui in its own addons[]"}
   ],
   "addon:openai": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},

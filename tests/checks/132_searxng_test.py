@@ -383,6 +383,69 @@ check("open_webui: the ollama add-on's namespace reaches the URL",
 check("open_webui: an ollama section the kcluster does not install attaches nothing",
       "ollamaUrls" not in owui_helm({"kclusters": {"c1": {"addons": ["open_webui"]}}, "nodes": {}, "ollama": {}}))
 
+# ── open_webui in podman mode ────────────────────────────────────────────────
+ws = {"common": {}, "kclusters": {"c1": {"mydomain": "mydemo.lab", "addons": ["searxng", "ollama"]}},
+      "nodes": {"ws1.mydemo.lab": {"addons": ["open_webui"]}}, "searxng": {}, "ollama": {}}
+env = owui.podman_env(ws, {}, "ws1.mydemo.lab")
+check("open_webui podman: a kcluster's Ollama and SearXNG are reached at their ingress hostnames",
+      env["OLLAMA_BASE_URL"] == "http://ollama.c1.mydemo.lab"
+      and env["SEARXNG_QUERY_URL"] == "http://searxng.c1.mydemo.lab/search?q=<query>"
+      and env["ENABLE_WEB_SEARCH"] == "true")
+local = {"common": {}, "kclusters": {},
+         "nodes": {"ws1.mydemo.lab": {"addons": ["open_webui", {"ollama": {"ollama_port": "11500"}}, "searxng"]},
+                   "ws2.mydemo.lab": {"addons": ["ollama"]}}}
+env = owui.podman_env(local, {}, "ws1.mydemo.lab")
+check("open_webui podman: the Ollama on its own node comes first, at that node's port",
+      env["OLLAMA_BASE_URL"] == "http://ws1.mydemo.lab:11500"
+      and env["SEARXNG_QUERY_URL"] == "http://ws1.mydemo.lab:8080/search?q=<query>")
+check("open_webui podman: another node's Ollama is found when its own node runs none",
+      owui.podman_env(local, {}, "ws3.mydemo.lab")["OLLAMA_BASE_URL"] == "http://ws1.mydemo.lab:11500")
+env = owui.podman_env({"nodes": {}, "kclusters": {}}, {"open_webui_openai_base_urls": "http://a/v1 http://b/v1",
+                                                     "open_webui_openai_api_keys": "k1 k2"}, "ws1")
+check("open_webui podman: OpenAI-compatible endpoints and keys, in the form Open WebUI reads",
+      env == {"OPENAI_API_BASE_URLS": "http://a/v1;http://b/v1", "OPENAI_API_KEYS": "k1;k2"})
+
+deploys, env_files = [], []
+with mock.patch.object(owui, "ssh_run"), \
+        mock.patch.object(owui.ps, "write_env_file", side_effect=lambda h, p, v: env_files.append((p, v))), \
+        mock.patch.object(owui.ps, "deploy", side_effect=lambda *a, **kw: deploys.append((a, kw))), \
+        mock.patch.object(owui.ps, "wait_for_http", return_value=True), mock.patch("builtins.print"):
+    url = owui.setup_open_webui_podman("ws1.mydemo.lab", local, {"open_webui_openai_base_urls": "http://a/v1",
+                                                                 "open_webui_openai_api_keys": "secret-key"})
+args, kw = deploys[0]
+check("open_webui podman: the upstream image, its data in a host directory, at the node's own name",
+      args[1:3] == ("open-webui", "ghcr.io/open-webui/open-webui:main") and kw["ports"] == ["3000:8080"]
+      and kw["volumes"] == ["/var/lib/open-webui:/app/backend/data:Z"] and url == "http://ws1.mydemo.lab:3000/")
+check("open_webui podman: its environment, keys included, is the root-only env file",
+      kw["env_file"] == "/etc/open-webui/env" and env_files[0][1]["OPENAI_API_KEYS"] == "secret-key"
+      and "secret-key" not in repr(kw))
+check("open_webui kubernetes: a podman Ollama on a node is attached when the kcluster runs none",
+      "ollamaUrls[0]=http://ws2.mydemo.lab:11434" in owui_helm(
+          {"kclusters": {"c1": {"addons": ["open_webui"]}}, "nodes": {"ws2.mydemo.lab": {"addons": ["ollama"]}}}))
+
+
+def owui_errors(definition):
+    v = ac.Validator(definition)
+    owui._validate(v)
+    return v.errors
+
+
+with mock.patch.object(ac.Validator, "vreq_or_credential", autospec=True,
+                       side_effect=lambda self, section, field, *a, **kw: self.errors.append(field)):
+    check("open_webui: the Application Collection account is only asked for when a kcluster installs it",
+          owui_errors(dict(local, open_webui={})) == []
+          and "open_webui_appcollection_user" in owui_errors(
+              {"kclusters": {"c1": {"addons": ["open_webui"]}}, "nodes": {}, "open_webui": {}}))
+check("open_webui: an unknown deployment and a non-numeric port are refused",
+      len(owui_errors(dict(local, open_webui={"open_webui_deployment": "docker", "open_webui_port": "x"}))) == 2)
+seen = []
+with mock.patch.object(owui.primary, "load_definition", return_value=local), \
+        mock.patch.object(sys, "argv", ["install_open_webui", "lab.json"]), mock.patch.dict(os.environ, {}, clear=True), \
+        mock.patch.object(owui.k8s, "log"), \
+        mock.patch.object(owui, "setup_open_webui_podman", side_effect=lambda h, d, cfg: seen.append(h)):
+    owui.main()
+check("open_webui main: listed on a node, it runs there", seen == ["ws1.mydemo.lab"])
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)

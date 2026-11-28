@@ -214,6 +214,16 @@ for addon in sorted(oc.MODEL_ADDONS):
     check("{}: on a node, pulls its default model into that node's Ollama".format(addon),
           calls == ["podman exec ollama ollama pull {}".format(oc.model_of(addon, {}))] and deploys == [])
 
+check("from outside a kcluster, its Ollama is its ingress hostname",
+      oc.ingress_url(lab(["codellama"], codellama={"codellama_shorthn": "llm"})) == "http://llm.ai.mydemo.lab"
+      and oc.ingress_url(on_node(["ollama"])) == "")
+check("a podman Ollama is found on the node preferred, else on the first that runs one",
+      oc.podman_url_for(on_node(["codellama"]), prefer="ws2.mydemo.lab") == "http://ws1.mydemo.lab:11434"
+      and oc.podman_url_for(on_node(["ollama"]), prefer="ws1.mydemo.lab") == "http://ws1.mydemo.lab:11434"
+      and oc.podman_url_for(lab(["ollama"])) == "")
+check("a model add-on forced onto Kubernetes runs no podman Ollama",
+      oc.podman_nodes_running(on_node(["qwen"], qwen={"qwen_deployment": "kubernetes"})) == [])
+
 # ── the add-ons all go through it ────────────────────────────────────────────
 for addon in ("ollama", "apertus", "codellama", "deepseek", "mistral", "qwen", "starcoder2"):
     text = (_REPO / "scripts" / ("install_" + addon)).read_text()
