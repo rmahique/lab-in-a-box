@@ -441,6 +441,22 @@ check("validate_lab_definition: node names in different domains with no mydomain
                                  issues_out=_issues) is False)
 check("validate_lab_definition: and the error asks for mydomain",
       any("cannot determine the default domain name" in line for line in _issues))
+_kclu_node = {"myip": "192.168.1.55", "mymac": "aa:bb:cc:dd:ee:0e", "config_method": "virt_customize",
+              "kcluster": "k1", "INSTALL_RKE2_TYPE": "server"}
+_kclu_issues = []
+check("validate_lab_definition: a kcluster without mydomain takes common.mydomain",
+      lc.validate_lab_definition(_lab_def({"common": dict(base_common, mydomain="sko.lab"),
+                                           "kclusters": {"k1": {"clu_type": "rke2", "clu_rel": "stable"}},
+                                           "nodes": {"vm1.sko.lab": dict(_kclu_node)}}),
+                                 single_host_cfg, "/iso", "/lab", host_checks=False, issues_out=_kclu_issues) is True
+      and not any("'mydomain' is required" in line for line in _kclu_issues))
+_kclu_issues = []
+lc.validate_lab_definition(_lab_def({"common": dict(base_common),
+                                     "kclusters": {"k1": {"clu_type": "rke2", "clu_rel": "stable", "mydomain": ""}},
+                                     "nodes": {"vm1.sko.lab": dict(_kclu_node)}}),
+                           single_host_cfg, "/iso", "/lab", host_checks=False, issues_out=_kclu_issues)
+check("validate_lab_definition: a kcluster mydomain empty here and in common is an error",
+      any("kclusters.k1: 'mydomain' is required, here or in common" in line for line in _kclu_issues))
 _keys_bad = _lab_def({"common": dict(base_common, ssh_authorized_keys=["http://example.com/keys"]),
                       "nodes": {"vm1": {"myip": "192.168.1.54", "mymac": "aa:bb:cc:dd:ee:0d",
                                         "config_method": "virt_customize"}}})

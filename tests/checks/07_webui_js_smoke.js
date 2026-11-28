@@ -386,6 +386,18 @@ check("lint: a Kubernetes cluster with no VM is an error", lint.errors.some((e) 
 check("lint: an add-on where its layers do not allow it is an error", lint.errors.some((e) => e.startsWith("grafana cannot be attached")));
 check("lint: two VMs with one IP is an error", lint.errors.some((e) => e.includes("same myip 10.0.0.1")));
 check("lint: an add-on's required field is an error", lint.errors.some((e) => e.includes("rancher: rancher_password")));
+st.model.items.push({ id: "c3", type: "cluster", name: "inherits", cfg: { clu_type: "k3s", clu_rel: "stable", mydomain: "" }, parent: null });
+lint = JSON.parse(JSON.stringify(sandbox.lintLab(st.model)));
+check("lint: a Kubernetes cluster with no mydomain and none in Common settings is an error",
+  lint.errors.some((e) => e.includes("Kubernetes cluster inherits: mydomain is not set")));
+check("lint: missingRequired counts that cluster's mydomain", sandbox.missingRequired(st.model.items[st.model.items.length - 1]) === 1);
+st.model.common.mydomain = "sko.lab";
+lint = JSON.parse(JSON.stringify(sandbox.lintLab(st.model)));
+check("lint: a Kubernetes cluster with no mydomain takes the Common settings one",
+  !lint.errors.some((e) => e.includes("inherits: mydomain")));
+check("lint: missingRequired does not count it then", sandbox.missingRequired(st.model.items[st.model.items.length - 1]) === 0);
+delete st.model.common.mydomain;
+st.model.items.pop();
 check("lint: add-on settings nothing lists are a warning", lint.warnings.some((w) => w.includes("Add-on rancher has settings")));
 
 const labIn = {

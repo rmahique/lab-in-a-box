@@ -667,14 +667,14 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         clu_cfg = kclusters.get(clu) or {}
         ctype = _jq_or(clu_cfg.get("clu_type"))
         crel = _jq_or(clu_cfg.get("clu_rel"))
-        cdomain = _jq_or(clu_cfg.get("mydomain"))
+        cdomain = _jq_or(clu_cfg.get("mydomain")) or _jq_or(common.get("mydomain"))
 
         if _empty(ctype):
             err("kclusters.{}: 'clu_type' is required (rke2, k3s or harvester)".format(clu))
         if _empty(crel):
             err("kclusters.{}: 'clu_rel' is required (e.g. stable)".format(clu))
         if _empty(cdomain):
-            err("kclusters.{}: 'mydomain' is required".format(clu))
+            err("kclusters.{}: 'mydomain' is required, here or in common".format(clu))
 
         from apps import addon_entry_name
         for addon_entry in clu_cfg.get("addons") or []:

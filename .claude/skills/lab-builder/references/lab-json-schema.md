@@ -66,6 +66,9 @@ a warning in the run summary, never a failure. See `libs/ssh_keys.py`.
 }
 ```
 
+A kcluster whose `mydomain` is empty or left out is in `common.mydomain`; set it on the
+kcluster only when the cluster lives in a different domain.
+
 Use `kclusters` for anything new — it's the only form that supports more than one
 cluster in a single lab. The old flat format uses a single top-level `"cluster": {...}`
 plus a top-level `"addons": [...]` list instead; only use it when extending an existing

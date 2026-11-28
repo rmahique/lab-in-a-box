@@ -393,6 +393,15 @@ check("get_vm_kcluster: empty string when unset", k8s.get_vm_kcluster(definition
 check("load_kclu_vars: returns the cluster's scalar vars",
       k8s.load_kclu_vars(definition, "cluster1") == {"clu_type": "rke2", "clu_rel": "stable"})
 check("load_kclu_vars: empty clu_name returns {}", k8s.load_kclu_vars(definition, "") == {})
+_with_common = {"common": {"mydomain": "sko.lab"},
+                "kclusters": {"own": {"clu_type": "rke2", "mydomain": "own.lab"},
+                              "empty": {"clu_type": "rke2", "mydomain": ""}, "absent": {"clu_type": "rke2"}}}
+check("load_kclu_vars: a kcluster's own mydomain wins over common",
+      k8s.load_kclu_vars(_with_common, "own")["mydomain"] == "own.lab")
+check("load_kclu_vars: an empty mydomain takes common.mydomain",
+      k8s.load_kclu_vars(_with_common, "empty")["mydomain"] == "sko.lab")
+check("load_kclu_vars: an absent mydomain takes common.mydomain",
+      k8s.load_kclu_vars(_with_common, "absent")["mydomain"] == "sko.lab")
 died = False
 try:
     k8s.load_kclu_vars(definition, "nope")

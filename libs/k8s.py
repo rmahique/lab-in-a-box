@@ -58,7 +58,8 @@ def get_vm_kcluster(definition, vm_name):
 
 def load_kclu_vars(definition, clu_name):
     """
-    Return all scalar key-value pairs for a kcluster (mirrors load_kclu_vars).
+    Return all scalar key-value pairs for a kcluster (mirrors load_kclu_vars). An empty or absent mydomain takes
+    common.mydomain, so a kcluster without a domain of its own is in the lab's domain.
 
     Args:
         definition : Loaded lab definition dict.
@@ -71,11 +72,15 @@ def load_kclu_vars(definition, clu_name):
     kclusters = definition.get("kclusters", {})
     if clu_name not in kclusters:
         die("kcluster '{}' not found in definition".format(clu_name))
-    return {
+    clu_vars = {
         k: v
         for k, v in kclusters[clu_name].items()
         if isinstance(v, (str, int, float, bool))
     }
+    common_domain = (definition.get("common") or {}).get("mydomain")
+    if not clu_vars.get("mydomain") and common_domain:
+        clu_vars["mydomain"] = common_domain
+    return clu_vars
 
 
 # ── DNS ───────────────────────────────────────────────────────────────────────
