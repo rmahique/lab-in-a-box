@@ -429,7 +429,8 @@
    {"version": "1.1", "breaking": false, "changes": "A one-line description instead of \"configurable keys\", so the add-on says what it installs wherever it is listed."}
   ],
   "addon:together": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: together_deployment, and together_image, together_image_tag and together_port for the LiteLLM container a node runs when it lists together in its own addons[]"}
   ],
   "addon:traefik": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
