@@ -962,12 +962,42 @@ const passphraseChecks = async () => {
         nodes["#createPassRow"].hidden === false && nodes["#createPass"].required === false);
 };
 
+// -- the step builder's Create lab checks before it closes ------------------
+// It used to close the step builder first and leave the refusal to the canvas's Create, which said nothing when
+// the button was disabled, so the reader was just dropped on the canvas.
+const wizardCreateChecks = async () => {
+  const nodes = stubNodes();
+  const st = vm.runInContext("state", sandbox);
+  const lab = { common: { mydomain: "w.lab", SOURCE_IMAGE: "x.qcow2", VM_MEM: 2048 }, nodes: { "n1.w.lab": { myip: "10.0.0.1" } } };
+  const saved = { auth: st.auth, static: sandbox.window.LAB_STATIC };
+  let calls = [];
+  sandbox.fetch = async (url) => { calls.push(String(url)); return { ok: false, status: 401, json: async () => ({}) }; };
+  setWiz({ open: true, config: lab });
+  sandbox.document.querySelector("#wizardPanel").open = true;
+
+  sandbox.window.LAB_STATIC = true;
+  await sandbox.wizardCreate();
+  check("wizardCreate: a lab that cannot be created here keeps the step builder open and says why",
+        nodes["#wizardPanel"].open === true && nodes["#wizardMsg"].hidden === false
+        && nodes["#wizardMsg"].textContent.includes("automation node") && calls.length === 0);
+  sandbox.window.LAB_STATIC = saved.static;
+
+  st.auth = { login_configured: true, user: "" };
+  await sandbox.wizardCreate();
+  check("wizardCreate: with no login it asks for one, through an admin call",
+        calls.some((u) => u.startsWith("admin?")));
+  check("wizardCreate: ...and a login that is not given keeps the step builder open, saying so",
+        nodes["#wizardPanel"].open === true && nodes["#wizardMsg"].textContent.includes("needs a login"));
+  st.auth = saved.auth;
+};
+
 // One stubbed document between them, so they take turns rather than overwrite each other's elements.
 const domChecks = (async () => {
   await wizardChecks();
   await passphraseChecks();
   releaseChoiceChecks();
   stepBuilderChecks();
+  await wizardCreateChecks();
 })();
 
 Promise.all([urlParamChecks(), credentialChecks, domChecks]).then(() => {
