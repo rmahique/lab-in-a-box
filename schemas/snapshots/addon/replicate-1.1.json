@@ -1,0 +1,65 @@
+{
+ "fields": {
+  "replicate_api_base": {
+   "default": "",
+   "required": false,
+   "type": "string"
+  },
+  "replicate_api_key": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "replicate_chart": {
+   "default": "oci://ghcr.io/berriai/litellm-helm",
+   "required": false,
+   "type": "string"
+  },
+  "replicate_deployment": {
+   "default": "",
+   "enum": [
+    "podman",
+    "kubernetes"
+   ],
+   "required": false,
+   "type": "string"
+  },
+  "replicate_image": {
+   "default": "ghcr.io/berriai/litellm",
+   "required": false,
+   "type": "string"
+  },
+  "replicate_image_tag": {
+   "default": "main-stable",
+   "required": false,
+   "type": "string"
+  },
+  "replicate_model": {
+   "default": "",
+   "required": true,
+   "type": "string"
+  },
+  "replicate_ns": {
+   "default": "replicate",
+   "required": false,
+   "type": "namespace"
+  },
+  "replicate_port": {
+   "default": "4019",
+   "required": false,
+   "type": "port"
+  },
+  "replicate_shorthn": {
+   "default": "replicate",
+   "required": false,
+   "type": "string"
+  },
+  "replicate_version": {
+   "default": "",
+   "required": false,
+   "type": "version"
+  }
+ },
+ "schema": "addon:replicate",
+ "version": "1.1"
+}

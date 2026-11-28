@@ -358,7 +358,8 @@
    {"version": "2.3", "breaking": false, "changes": "rancher_install_appcollection: once Rancher is up, also register the SUSE Application Collection as a Rancher ClusterRepo, with no separate appcollection addon entry needed."}
   ],
   "addon:replicate": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: replicate_deployment, and replicate_image, replicate_image_tag and replicate_port for the LiteLLM container a node runs when it lists replicate in its own addons[]"}
   ],
   "addon:rodeo_cli": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
