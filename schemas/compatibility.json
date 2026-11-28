@@ -162,7 +162,8 @@
   "addon:hermes": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},
    {"version": "1.1", "breaking": false, "changes": "Defaults written as literal values, or left unset where the code computes them: hermes_dashboard_user, hermes_git_ref, hermes_image_tag, hermes_llm_provider, hermes_ns, hermes_shorthn, hermes_storage_class, hermes_storage_size."},
-   {"version": "1.2", "breaking": false, "changes": "A one-line description in the section header, so the add-on says what it installs wherever it is listed."}
+   {"version": "1.2", "breaking": false, "changes": "A one-line description in the section header, so the add-on says what it installs wherever it is listed."},
+   {"version": "1.3", "breaking": false, "changes": "podman mode: hermes_deployment, and hermes_dashboard_port and hermes_data_dir for the two containers a node runs, from the image in hermes_registry, when it lists hermes in its own addons[]"}
   ],
   "addon:home_assistant": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},

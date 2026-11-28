@@ -14,9 +14,11 @@
 # the conversation history, memory, skills and session database. The dashboard uses basic authentication by default, because the project
 # warns against an unauthenticated bind on a non-loopback address.
 #
-# Schema version: 1.2
+# Schema version: 1.3
 #
-# JSON section: "hermes" — Hermes Agent
+# JSON section: "hermes" — Hermes Agent, on a kcluster or as podman containers on a node
+#   hermes_deployment             : how it is installed. Unset follows where the lab places it: "kubernetes" when a kcluster
+#                                   lists "hermes" in its addons[], "podman" when only a node does (options: podman, kubernetes)
 #   hermes_registry               : [MANDATORY] registry to push the built image to, for example registry.mydemo.lab or the registry of the
 #                                   harbor addon. The automation VM must reach it to push, and the cluster must reach it to pull.
 #   hermes_git_ref                : git ref of NousResearch/hermes-agent to build (default: main). The project has no tagged releases, so
@@ -38,13 +40,21 @@
 #   hermes_storage_size           : PersistentVolumeClaim size for /opt/data (default: 5Gi)
 #   hermes_storage_class          : StorageClass; when unset, the cluster's own default. A bare RKE2 cluster has none, so install one first,
 #                                   for example with the longhorn addon.
+#   hermes_dashboard_port         : host port of the dashboard, in podman mode (default: 9119)
+#   hermes_data_dir               : host directory both containers keep /opt/data in, in podman mode (default: /var/lib/hermes)
+#
+# In podman mode the same image is pulled from hermes_registry by every node that lists "hermes" in its own addons[], and runs there as
+# two containers, hermes-gateway and hermes-dashboard, sharing hermes_data_dir. Their environment is the root-only /etc/hermes/env, and a
+# dashboard password the lab does not set is generated once and kept there. hermes_ns, hermes_shorthn, hermes_storage_size and
+# hermes_storage_class apply in kubernetes mode.
 
 __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "hermes",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is one pod of two containers on a kcluster, podman mode the same two containers on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     "requires_cluster": ["ingress", "storageclass"],
     "aux_services": [],
@@ -65,7 +75,13 @@ for _candidate in ("/usr/local/lib/lab_creation", str(Path(__file__).resolve().p
 import addon_common as ac  # noqa: E402
 import primary  # noqa: E402
 import k8s  # noqa: E402
+import placement  # noqa: E402
+import podman_service as ps  # noqa: E402
 from lab_creation import ssh_run, die  # noqa: E402
+
+_ENV_FILE = "/etc/hermes/env"
+_DEFAULT_DATA_DIR = "/var/lib/hermes"
+_DASHBOARD_PORT = 9119
 
 _REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 
@@ -181,6 +197,8 @@ spec:
 def _validate(v):
     v.vns("hermes")
     v.vreq_or_credential("hermes", "hermes_llm_api_key", "hermes", account_field="hermes_account")
+    placement.validate(v, "hermes")
+    v.vport("hermes", "hermes_dashboard_port")
 
 
 def build_and_push_image(registry, git_ref, image_tag):
@@ -216,25 +234,29 @@ def build_and_push_image(registry, git_ref, image_tag):
     return image_ref
 
 
+def env_values(provider, api_key, telegram_token, telegram_allowed_users, dashboard_user, dashboard_password):
+    """
+    The environment both containers run with, as {name: value} in a fixed order: real env var names only (see
+    module header). A key not needed (e.g. no Telegram token configured) is omitted rather than set empty,
+    because Hermes itself treats an unset var and an empty one differently in some paths (e.g.
+    TELEGRAM_ALLOWED_USERS empty vs. absent).
+    """
+    values = {_PROVIDER_ENV_VARS[provider]: api_key}
+    if telegram_token:
+        values["TELEGRAM_BOT_TOKEN"] = telegram_token
+    if telegram_allowed_users:
+        values["TELEGRAM_ALLOWED_USERS"] = telegram_allowed_users
+    values["HERMES_DASHBOARD_BASIC_AUTH_USERNAME"] = dashboard_user
+    values["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"] = dashboard_password
+    return values
+
+
 def _secret_data_lines(provider, api_key, telegram_token, telegram_allowed_users,
                         dashboard_user, dashboard_password):
-    """
-    Builds the Secret's stringData block — real env var names only (see
-    module header). Every line here becomes an actual container env var
-    via the Deployment's envFrom/secretRef, so a key not needed (e.g. no
-    Telegram token configured) is simply omitted rather than written empty
-    — Hermes itself treats an unset var and an empty one differently in
-    some paths (e.g. TELEGRAM_ALLOWED_USERS empty vs. absent), so omission
-    is the correct/safe choice, not a shortcut.
-    """
-    lines = ['  {}: {}'.format(_PROVIDER_ENV_VARS[provider], shlex.quote(api_key))]
-    if telegram_token:
-        lines.append('  TELEGRAM_BOT_TOKEN: {}'.format(shlex.quote(telegram_token)))
-    if telegram_allowed_users:
-        lines.append('  TELEGRAM_ALLOWED_USERS: {}'.format(shlex.quote(telegram_allowed_users)))
-    lines.append('  HERMES_DASHBOARD_BASIC_AUTH_USERNAME: {}'.format(shlex.quote(dashboard_user)))
-    lines.append('  HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: {}'.format(shlex.quote(dashboard_password)))
-    return "\n".join(lines) + "\n"
+    """The Secret's stringData block: env_values(), each line an env var of both containers via envFrom."""
+    values = env_values(provider, api_key, telegram_token, telegram_allowed_users, dashboard_user,
+                        dashboard_password)
+    return "\n".join("  {}: {}".format(k, shlex.quote(v)) for k, v in values.items()) + "\n"
 
 
 def render_hermes_manifest(ns, host, image, provider, api_key, telegram_token, telegram_allowed_users,
@@ -248,11 +270,11 @@ def render_hermes_manifest(ns, host, image, provider, api_key, telegram_token, t
     )
 
 
-def setup_hermes(hostname, clu_name, mydomain, cfg):
-    ns = ac.require_k8s_name(cfg, "hermes_ns", "hermes")
-    shorthn = ac.require_k8s_name(cfg, "hermes_shorthn", "hermes")
-    host = "{}.{}.{}".format(shorthn, clu_name, mydomain)
-
+def settings(cfg, kept_password=""):
+    """
+    What both modes run Hermes with, resolved from `cfg` and the credential store: the env_values() arguments as a
+    dict. A dashboard password set nowhere is `kept_password`, else a new one, printed so it can be used.
+    """
     provider = cfg.get("hermes_llm_provider") or "openrouter"
     if provider not in _PROVIDER_ENV_VARS:
         die("hermes_llm_provider '{}' is not one of {}".format(provider, sorted(_PROVIDER_ENV_VARS)))
@@ -275,35 +297,74 @@ def setup_hermes(hostname, clu_name, mydomain, cfg):
               "the bot will respond to ANY Telegram user who finds it. Strongly recommended to set "
               "hermes_telegram_allowed_users too.")
 
-    dashboard_user = cfg.get("hermes_dashboard_user") or "admin"
-    dashboard_password = creds["hermes_dashboard_password"]
+    dashboard_password = creds["hermes_dashboard_password"] or kept_password
     if not dashboard_password:
         dashboard_password = secrets.token_urlsafe(18)
         print("  No dashboard password configured anywhere — generated one: {}".format(dashboard_password))
+    return {"provider": provider, "api_key": api_key, "telegram_token": telegram_token,
+            "telegram_allowed_users": telegram_allowed_users,
+            "dashboard_user": cfg.get("hermes_dashboard_user") or "admin", "dashboard_password": dashboard_password}
 
+
+def image(cfg):
+    """Build the image from hermes_git_ref and push it to hermes_registry; returns its reference."""
     registry = cfg.get("hermes_registry")
     if not registry:
         die("hermes_registry is required — no published image exists for Hermes Agent, this addon "
             "builds and pushes its own, and needs somewhere reachable from both the automation VM "
             "and the target cluster to push it to")
     git_ref = cfg.get("hermes_git_ref") or "main"
-    image_tag = cfg.get("hermes_image_tag") or git_ref
+    return build_and_push_image(registry, git_ref, cfg.get("hermes_image_tag") or git_ref)
 
-    image = build_and_push_image(registry, git_ref, image_tag)
 
+def setup_hermes(hostname, clu_name, mydomain, cfg):
+    ns = ac.require_k8s_name(cfg, "hermes_ns", "hermes")
+    shorthn = ac.require_k8s_name(cfg, "hermes_shorthn", "hermes")
+    host = "{}.{}.{}".format(shorthn, clu_name, mydomain)
+
+    run = settings(cfg)
     manifest = render_hermes_manifest(
-        ns, host, image, provider, api_key, telegram_token, telegram_allowed_users,
-        dashboard_user, dashboard_password,
+        ns, host, image(cfg), run["provider"], run["api_key"], run["telegram_token"],
+        run["telegram_allowed_users"], run["dashboard_user"], run["dashboard_password"],
         cfg.get("hermes_storage_size") or "5Gi", cfg.get("hermes_storage_class"),
     )
     ssh_run(hostname, "kubectl apply -f -", input_text=manifest)
 
     print("Hermes Agent deployed. Namespace: {}".format(ns))
-    print("Dashboard available at: http://{} (user: {})".format(host, dashboard_user))
-    if not telegram_token:
+    print("Dashboard available at: http://{} (user: {})".format(host, run["dashboard_user"]))
+    if not run["telegram_token"]:
         print("No messaging platform configured yet — set hermes_telegram_token (or configure one "
               "via the dashboard) to actually reach the agent from anywhere.")
     return host
+
+
+def setup_hermes_podman(hostname, cfg):
+    """
+    Run Hermes as two podman containers on `hostname`, gateway and dashboard, sharing hermes_data_dir, with the
+    image built and pushed as in kubernetes mode. Returns the dashboard's URL.
+    """
+    run = settings(cfg, kept_password=ps.env_value(hostname, _ENV_FILE, "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"))
+    ref = image(cfg)
+    data_dir = str(cfg.get("hermes_data_dir") or _DEFAULT_DATA_DIR)
+    port = int(cfg.get("hermes_dashboard_port") or _DASHBOARD_PORT)
+    ps.write_env_file(hostname, _ENV_FILE, env_values(**run))
+    ssh_run(hostname, "mkdir -p {}".format(shlex.quote(data_dir)))
+    # Both containers mount the directory, so its SELinux label is the shared one (z), not a private one (Z).
+    volumes = ["{}:/opt/data:z".format(data_dir)]
+    ps.deploy(hostname, "hermes-gateway", ref, description="Hermes Agent gateway (lab-in-a-box)",
+              env_file=_ENV_FILE, volumes=volumes, options=["--entrypoint", "gateway"], args=["run"])
+    ps.deploy(hostname, "hermes-dashboard", ref, description="Hermes Agent dashboard (lab-in-a-box)",
+              ports=["{}:{}".format(port, _DASHBOARD_PORT)], env_file=_ENV_FILE, volumes=volumes,
+              options=["--entrypoint", "dashboard"], args=["--host", "0.0.0.0", "--no-open"], pull=False)
+    url = placement.node_url(hostname, port, "/")
+    print("Hermes Agent running on {}. Dashboard: {} (user: {}, password in {})".format(
+        hostname, url, run["dashboard_user"], _ENV_FILE))
+    print("The node itself must allow traffic on port {}: this add-on manages no firewall or security group".format(
+        port))
+    if not run["telegram_token"]:
+        print("No messaging platform configured yet — set hermes_telegram_token (or configure one "
+              "via the dashboard) to actually reach the agent from anywhere.")
+    return url
 
 
 def main():
@@ -314,6 +375,10 @@ def main():
         sys.exit(1)
     lab_file = sys.argv[1]
     definition = primary.load_definition(lab_file)
+    if placement.deployment(definition, "hermes", definition.get("hermes") or {}) != placement.KUBERNETES:
+        for vm_name in placement.podman_nodes(definition, "hermes"):
+            setup_hermes_podman(vm_name, k8s.addon_node_config(definition, "hermes", vm_name))
+        return
 
     target = k8s.first_server_node(definition)
     if not target:
