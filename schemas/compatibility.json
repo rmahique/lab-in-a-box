@@ -249,7 +249,8 @@
    {"version": "1.2", "breaking": false, "changes": "A one-line description in the section header, so the add-on says what it installs wherever it is listed."}
   ],
   "addon:mcpo": [
-   {"version": "1.0", "breaking": false, "changes": "First version: mcpo, serving a lab's MCP servers as OpenAPI endpoints"}
+   {"version": "1.0", "breaking": false, "changes": "First version: mcpo, serving a lab's MCP servers as OpenAPI endpoints"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: mcpo_deployment; listed in a node's own addons[], mcpo runs as a container there, on mcpo_port, with the token in a root-only env file"}
   ],
   "addon:mediagoblin": [
    {"version": "1.0", "breaking": false, "changes": "First recorded version."},

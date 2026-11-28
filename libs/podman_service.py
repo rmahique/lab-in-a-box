@@ -15,6 +15,7 @@ business. Nothing here assumes Kubernetes, a cluster or a DNS record: a service 
 node's own name, which the lab already registered when it created it.
 """
 
+import posixpath
 import shlex
 
 from lab_creation import ssh_run, ssh_output, ensure_podman, log, warn
@@ -56,6 +57,23 @@ def run_command(name, image, ports=(), env=None, volumes=(), options=(), args=()
     parts.append(shlex.quote(image))
     parts += [shlex.quote(str(a)) for a in args]
     return " ".join(parts)
+
+
+def env_value(hostname: str, path: str, name: str) -> str:
+    """The value of `name` in the env file `path` on the node, "" when the file or the name is not there."""
+    return ssh_output(hostname, "sed -n {} {} 2>/dev/null".format(
+        shlex.quote("s/^{}=//p".format(name)), shlex.quote(path))).strip()
+
+
+def write_env_file(hostname: str, path: str, values: dict) -> None:
+    """
+    Write `values` as NAME=VALUE lines into the env file `path` on the node: root-only, in a directory only root
+    enters. The values travel on stdin, never on a command line, which is what deploy()'s `env_file` is for.
+    """
+    directory = posixpath.dirname(path)
+    ssh_run(hostname, "mkdir -p {d} && chmod 0700 {d}".format(d=shlex.quote(directory)))
+    ssh_run(hostname, "umask 077 && cat > {}".format(shlex.quote(path)),
+            input_text="".join("{}={}\n".format(k, v) for k, v in values.items()))
 
 
 def unit_text(name, description):

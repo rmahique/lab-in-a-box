@@ -3,9 +3,12 @@
 # Author/s: Raul Mahiques
 # License: GPLv3
 #
-# Schema version: 1.0
+# Schema version: 1.1
 #
-# JSON section: "mcpo" — MCP-to-OpenAPI proxy, so MCP servers are reachable as ordinary REST tools
+# JSON section: "mcpo" — MCP-to-OpenAPI proxy, so MCP servers are reachable as ordinary REST tools, on a kcluster or with podman
+#   mcpo_deployment     : [OPTIONAL] how it is installed. Unset follows where the lab places it:
+#                           "kubernetes" when a kcluster lists "mcpo" in its addons[], "podman" when only
+#                           a node does (options: podman, kubernetes)
 #   mcpo_servers        : [OPTIONAL] object of MCP servers to serve, in mcpo's own configuration
 #                           shape: each key is the name the server answers under, and each value is
 #                           either {"command": "...", "args": [...], "env": {...}} for a server mcpo
@@ -18,9 +21,11 @@
 #   mcpo_version        : [OPTIONAL] tag of that image (default: main)
 #   mcpo_replicas       : [OPTIONAL] replicas (default: 1). A server that keeps state in the pod,
 #                           such as the memory server, keeps a separate copy of it per replica
-#   mcpo_port           : [OPTIONAL] port the Service answers on (default: 8000)
+#   mcpo_port           : [OPTIONAL] port the Service answers on, or the host port in podman mode
+#                           (default: 8000)
 #   mcpo_api_key        : [OPTIONAL] bearer token every caller must present. Unset generates one and
-#                           prints it, so the endpoint is never left open by default
+#                           prints it, so the endpoint is never left open by default; in podman mode the one
+#                           already on the node is kept
 #   mcpo_hot_reload     : [OPTIONAL] watch the configuration and reload it without a restart
 #                           (options: true, false) (default: "false")
 #   mcpo_shorthn        : [OPTIONAL] hostname prefix of the ingress (default: mcpo)
@@ -31,6 +36,11 @@
 # "memory" is served at http://<mcpo_shorthn>.<kcluster>.<domain>/memory, its interactive
 # documentation at /memory/docs, and its OpenAPI schema under that same path — which is what makes
 # an MCP server usable by anything that speaks OpenAPI rather than MCP.
+#
+# In podman mode mcpo runs as one container on every node that lists "mcpo" in its own addons[], at
+# http://<node>:<mcpo_port>/<server>, with its configuration in /etc/mcpo/config.json and its token in the
+# root-only /etc/mcpo/env there. mcpo_ns, mcpo_replicas, mcpo_shorthn and mcpo_ingress_class apply in
+# kubernetes mode.
 #
 # Open WebUI takes such an endpoint as a tool server, added under its own settings with the URL and
 # the key this add-on prints. That is a step in Open WebUI's interface: this add-on deliberately
@@ -47,8 +57,9 @@ __version__ = "__LABVERSION__"
 
 PLUGIN = {
     "name": "mcpo",
-    "targets": ["container"],
-    "layers": ["kubernetes"],
+    # kubernetes mode is a Deployment behind an ingress, podman mode one container on a node.
+    "targets": ["container", "vm", "baremetal"],
+    "layers": ["kubernetes", "standalone-container"],
     "requires_kubernetes": None,
     # The OpenAPI endpoints are reached through an ingress. No storage class: a server that keeps
     # state keeps it in its own pod, which mcpo_replicas' description says.
@@ -72,6 +83,8 @@ import addon_common as ac  # noqa: E402
 import apps  # noqa: E402
 import k8s  # noqa: E402
 import primary  # noqa: E402
+import placement  # noqa: E402
+import podman_service as ps  # noqa: E402
 from lab_creation import process_template, ssh_output, ssh_run  # noqa: E402
 
 _DEFAULT_NS = "mcpo"
@@ -86,6 +99,12 @@ _SECRET = "mcpo-api-key"
 _SECRET_KEY = "MCPO_API_KEY"
 _REMOTE_TYPES = ("sse", "streamable-http")
 _DEFAULT_SERVERS = {"memory": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]}}
+_CONTAINER = "mcpo"
+_PODMAN_DIR = "/etc/mcpo"
+_PODMAN_CONFIG = _PODMAN_DIR + "/config.json"
+_PODMAN_ENV = _PODMAN_DIR + "/env"
+# How long a fresh container gets to answer: a command-based server is fetched by npx or uvx on its first start.
+_START_WAIT = 300
 
 
 # ── configuration ────────────────────────────────────────────────────────────
@@ -119,6 +138,12 @@ def api_key(cfg: dict) -> str:
 def extra_args(cfg: dict) -> str:
     """The flags beyond --config, --port and --api-key, as they are appended to mcpo's command line."""
     return " --hot-reload" if str(cfg.get("mcpo_hot_reload") or "false").strip().lower() == "true" else ""
+
+
+def command(cfg: dict) -> str:
+    """The shell command the container runs: mcpo on the configuration file, its token read from the environment."""
+    return ('exec mcpo --config {} --port {} --api-key "$MCPO_API_KEY"{}'.format(
+        _PODMAN_CONFIG, _CONTAINER_PORT, extra_args(cfg)))
 
 
 def fqdn(cfg: dict, clu_name: str, mydomain: str) -> str:
@@ -200,6 +225,30 @@ def setup_mcpo(hostname: str, clu_name: str, mydomain: str, cfg: dict, templ_add
     return host
 
 
+def setup_mcpo_podman(hostname: str, cfg: dict) -> str:
+    """Run mcpo as a podman container on `hostname` from the section `cfg`; returns the URL it answers on."""
+    port = int(cfg.get("mcpo_port") or _CONTAINER_PORT)
+    image = "{}:{}".format(cfg.get("mcpo_image") or _DEFAULT_IMAGE, cfg.get("mcpo_version") or _DEFAULT_VERSION)
+    key = str(cfg.get("mcpo_api_key") or "") or ps.env_value(hostname, _PODMAN_ENV, _SECRET_KEY) or api_key(cfg)
+    print("- Writing the configuration of {} MCP server(s) into {}".format(len(servers(cfg)), _PODMAN_CONFIG))
+    ps.write_env_file(hostname, _PODMAN_ENV, {_SECRET_KEY: key})
+    ssh_run(hostname, "umask 077 && cat > {}".format(_PODMAN_CONFIG), input_text=config_json(cfg))
+    ps.deploy(hostname, _CONTAINER, image, description="mcpo MCP-to-OpenAPI proxy (lab-in-a-box)",
+              ports=["{}:{}".format(port, _CONTAINER_PORT)], env_file=_PODMAN_ENV,
+              volumes=["{}:{}:ro,Z".format(_PODMAN_CONFIG, _PODMAN_CONFIG)],
+              options=["--entrypoint", "/bin/sh"], args=["-c", command(cfg)])
+    first = sorted(servers(cfg))[0]
+    ps.wait_for_http(hostname, "http://127.0.0.1:{}/{}/docs".format(port, first), timeout=_START_WAIT, what="mcpo")
+    url = placement.node_url(hostname, port)
+    print("mcpo running on {}".format(hostname))
+    for name, server_url in server_urls(cfg, "{}:{}".format(hostname, port)):
+        print("  {}: {} (its documentation at {}/docs)".format(name, server_url, server_url))
+    print("Every call carries the bearer token kept in {} on {}".format(_PODMAN_ENV, hostname))
+    print("The node itself must allow traffic on port {}: this add-on manages no firewall or security group".format(
+        port))
+    return url
+
+
 # ── --check ──────────────────────────────────────────────────────────────────
 
 def _check(c):
@@ -208,6 +257,9 @@ def _check(c):
     host = c.vm_name
     if not host:
         c.fail("no target node to check: $_vm_name names none")
+        return
+    if placement.deployment(c.definition, "mcpo", cfg) != placement.KUBERNETES:
+        _check_podman(c, host, cfg)
         return
     ns = str(cfg.get("mcpo_ns") or _DEFAULT_NS)
 
@@ -237,12 +289,28 @@ def _check(c):
         c.fail("there is no mcpo ingress in namespace {}".format(ns))
 
 
+def _check_podman(c, host: str, cfg: dict) -> None:
+    """The podman half of _check(): the container runs the image the lab names and serves its servers."""
+    state = "running" if ps.is_running(host, _CONTAINER) else "absent"
+    c.expect("the mcpo container on {}".format(host), "running", state)
+    c.expect("the image of the mcpo container",
+             "{}:{}".format(cfg.get("mcpo_image") or _DEFAULT_IMAGE, cfg.get("mcpo_version") or _DEFAULT_VERSION),
+             ps.container_image(host, _CONTAINER))
+    deployed = ssh_output(host, "cat {} 2>/dev/null".format(_PODMAN_CONFIG))
+    try:
+        names = sorted((json.loads(deployed) or {}).get("mcpServers") or {})
+    except ValueError:
+        names = []
+    c.expect("the MCP servers mcpo serves on {}".format(host), ", ".join(sorted(servers(cfg))), ", ".join(names))
+
+
 # ── validation ───────────────────────────────────────────────────────────────
 
 def _validate(v):
     cfg = v.definition.get("mcpo", {}) or {}
     v.vns("mcpo")
     v.vport("mcpo", "mcpo_port")
+    placement.validate(v, "mcpo")
     v.vbool("mcpo", "mcpo_hot_reload")
     if cfg.get("mcpo_replicas") not in (None, "") and not str(cfg["mcpo_replicas"]).isdigit():
         v.errors.append("[ERROR] mcpo.mcpo_replicas '{}' is invalid — it is a whole number of replicas".format(
@@ -288,6 +356,10 @@ def main():
     definition = primary.load_definition(sys.argv[1])
     defaults = primary.load_defaults()
     cfg = definition.get("mcpo", {}) or {}
+    if placement.deployment(definition, "mcpo", cfg) != placement.KUBERNETES:
+        for vm_name in placement.podman_nodes(definition, "mcpo"):
+            setup_mcpo_podman(vm_name, k8s.addon_node_config(definition, "mcpo", vm_name))
+        return
 
     target = k8s.first_server_node(definition)
     if not target:

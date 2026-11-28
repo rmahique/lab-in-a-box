@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests-paths: scripts/install_mcpo templates/addons/mcpo
+# Tests-paths: scripts/install_mcpo templates/addons/mcpo libs/podman_service.py
 # Unit tests for install_mcpo, including rendering its real manifest template.
 # Independent container — see tests/run_tests.sh.
 set -uo pipefail

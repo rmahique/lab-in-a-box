@@ -2,6 +2,7 @@
 # install_mcpo — see 135_mcpo.sh.
 import importlib.util
 import json
+import os
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -228,8 +229,9 @@ class FakeChecker:
 
 
 def run_check(cfg, outputs):
-    c = FakeChecker({"mcpo": cfg})
-    with mock.patch.object(mc, "ssh_output", side_effect=lambda host, cmd, **kw: outputs.pop(0)):
+    c = FakeChecker({"mcpo": cfg, "kclusters": {"c1": {"addons": ["mcpo"]}}})
+    with mock.patch.object(mc, "ssh_output", side_effect=lambda host, cmd, **kw: outputs.pop(0)), \
+            mock.patch.dict(os.environ, {}, clear=True):
         mc._check(c)
     return c
 
@@ -250,6 +252,65 @@ check("--check: a ConfigMap that is not valid JSON fails rather than raising",
       any("MCP servers" in f for f in c.fails))
 c = run_check({}, ["1", "ghcr.io/open-webui/mcpo:main", served, ""])
 check("--check: a missing ingress fails", any("ingress" in f for f in c.fails))
+
+# ── podman mode ──────────────────────────────────────────────────────────────
+
+
+def run_podman(cfg, kept_key=""):
+    calls, stdins, deploys, env_files = [], [], [], []
+
+    def fake_ssh(host, cmd, **kw):
+        calls.append(cmd)
+        stdins.append(kw.get("input_text") or "")
+
+    with mock.patch.object(mc, "ssh_run", side_effect=fake_ssh), \
+            mock.patch.object(mc.ps, "env_value", return_value=kept_key), \
+            mock.patch.object(mc.ps, "write_env_file", side_effect=lambda h, p, v: env_files.append((p, v))), \
+            mock.patch.object(mc.ps, "deploy", side_effect=lambda *a, **kw: deploys.append((a, kw))), \
+            mock.patch.object(mc.ps, "wait_for_http", return_value=True), mock.patch("builtins.print"):
+        url = mc.setup_mcpo_podman("ws1.mydemo.lab", cfg)
+    return calls, stdins, deploys, env_files, url
+
+
+calls, stdins, deploys, env_files, url = run_podman({"mcpo_api_key": "lab-token", "mcpo_hot_reload": "true"})
+args, kw = deploys[0]
+check("podman: the image and tag the lab names, on the port it names, at the node's own name",
+      args[1:3] == ("mcpo", "ghcr.io/open-webui/mcpo:main") and kw["ports"] == ["8000:8000"]
+      and url == "http://ws1.mydemo.lab:8000")
+check("podman: the token is in the root-only env file, never on a command line",
+      env_files == [("/etc/mcpo/env", {"MCPO_API_KEY": "lab-token"})] and kw["env_file"] == "/etc/mcpo/env"
+      and all("lab-token" not in c for c in calls) and "lab-token" not in repr(kw))
+check("podman: the configuration is written and mounted read-only",
+      any(json.loads(i or "{}").get("mcpServers") for i in stdins if i.startswith("{"))
+      and kw["volumes"] == ["/etc/mcpo/config.json:/etc/mcpo/config.json:ro,Z"])
+check("podman: mcpo reads the token from its environment, with the flags the lab asked for",
+      kw["options"] == ["--entrypoint", "/bin/sh"] and kw["args"][0] == "-c"
+      and kw["args"][1] == 'exec mcpo --config /etc/mcpo/config.json --port 8000 --api-key "$MCPO_API_KEY" --hot-reload')
+_c, _s, _d, env_files, _u = run_podman({}, kept_key="kept")
+check("podman: with no token in the lab, the one already on the node is kept",
+      env_files == [("/etc/mcpo/env", {"MCPO_API_KEY": "kept"})])
+_c, _s, _d, env_files, _u = run_podman({})
+check("podman: else one is generated", len(env_files[0][1]["MCPO_API_KEY"]) >= 24)
+
+c = FakeChecker({"mcpo": {}, "nodes": {"node1.mydemo.lab": {"addons": ["mcpo"]}}})
+with mock.patch.object(mc.ps, "is_running", return_value=True), \
+        mock.patch.object(mc.ps, "container_image", return_value="ghcr.io/open-webui/mcpo:main"), \
+        mock.patch.object(mc, "ssh_output", return_value=served), mock.patch.dict(os.environ, {}, clear=True):
+    mc._check(c)
+check("--check: a healthy podman install passes every check", c.fails == [] and len(c.oks) == 3)
+
+seen = []
+with mock.patch.object(mc.primary, "load_definition", return_value={
+            "kclusters": {}, "nodes": {"ws1.mydemo.lab": {"addons": [{"mcpo": {"mcpo_port": "8100"}}]}}}), \
+        mock.patch.object(mc.primary, "load_defaults", return_value={}), \
+        mock.patch.object(sys, "argv", ["install_mcpo", "lab.json"]), mock.patch.dict(os.environ, {}, clear=True), \
+        mock.patch.object(mc.k8s, "log"), \
+        mock.patch.object(mc, "setup_mcpo_podman", side_effect=lambda h, cfg: seen.append((h, cfg))):
+    mc.main()
+check("main: listed on a node, it runs there with that node's own override",
+      seen == [("ws1.mydemo.lab", {"mcpo_port": "8100"})])
+check("_validate: an unknown deployment is refused",
+      any("mcpo_deployment" in e for e in errors({"mcpo_deployment": "docker"})))
 
 if failures:
     print("{} check(s) failed".format(len(failures)))

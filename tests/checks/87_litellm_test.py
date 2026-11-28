@@ -99,7 +99,8 @@ def run_podman(cfg, existing_master="", section="anthropic"):
         stdins.append(kw.get("input_text") or "")
 
     with mock.patch.object(lc, "ssh_run", side_effect=fake_ssh), \
-            mock.patch.object(lc, "ssh_output", return_value=existing_master), \
+            mock.patch.object(lc.ps, "ssh_run", side_effect=fake_ssh), \
+            mock.patch.object(lc.ps, "ssh_output", return_value=existing_master), \
             mock.patch.object(lc.ps, "deploy", side_effect=lambda *a, **kw: deploys.append((a, kw))), \
             mock.patch.object(lc.ps, "wait_for_http", return_value=True), mock.patch("builtins.print"):
         url = lc.setup_litellm_podman("ws1.mydemo.lab", section, "claude", "anthropic/claude-sonnet-5", "sk-ant-SECRET",
@@ -140,7 +141,8 @@ nodes_def = {"common": {}, "kclusters": {},
                        "ws2.mydemo.lab": {"addons": ["anthropic"]}},
              "anthropic": {"anthropic_api_key": "k"}}
 seen = []
-with mock.patch.object(lc, "setup_litellm_podman", side_effect=lambda h, s, n, m, k, c, api_base="": seen.append((h, m))), \
+with mock.patch.object(lc, "setup_litellm_podman",
+                       side_effect=lambda h, s, n, m, k, c, api_base="": seen.append((h, m))), \
         mock.patch.dict(os.environ, {}, clear=True), mock.patch("k8s.log"):
     lc.install_podman_nodes(nodes_def, "anthropic", "claude", default_model="anthropic/claude-sonnet-5")
 check("podman: every node listing it gets a proxy, with that node's own override",

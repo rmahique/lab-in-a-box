@@ -22,7 +22,7 @@ import shlex
 
 import placement
 import podman_service as ps
-from lab_creation import ssh_output, ssh_run
+from lab_creation import ssh_run
 
 DEFAULT_CHART = "oci://ghcr.io/berriai/litellm-helm"
 PORT = 4000
@@ -236,11 +236,8 @@ def setup_litellm_podman(hostname: str, section: str, model_name: str, model: st
     port = podman_port(section, cfg)
     image = "{}:{}".format(cfg.get("{}_image".format(section)) or DEFAULT_IMAGE,
                            cfg.get("{}_image_tag".format(section)) or DEFAULT_IMAGE_TAG)
-    ssh_run(hostname, "mkdir -p {d} && chmod 0700 {d}".format(d=shlex.quote(conf_dir)))
-    master_key = ssh_output(hostname, "sed -n 's/^LITELLM_MASTER_KEY=//p' {} 2>/dev/null".format(
-        shlex.quote(env_file))).strip() or "sk-" + secrets.token_hex(16)
-    ssh_run(hostname, "umask 077 && cat > {}".format(shlex.quote(env_file)),
-            input_text="PROVIDER_API_KEY={}\nLITELLM_MASTER_KEY={}\n".format(api_key, master_key))
+    master_key = ps.env_value(hostname, env_file, "LITELLM_MASTER_KEY") or "sk-" + secrets.token_hex(16)
+    ps.write_env_file(hostname, env_file, {"PROVIDER_API_KEY": api_key, "LITELLM_MASTER_KEY": master_key})
     ssh_run(hostname, "cat > {}/config.yaml".format(shlex.quote(conf_dir)),
             input_text=config_yaml(model_name, model, api_base))
     ps.deploy(hostname, "{}-proxy".format(section.replace("_", "-")), image,
