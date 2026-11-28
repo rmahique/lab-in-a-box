@@ -321,14 +321,17 @@ def steps(workflow, catalogue=(), accounts=(), images=(), addable=None, service_
         return common + [
             {"name": "distribution", "title": "Which Kubernetes distribution?", "kind": "choice",
              "default": "rke2", "options": _distribution_options()},
-            {"name": "servers", "title": "How many server nodes?", "kind": "count",
-             "default": 1, "min": 1, "max": 3,
-             "help": "One is enough for a lab. Three is what a cluster needs to survive losing one."},
-            {"name": "agents", "title": "How many agent nodes?", "kind": "count",
-             "default": 2, "min": 0, "max": 6, "help": "Where the workloads run."},
+            {"name": "clusters", "title": "How many Kubernetes clusters?", "kind": "count",
+             "default": 1, "min": 1, "max": 5,
+             "help": "Each one is a cluster of its own, with the same number of nodes."},
+            {"name": "nodes", "title": "How many nodes per cluster?", "kind": "count",
+             "default": 3, "min": 1, "max": 9,
+             "help": "Up to three are all servers (two are a server and an agent, since two servers cannot keep "
+                     "a quorum); the nodes past three are agents."},
             {"name": "apps", "title": "What should run on it?", "kind": "multi", "default": [],
              "options": _addon_options(catalogue, "kubernetes", addable=addable),
-             "help": "Everything here installs with no configuration of its own. The rest needs the canvas."},
+             "help": "Installed on the first cluster. Everything here installs with no configuration of its own; "
+                     "the rest needs the canvas."},
         ] + image
 
     if workflow == "multi-linux":
@@ -385,6 +388,16 @@ def steps(workflow, catalogue=(), accounts=(), images=(), addable=None, service_
          "options": _addon_options(catalogue, "host", addable=addable),
          "help": "Everything here installs with no configuration of its own."},
     ] + image
+
+
+def kcluster_roles(nodes: int) -> tuple:
+    """
+    (servers, agents) for a kcluster of `nodes` nodes: one node is a server; two are a server and an agent, since
+    two servers cannot keep an etcd quorum when one is lost; three are servers; past three, three servers and the
+    rest agents.
+    """
+    servers = 1 if nodes < 3 else 3
+    return servers, max(nodes - servers, 0)
 
 
 def _answer(answers, step, steps_by_name):
@@ -495,18 +508,22 @@ def build(workflow, answers, network=None, catalogue=(), accounts=(), images=(),
 
     if workflow == "kubernetes":
         distribution = str(_answer(answers, "distribution", spec))
-        cluster = "{}-cluster".format(slug(name))
-        kclusters[cluster] = {"clu_type": distribution, "clu_rel": _cluster_release(distribution),
-                              "mydomain": domain,
-                              "addons": apps}
-        for index in range(1, _count(answers, "servers", spec) + 1):
-            nodes[fqdn("server{}".format(index))] = _node(
-                "k8s-server", dict(answers or {}, distribution=distribution), sized_with=apps,
-                extra={"kcluster": cluster, "INSTALL_RKE2_TYPE": "server"})
-        for index in range(1, _count(answers, "agents", spec) + 1):
-            nodes[fqdn("agent{}".format(index))] = _node(
-                "k8s-agent", dict(answers or {}, distribution=distribution), sized_with=apps,
-                extra={"kcluster": cluster, "INSTALL_RKE2_TYPE": "agent"})
+        count = _count(answers, "clusters", spec)
+        servers, agents = kcluster_roles(_count(answers, "nodes", spec))
+        role_answers = dict(answers or {}, distribution=distribution)
+        for number in range(1, count + 1):
+            # One cluster keeps the plain names; with more, the number tells the clusters and their nodes apart.
+            cluster = "{}-cluster{}".format(slug(name), number if count > 1 else "")
+            prefix = "c{}-".format(number) if count > 1 else ""
+            cluster_apps = apps if number == 1 else []
+            kclusters[cluster] = {"clu_type": distribution, "clu_rel": _cluster_release(distribution),
+                                  "mydomain": domain,
+                                  "addons": list(cluster_apps)}
+            for role, total in (("server", servers), ("agent", agents)):
+                for index in range(1, total + 1):
+                    nodes[fqdn("{}{}{}".format(prefix, role, index))] = _node(
+                        "k8s-" + role, role_answers, sized_with=cluster_apps,
+                        extra={"kcluster": cluster, "INSTALL_RKE2_TYPE": role})
 
     elif workflow == "multi-linux":
         product = str(_answer(answers, "product", spec))

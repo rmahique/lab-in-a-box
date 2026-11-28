@@ -132,13 +132,13 @@ check("what is not an add-on at all is never offered", "pxe" not in cluster_apps
 
 
 # ── what the answers build ────────────────────────────────────────────────
-lab = wizard.build("kubernetes", {"name": "My K8s Lab", "servers": 2, "agents": 3}, network=NETWORK)
+lab = wizard.build("kubernetes", {"name": "My K8s Lab", "nodes": 5}, network=NETWORK)
 check("the lab's name becomes a DNS zone of its own, which is what one lab per zone means",
       lab["common"]["mydomain"] == "my-k8s-lab.lab")
 check("every node is named inside that zone",
       all(name.endswith(".my-k8s-lab.lab") for name in lab["nodes"]))
-check("the counts are honoured", len([n for n in lab["nodes"] if n.startswith("server")]) == 2
-      and len([n for n in lab["nodes"] if n.startswith("agent")]) == 3)
+check("five nodes are three servers and two agents", len([n for n in lab["nodes"] if n.startswith("server")]) == 3
+      and len([n for n in lab["nodes"] if n.startswith("agent")]) == 2)
 check("the network it was given is the lab's own, and no node carries an address",
       lab["common"]["mygw"] == "192.168.90.1"
       and not [n for n in lab["nodes"].values() if n.get("myip")])
@@ -147,7 +147,24 @@ check("one kcluster, with the release the distribution needs",
 check("each node says which cluster it belongs to and which role it has",
       all(n.get("kcluster") and n.get("INSTALL_RKE2_TYPE") for n in lab["nodes"].values()))
 
-sized = wizard.build("kubernetes", {"name": "k", "servers": 1, "agents": 1, "apps": ["longhorn"]})
+check("kcluster_roles: 1 node is a server, 2 a server and an agent, 3 servers, past 3 the rest are agents",
+      [wizard.kcluster_roles(n) for n in (1, 2, 3, 4, 7)] == [(1, 0), (1, 1), (3, 0), (3, 1), (3, 4)])
+_k8s_steps = [s["name"] for s in wizard.steps("kubernetes")]
+check("the Kubernetes workflow asks how many clusters and nodes per cluster, not servers and agents",
+      "clusters" in _k8s_steps and "nodes" in _k8s_steps and "servers" not in _k8s_steps and "agents" not in _k8s_steps)
+_default = wizard.build("kubernetes", {"name": "d"})
+check("by default it is one cluster of three servers",
+      list(_default["kclusters"]) == ["d-cluster"]
+      and sorted(_default["nodes"]) == ["server1.d.lab", "server2.d.lab", "server3.d.lab"])
+_multi = wizard.build("kubernetes", {"name": "m", "clusters": 2, "nodes": 4, "apps": ["longhorn"]})
+check("several clusters are numbered, and so are their nodes, each in its own cluster",
+      sorted(_multi["kclusters"]) == ["m-cluster1", "m-cluster2"]
+      and _multi["nodes"]["c2-agent1.m.lab"]["kcluster"] == "m-cluster2"
+      and len([n for n, cfg in _multi["nodes"].items() if cfg["kcluster"] == "m-cluster1"]) == 4)
+check("the add-ons go on the first cluster only, and only its nodes are sized for them",
+      _multi["kclusters"]["m-cluster1"]["addons"] == ["longhorn"] and _multi["kclusters"]["m-cluster2"]["addons"] == []
+      and int(_multi["nodes"]["c1-server1.m.lab"]["VM_DSK"]) > int(_multi["nodes"]["c2-server1.m.lab"]["VM_DSK"]))
+sized = wizard.build("kubernetes", {"name": "k", "nodes": 2, "apps": ["longhorn"]})
 node = sized["nodes"]["server1.k.lab"]
 check("a node is sized for what it will actually run, from the documented figures",
       int(node["VM_MEM"]) >= sizing.PRODUCTS["rke2"]["memory_mb"]
@@ -158,10 +175,10 @@ check("a cluster add-on sizes the nodes it will land on, although it is listed o
 check("common carries the sizes the schema requires of it, and no more than the smallest node needs",
       int(sized["common"]["VM_MEM"]) == min(int(n["VM_MEM"]) for n in sized["nodes"].values()))
 
-k3s = wizard.build("kubernetes", {"name": "k", "distribution": "k3s", "servers": 1, "agents": 1})
+k3s = wizard.build("kubernetes", {"name": "k", "distribution": "k3s", "nodes": 2})
 check("a K3s agent is sized as an agent, which is smaller than its server",
       int(k3s["nodes"]["agent1.k.lab"]["VM_MEM"]) < int(k3s["nodes"]["server1.k.lab"]["VM_MEM"]))
-rke2 = wizard.build("kubernetes", {"name": "k", "distribution": "rke2", "servers": 1, "agents": 1})
+rke2 = wizard.build("kubernetes", {"name": "k", "distribution": "rke2", "nodes": 2})
 check("an RKE2 agent is sized like its server, because RKE2 documents one figure for both",
       rke2["nodes"]["agent1.k.lab"]["VM_MEM"] == rke2["nodes"]["server1.k.lab"]["VM_MEM"])
 
@@ -188,7 +205,7 @@ check("Harvester is a kcluster of its own type, sized by its own documentation",
 kvm = wizard.build("virtualization", {"name": "v", "product": "kvm", "nodes": 2})
 check("a KVM node is a plain VM with no cluster", "kclusters" not in kvm and len(kvm["nodes"]) == 2)
 
-cloud = wizard.build("kubernetes", {"name": "k", "backend": "account:aws-tmm", "servers": 1, "agents": 0},
+cloud = wizard.build("kubernetes", {"name": "k", "backend": "account:aws-tmm", "nodes": 1},
                      network=NETWORK)
 check("a cloud account is named as one, and the lab's own network is left out: the provider assigns those",
       cloud["common"]["cloud_account"] == "aws-tmm"
