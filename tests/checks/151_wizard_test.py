@@ -326,6 +326,15 @@ check("the dialog is wider than it was, since it now carries two columns",
       ".wizard-dialog { width: min(56rem, 94vw) }" in style)
 check("and becomes one column on a narrow screen rather than squeezing both",
       "@media (max-width:60rem)" in style and ".wizard-split{grid-template-columns:1fr}" in style)
+check("the questions scroll on their own, inside the dialog's height",
+      "grid-template-rows:minmax(0,1fr)" in style.split(".wizard-split{")[1].split("}")[0]
+      and "min-height:0" in style.split(".wizard-split{")[1].split("}")[0]
+      and "overflow-y: auto; min-height: 0" in style.split(".wizard-body {")[1].split("}")[0])
+check("...while Your lab so far stays where it is, scrolling only when it is itself taller",
+      "align-self:start;max-height:100%;overflow-y:auto" in style.split(".wizard-sofar{")[1].split("}")[0])
+check("...and on a narrow screen the two stack and scroll together",
+      ".wizard-split{grid-template-rows:none;overflow-y:auto}" in style
+      and ".wizard-split .wizard-body{overflow:visible}" in style)
 check("the strip and the box are themed from the project's own tokens",
       "var(--accent)" in style.split(".wizard-step.now")[1].split("}")[0]
       and "var(--accent)" in style.split(".wizard-sofar h4{")[1].split("}")[0])
