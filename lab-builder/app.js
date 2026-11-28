@@ -503,9 +503,6 @@ function renderWizardWorkflows(body) {
     const text = el("span");
     text.appendChild(el("strong", "", workflow.title));
     text.appendChild(el("span", "opt-help", workflow.description));
-    (workflow.prerequisites || []).forEach((p) => {
-      text.appendChild(el("span", "opt-help", "Needs " + p.what + ": " + p.fix));
-    });
     label.appendChild(text);
     list.appendChild(label);
   });
@@ -546,6 +543,14 @@ function renderWizardStep(body, step) {
     const warn = el("div", "wizard-blocked");
     warn.appendChild(el("strong", "", "This needs " + p.what + "."));
     warn.appendChild(el("div", "opt-help", p.why + " " + p.fix));
+    if (p.credential) {
+      // A new tab, so the answers given here are still here once the credential is added.
+      const link = el("a", "", "Open Credentials in a new tab");
+      link.href = "?credentials=" + encodeURIComponent(p.credential);
+      link.target = "_blank";
+      link.rel = "noopener";
+      warn.appendChild(link);
+    }
     body.appendChild(warn);
   });
   body.appendChild(el("p", "wizard-q", step.title));
@@ -2504,6 +2509,7 @@ async function saveLab(definition, filename) {
 // ---- URL prefill and embedding (Rodeo Builder hand-off) --------------------
 // ?addons=a,b      puts those add-ons on the canvas (install_ prefix optional)
 // ?lab=<base64url> opens that lab definition (JSON)
+// ?credentials=<type> opens Credentials with that credential type (scc, aws, ...) chosen in the form
 // ?embed=1&origin=<origin>  inside an iframe: "Send this lab to <origin>" posts
 //   {type: "labinabox:lab", lab} to the parent, with every password field as a
 //   "??<field name>" placeholder; {type: "labinabox:load", lab} from that origin
@@ -2573,6 +2579,7 @@ async function prefillAddons(names) {
 
 async function applyUrlParams() {
   const q = new URLSearchParams(location.search);
+  if (q.get("credentials") !== null) openCredentials(q.get("credentials"));
   if (q.get("lab")) {
     try { loadLab(decodeLabParam(q.get("lab"))); toast("Opened the lab from the link"); }
     catch (e) { toastError("Cannot open the lab from the link: " + e.message); }
@@ -2748,7 +2755,9 @@ function closeDialog(sel) {
 // ---- credentials (login, HTTPS) ---------------------------------------------------
 // The field tables come from lab-builder-helper (setup_credentials.py's
 // PROVIDER_FIELDS / SERVICE_CREDENTIAL_FIELDS); values are never read back.
-async function openCredentials() {
+// `type`, a credential type such as "scc" or "aws", is preselected in the form, with its kind.
+async function openCredentials(type) {
+  state.credPreset = typeof type === "string" ? type : "";
   showDialog("#credDialog");
   const lock = serverLock();
   $("#credMsg").textContent = lock;
@@ -2800,9 +2809,12 @@ async function loadCredentials() {
 }
 
 function renderCredTypes() {
+  const preset = state.credPreset || "";
+  const presetKind = preset && Object.keys(state.credTypes || {}).find((k) => (state.credTypes[k] || {})[preset]);
+  if (presetKind) { $("#credKind").value = presetKind; state.credPreset = ""; }
   const kind = $("#credKind").value;
   const sel = $("#credType");
-  const prev = sel.value;
+  const prev = presetKind ? preset : sel.value;
   sel.innerHTML = "";
   Object.keys((state.credTypes || {})[kind] || {}).sort().forEach((t) => sel.appendChild(new Option(t, t)));
   if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
