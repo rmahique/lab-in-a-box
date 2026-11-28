@@ -54,6 +54,7 @@ import services  # noqa: E402
 import backends  # noqa: E402
 import harvester  # noqa: E402
 import images  # noqa: E402
+import ipalloc  # noqa: E402
 import ssh_keys  # noqa: E402
 from destroy_vm import destroy_vm  # noqa: E402
 from setup_vm import ensure_cloud_dns_ready, provision_vm, refresh_kept_node_dns  # noqa: E402
@@ -655,6 +656,45 @@ def phase_default_domain(definition, lab_file):
     return saved
 
 
+def phase_vm_network(definition, config, lab_file):
+    """
+    Give every node that has no myip and no network to allocate one from (ipalloc.node_network()) the mygw and mymask
+    of the bridge it attaches to (BRIDGE, br0 by default), read on the hypervisor it resolves to
+    (backend.vm_network()). The values go into common when common has neither and every such node is on the same
+    network, else onto each node, and are saved like an allocated address. A node with a myip, or with a network
+    already, is left as it is.
+
+    Returns the path the rest of the run must use: the sibling file the values were saved to, or `lab_file`
+    unchanged when nothing was filled.
+    """
+    common = definition.get("common") or {}
+    found = {}
+    seen = {}
+    for vm_name, cfg in (definition.get("nodes") or {}).items():
+        cfg = cfg or {}
+        if str(cfg.get("myip") or "").strip() or ipalloc.node_network(definition, vm_name) is not None:
+            continue
+        backend = backends.get_backend(definition, config, vm_name, for_existing=False)
+        bridge = str(cfg.get("BRIDGE") or common.get("BRIDGE") or "br0")
+        key = (type(backend).__name__, getattr(backend, "remote_host", None), getattr(backend, "virt_srv", None), bridge)
+        if key not in seen:
+            seen[key] = backend.vm_network(bridge)
+        if seen[key]:
+            found[vm_name] = seen[key]
+    if not found:
+        return lab_file
+    networks = {(net["mygw"], net["mymask"]) for net in found.values()}
+    if len(networks) == 1 and not common.get("mygw") and not common.get("mymask"):
+        definition["common"] = dict(common, **next(iter(found.values())))
+        lc.log("Network of the lab's VMs read from their hypervisor: mygw {mygw}, mymask {mymask}".format(
+            **definition["common"]))
+    else:
+        for vm_name, net in found.items():
+            definition["nodes"][vm_name] = dict(definition["nodes"][vm_name] or {}, **net)
+            lc.log("Network of \"{}\" read from its hypervisor: mygw {mygw}, mymask {mymask}".format(vm_name, **net))
+    return str(primary.save_definition(definition))
+
+
 def phase_allocate_ips(definition, config, lab_file):
     """
     Give every node that has no myip one, from the network the definition already describes. A cloud node is left
@@ -1199,6 +1239,7 @@ def main():
     # actually use and the lab's own file can be written without any (see libs/ipalloc.py). Deterministic, so the
     # same definition always resolves to the same addresses.
     lab_file = phase_default_domain(definition, lab_file)
+    lab_file = phase_vm_network(definition, config, lab_file)
     lab_file = phase_allocate_ips(definition, config, lab_file)
 
     preflight_issues = []

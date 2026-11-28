@@ -717,13 +717,12 @@ def preview_addresses(definition):
     (libs/ipalloc.py). Deterministic, so what this shows is what the run will do, and the ping gate is off because a
     browser cannot wait for it: the run's own probe and its preflight still have the last word.
 
-    A node whose lab has no network to take an address from, and a cloud node whose provider assigns one, are left
-    out of the answer rather than guessed at.
+    A node with no network to take an address from yet (ipalloc.node_network(): its hypervisor's is read only when
+    the lab is created), and a cloud node whose provider assigns one, are left out of the answer rather than guessed
+    at.
     """
     ipalloc = _lib("ipalloc")
     common = definition.get("common", {}) or {}
-    if ipalloc.lab_network(common) is None:
-        return {}
     cloud = set(_lib("backends").CLOUD_BACKEND_NAMES)
     out, taken = {}, set()
     for name, cfg in (definition.get("nodes") or {}).items():

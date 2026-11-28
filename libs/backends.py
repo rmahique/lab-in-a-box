@@ -527,6 +527,13 @@ class VMBackend(object):
         """
         return set()
 
+    def vm_network(self, bridge):
+        """
+        {"mygw", "mymask"} of the network a VM attached to host bridge `bridge` lands on, read from the host it runs
+        on, or {} when this backend cannot tell (the default: a cloud provider or a cluster assigns the network).
+        """
+        return {}
+
     def check_or_generate_ip(self, vm_name, myip, definition):
         """Validate or allocate the address of a VM — see _check_or_generate_ip()."""
         with _ip_lock:
@@ -817,6 +824,25 @@ class LibvirtBackend(VMBackend):
         with _mac_lock:
             _, mac_by_domain = self.list_used_macs()
             return _check_or_generate_mac(mac_by_domain, vm_name, mymac, definition, bridge, vm_net_model)
+
+    def vm_network(self, bridge):
+        """
+        {"mygw", "mymask"} of the network on this hypervisor's bridge `bridge` (ipalloc.bridge_network()), read over
+        SSH from a remote host, or {} when the host or the bridge says nothing.
+        """
+        def ip_json(*args):
+            if self.remote_host:
+                out = ssh_run(self.remote_host, " ".join(["ip", "-j", "-4"] + [shlex.quote(a) for a in args]),
+                              capture=True, check=False)
+            else:
+                out = subprocess.run(["ip", "-j", "-4"] + list(args), stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, universal_newlines=True)
+            try:
+                return json.loads(getattr(out, "stdout", "") or "[]")
+            except ValueError:
+                return []
+        return ipalloc.bridge_network(ip_json("addr", "show", "dev", bridge), ip_json("route", "show", "default"),
+                                      bridge)
 
     def list_used_ips(self):
         """

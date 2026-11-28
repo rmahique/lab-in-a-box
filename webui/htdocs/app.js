@@ -1032,8 +1032,6 @@ function missingRequired(item) {
   return sc ? miss(sc.fields, m.addonCfg[item.section] || {}) : 0;
 }
 
-// Backends whose VMs get their IP from the provider, so `myip` stays empty.
-const LOCAL_BACKENDS = new Set(["", "libvirt", "harvester"]);
 
 // What is wrong with the lab in `model`: { errors, warnings }, each a list of
 // sentences. Errors block Download, Save and Create; warnings do not. Checks
@@ -1138,15 +1136,6 @@ function lintLab(model) {
       if (set(model.common, f.name)) return;
       const without = nodes.filter((n) => !n.cfg.existing && !set(n.cfg, f.name)).map((n) => n.name);
       if (without.length) errors.push("Common setting " + f.name + " is not set, and VM " + without.join(", ") + " has no value of its own.");
-    });
-    nodes.forEach((n) => {
-      const backend = has(n.cfg, "backend") ? n.cfg.backend : (model.common.backend || "");
-      // No myip is not a mistake: the run allocates one from the lab's own network and the preflight names it.
-      // It is only a problem when the lab has no network to take an address from.
-      if (!has(n.cfg, "myip") && LOCAL_BACKENDS.has(backend)
-          && !(set(model.common, "mygw") && set(model.common, "mymask"))) {
-        errors.push("VM " + n.name + " has no IP address (myip), and the lab has no mygw and mymask to allocate one from.");
-      }
     });
     const clusterCommon = withPendingDomain(model);
     clusters.forEach((c) => {

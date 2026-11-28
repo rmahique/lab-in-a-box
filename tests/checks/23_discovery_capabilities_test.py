@@ -95,11 +95,12 @@ r = discovery.validate_lab({"common": dict(_common), "nodes": {"vm1": {"config_m
 check("validate_lab: a node with no myip is told which address it will be given",
       r["ok"] is True and "will be allocated from" in r["output"])
 
-# Without a gateway and a mask there is nothing to allocate from, and the field is still required.
+# Without a gateway and a mask the network is read from the hypervisor when the lab is created, which the web UI's
+# Validate cannot reach: it says so instead of failing.
 r = discovery.validate_lab({"common": {k: v for k, v in _common.items() if k not in ("mygw", "mymask")},
                             "nodes": {"vm1": {"config_method": "virt_customize"}}})
-check("validate_lab: a node with no myip and no network to take one from still fails",
-      r["ok"] is False and "myip" in r["output"])
+check("validate_lab: a node with no myip and no network is told its network comes from its hypervisor",
+      r["ok"] is True and "read from its hypervisor" in r["output"])
 
 r = discovery.validate_lab({"common": dict(_common),
                             "nodes": {"vm1": dict(_good_node), "vm2": dict(_good_node, mymac="aa:bb:cc:dd:ee:02")}})

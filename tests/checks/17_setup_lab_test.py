@@ -870,6 +870,40 @@ with mock.patch.object(setup_lab.primary, "save_definition", side_effect=lambda 
           and _bare["common"]["mydomain"] == _saved[0]["common"]["mydomain"])
 
 
+# ── phase_vm_network: a node with no address and no network gets its hypervisor bridge's ─────────────────────────
+class _NetBackend(object):
+    def __init__(self, host, net):
+        self.remote_host, self.virt_srv, self._net, self.asked = host, "qemu", net, []
+
+    def vm_network(self, bridge):
+        self.asked.append(bridge)
+        return dict(self._net)
+
+
+_hv = {"a": _NetBackend("hv1", {"mygw": "192.168.5.1", "mymask": "24"}),
+       "b": _NetBackend("hv1", {"mygw": "192.168.5.1", "mymask": "24"}),
+       "c": _NetBackend("hv2", {"mygw": "10.0.0.1", "mymask": "16"})}
+_saved = []
+with mock.patch.object(setup_lab.backends, "get_backend", side_effect=lambda d, c, vm, **kw: _hv[vm]), \
+        mock.patch.object(setup_lab.primary, "save_definition", side_effect=lambda d: _saved.append(1) or "lab.sm.json"):
+    _same = {"common": {}, "nodes": {"a": {}, "b": {"BRIDGE": "br0"}}}
+    _path = setup_lab.phase_vm_network(_same, {}, "lab.json")
+    check("phase_vm_network: nodes on one network get it in common, saved to the sibling",
+          _same["common"] == {"mygw": "192.168.5.1", "mymask": "24"} and _same["nodes"]["a"] == {}
+          and _path == "lab.sm.json" and _saved)
+    check("phase_vm_network: a hypervisor bridge is asked once", _hv["a"].asked == ["br0"] and _hv["b"].asked == [])
+    _split = {"common": {}, "nodes": {"a": {}, "c": {}}}
+    setup_lab.phase_vm_network(_split, {}, "lab.json")
+    check("phase_vm_network: nodes on different networks get their own",
+          _split["nodes"]["a"]["mygw"] == "192.168.5.1" and _split["nodes"]["c"]["mymask"] == "16"
+          and not _split["common"])
+    _saved.clear()
+    _set = {"common": {"mygw": "172.16.0.1", "mymask": "24"}, "nodes": {"a": {}, "c": {"myip": "10.0.0.5"}}}
+    check("phase_vm_network: a lab whose nodes have a network or an address is left as it is",
+          setup_lab.phase_vm_network(_set, {}, "lab.json") == "lab.json" and not _saved
+          and _set["nodes"] == {"a": {}, "c": {"myip": "10.0.0.5"}})
+
+
 if failures:
     print("{} check(s) failed".format(len(failures)))
     sys.exit(1)

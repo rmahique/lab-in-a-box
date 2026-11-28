@@ -5,8 +5,9 @@
 """
 libs/ipalloc.py: picks the IP address of a node whose lab definition does not give one.
 
-A node with no "myip" gets one from the network its own lab already describes: the network of common.mygw with
-common.mymask. There is no pool field to keep in step with the gateway, the mask and the DNS server, because every
+A node with no "myip" gets one from the network its own lab already describes: the network of mygw with mymask,
+the node's own or common's (node_network()). setup_lab.py fills those in first, from the hypervisor bridge the node
+attaches to, when the lab gives neither (bridge_network()). There is no pool field to keep in step with the gateway, the mask and the DNS server, because every
 one of those is already in the definition.
 
 The choice is deterministic: the node's name and its network decide where in the network the search starts, so the
@@ -60,6 +61,34 @@ def lab_network(common):
         return ipaddress.ip_network("{}/{}".format(gateway, mask), strict=False)
     except ValueError:
         return None
+
+
+def node_network(definition, vm_name):
+    """
+    The network `vm_name` lives on: lab_network() of common with the node's own mygw and mymask over it, or None when
+    neither says.
+    """
+    node = (definition.get("nodes") or {}).get(vm_name) or {}
+    merged = dict(definition.get("common") or {})
+    merged.update({key: node[key] for key in ("mygw", "mymask") if node.get(key)})
+    return lab_network(merged)
+
+
+def bridge_network(addrs, routes, bridge):
+    """
+    The mygw and mymask of the VMs on host bridge `bridge`, from that host's `ip -j -4 addr show dev <bridge>`
+    (`addrs`) and `ip -j -4 route show default` (`routes`), both parsed from JSON. The mask is the bridge's prefix;
+    the gateway is the default route's when that route leaves through the bridge, else the bridge's own address,
+    which is how a NAT or host-only bridge such as libvirt's virbr0 routes its VMs. {} when the bridge holds no
+    global IPv4 address.
+    """
+    info = [a for entry in (addrs or []) for a in (entry.get("addr_info") or [])
+            if a.get("family") == "inet" and a.get("scope") == "global" and a.get("local")]
+    if not info:
+        return {}
+    route = next((r for r in (routes or []) if r.get("dev") == bridge and r.get("gateway")), None)
+    gateway = route["gateway"] if route else info[0]["local"]
+    return {"mygw": gateway, "mymask": str(info[0].get("prefixlen", ""))}
 
 
 def definition_ips(definition):
@@ -180,15 +209,15 @@ def candidates(vm_name, network):
 
 def allocate(vm_name, definition, used=(), mydomain="", probe=True, zone_dir=None):
     """
-    The address `vm_name` should have, or None when the lab's own network cannot be worked out or every address in it
-    is taken.
+    The address `vm_name` should have, or None when its network (node_network()) cannot be worked out or every
+    address in it is taken.
 
     `used` is what the backend reports in use, which it alone can see. Everything else comes from the definition, the
     lab DNS and this node. `probe` runs the ping gate, and is turned off where a reply cannot be waited for, such as
     the web UI asking what an address would be.
     """
     common = definition.get("common", {}) or {}
-    network = lab_network(common)
+    network = node_network(definition, vm_name)
     if network is None:
         return None
 

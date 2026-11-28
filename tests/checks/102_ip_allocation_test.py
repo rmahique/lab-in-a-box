@@ -1,5 +1,6 @@
 #!/usr/bin/env python3.11
 # Deterministic IP allocation — see 102_ip_allocation.sh.
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -204,11 +205,14 @@ except SystemExit:
 source = (_REPO / "libs" / "lab_creation.py").read_text()
 check("the preflight previews the allocation instead of demanding myip",
       "will be allocated from" in source and "_previewed_ips" in source)
-check("...and still demands it when there is no network to allocate from",
-      "the lab has no 'mygw' and 'mymask' to allocate one" in source)
+check("...and still demands it when neither the lab nor the hypervisor gives a network",
+      "nor its hypervisor's" in source)
 check("each previewed address is held against the next node's",
       "_previewed_ips.add(would_get)" in source)
 _setup_lab = (_REPO / "scripts" / "setup_lab.py").read_text()
+check("the run reads the hypervisor's network before it allocates",
+      _setup_lab.index("lab_file = phase_vm_network(definition, config, lab_file)")
+      < _setup_lab.index("lab_file = phase_allocate_ips(definition, config, lab_file)"))
 check("the run allocates before it validates",
       "lab_file = phase_allocate_ips(definition, config, lab_file)" in _setup_lab
       and _setup_lab.index("phase_allocate_ips(definition, config, lab_file)")
@@ -234,14 +238,15 @@ check("what the preview says is what the allocator says",
 with mock.patch.object(discovery, "libs_dir", return_value=str(_REPO / "libs")):
     check("a lab with no network previews nothing",
           discovery.preview_addresses({"common": {}, "nodes": {"n1": {}}}) == {})
+    _own = discovery.preview_addresses({"common": {}, "nodes": {"n1": {"mygw": "10.1.0.1", "mymask": "24"}, "n2": {}}})
+    check("a node with a network of its own is previewed from it, one without is left out",
+          list(_own) == ["n1"] and _own["n1"].startswith("10.1.0."))
 
 app = (_REPO / "webui" / "htdocs" / "app.js").read_text()
 # Leaving the field blank IS the request: there is no tick box to find, and the builder does not demand an address
 # the run will allocate. It only insists when the lab has no network to take one from.
-check("a blank address does not stop the builder",
-      'errors.push("VM " + n.name + " has no IP address (myip), and the lab has no mygw and mymask' in app)
-check("...and it does insist when there is no network to allocate from",
-      'set(model.common, "mygw") && set(model.common, "mymask")' in app)
+check("a blank address or network does not stop the builder: the run reads the hypervisor's",
+      "has no IP address (myip)" not in app and "LOCAL_BACKENDS" not in app)
 check("no tick box is needed any more",
       "autoAddr" not in app and "autoAddr" not in (_REPO / "webui" / "htdocs" / "index.html").read_text())
 check("the canvas shows the address the run would use",
@@ -272,6 +277,44 @@ with tempfile.TemporaryDirectory() as tmp:
           ipalloc.dns_name_at("", "mydemo.lab", zone_dir=tmp) == ""
           and ipalloc.dns_name_at("192.168.88.9", "", zone_dir=tmp) == ""
           and ipalloc.dns_name_at("192.168.88.9", "absent.lab", zone_dir=tmp) == "")
+
+# ── a node's own network, and the network a hypervisor bridge gives its VMs ───────────────────────────────────────
+_two = {"common": dict(COMMON), "nodes": {"a": {}, "b": {"mygw": "10.9.0.1", "mymask": "16"}}}
+check("node_network: a node without its own takes common's", str(ipalloc.node_network(_two, "a")) == "192.168.88.0/24")
+check("node_network: a node's own mygw and mymask win", str(ipalloc.node_network(_two, "b")) == "10.9.0.0/16")
+check("node_network: none when neither says", ipalloc.node_network({"nodes": {"a": {}}}, "a") is None)
+check("allocate: a node is given an address in its own network",
+      ipalloc.allocate("b", _two, probe=False).startswith("10.9."))
+_addr = [{"ifname": "br0", "addr_info": [{"family": "inet", "local": "192.168.5.20", "prefixlen": 24, "scope": "global"}]}]
+check("bridge_network: a bridge carrying the default route gives that gateway and its prefix",
+      ipalloc.bridge_network(_addr, [{"dst": "default", "gateway": "192.168.5.1", "dev": "br0"}], "br0")
+      == {"mygw": "192.168.5.1", "mymask": "24"})
+_nat = [{"ifname": "virbr0", "addr_info": [{"family": "inet", "local": "192.168.122.1", "prefixlen": 24, "scope": "global"}]}]
+check("bridge_network: a NAT bridge, with the default route elsewhere, is its VMs' gateway itself",
+      ipalloc.bridge_network(_nat, [{"dst": "default", "gateway": "10.0.0.1", "dev": "eth0"}], "virbr0")
+      == {"mygw": "192.168.122.1", "mymask": "24"})
+check("bridge_network: a bridge without an IPv4 address gives nothing",
+      ipalloc.bridge_network([{"ifname": "br0", "addr_info": []}], [], "br0") == {})
+
+_lv = backends.LibvirtBackend("qemu+ssh://root@hv1/system", remote_host="hv1")
+_cmds = []
+
+
+def _fake_ssh(host, cmd, **kw):
+    _cmds.append((host, cmd))
+    out = json.dumps(_addr) if " addr " in cmd else json.dumps([{"dst": "default", "gateway": "192.168.5.1", "dev": "br0"}])
+    return mock.Mock(stdout=out, returncode=0)
+
+
+with mock.patch.object(backends, "ssh_run", side_effect=_fake_ssh):
+    _net = _lv.vm_network("br0")
+check("LibvirtBackend.vm_network: reads the bridge on the hypervisor over SSH",
+      _net == {"mygw": "192.168.5.1", "mymask": "24"} and all(h == "hv1" for h, _ in _cmds)
+      and any("addr show dev br0" in c for _, c in _cmds))
+with mock.patch.object(backends, "ssh_run", return_value=mock.Mock(stdout="not json", returncode=1)):
+    check("LibvirtBackend.vm_network: a host that answers nothing usable gives nothing", _lv.vm_network("br0") == {})
+check("VMBackend.vm_network: a backend that cannot tell gives nothing",
+      backends.VMBackend.vm_network(object.__new__(backends.VMBackend), "br0") == {})
 
 # The validator that holds a hand-written address to these rules is tested where every other
 # validate_lab_definition() check lives, in 10_lab_creation_core_test.py: it needs that check's

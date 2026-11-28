@@ -464,6 +464,17 @@ check("validate_lab_definition: node names in different domains with no mydomain
                                  issues_out=_issues) is False)
 check("validate_lab_definition: and the error asks for mydomain",
       any("cannot determine the default domain name" in line for line in _issues))
+_nonet = _lab_def({"common": dict(base_common, mydomain="sko.lab"),
+                   "nodes": {"vm1": {"mymac": "aa:bb:cc:dd:ee:0f", "config_method": "virt_customize"}}})
+_net_issues = []
+check("validate_lab_definition: no myip and no network is only a warning without host checks",
+      lc.validate_lab_definition(_nonet, single_host_cfg, "/iso", "/lab", host_checks=False,
+                                 issues_out=_net_issues) is True
+      and any("read from its hypervisor when the lab is created" in line for line in _net_issues))
+_net_issues = []
+lc.validate_lab_definition(_nonet, single_host_cfg, "/iso", "/lab", issues_out=_net_issues)
+check("validate_lab_definition: ...and an error in a real run, where the hypervisor was already asked",
+      any("nor its hypervisor's bridge gives a network" in line for line in _net_issues))
 _kclu_node = {"myip": "192.168.1.55", "mymac": "aa:bb:cc:dd:ee:0e", "config_method": "virt_customize",
               "kcluster": "k1", "INSTALL_RKE2_TYPE": "server"}
 _kclu_issues = []
@@ -605,8 +616,8 @@ check("validate_lab_definition: the same names pass once mydomain is set",
       lc.validate_lab_definition(_mixed_set, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 bad_no_ip = _lab_def({"common": dict(base_common),
                       "nodes": {"vm1": {"mymac": "aa:bb:cc:dd:ee:09", "config_method": "virt_customize"}}})
-check("validate_lab_definition: host_checks=False reports a missing myip",
-      lc.validate_lab_definition(bad_no_ip, single_host_cfg, "/iso", "/lab", host_checks=False) is False)
+check("validate_lab_definition: host_checks=False leaves a missing myip and network to the run",
+      lc.validate_lab_definition(bad_no_ip, single_host_cfg, "/iso", "/lab", host_checks=False) is True)
 check("validate_lab_definition: host_checks=False skips the source-image check (no ISO_LOC error)",
       lc.validate_lab_definition(_lab_def({"common": dict(base_common),
                                            "nodes": {"vm1": dict({"myip": "192.168.1.51",

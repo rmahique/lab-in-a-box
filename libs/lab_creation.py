@@ -520,21 +520,26 @@ def validate_lab_definition(definition, config, iso_loc, lab_setup_path, target_
         if _empty(myip) and not is_cloud_node:
             # A lab may leave myip out and let the run allocate one from the network it already describes
             # (libs/ipalloc.py). The choice is deterministic, so the address named here is the one the run will
-            # use. Without a mygw and mymask there is nothing to take it from, and the field is still required.
+            # use. A node with no mygw and mymask of its own or in common has its network read from its hypervisor
+            # by setup_lab.py before this runs; without host checks that is still to come.
             import ipalloc
+            node_net = ipalloc.node_network(definition, node)
             would_get = (ipalloc.allocate(node, definition, used=_previewed_ips,
                                           mydomain=str(common.get("mydomain") or ""), probe=False)
-                         if ipalloc.lab_network(common) else None)
+                         if node_net else None)
             if would_get:
                 # Each node's address is held against the next one's, as the run itself does by writing each
                 # allocation into the definition before moving on.
                 _previewed_ips.add(would_get)
-            if would_get:
-                warn("nodes.{}: no 'myip' — {} will be allocated from {}".format(
-                    node, would_get, ipalloc.lab_network(common)))
+                warn("nodes.{}: no 'myip' — {} will be allocated from {}".format(node, would_get, node_net))
+            elif node_net is None and not host_checks:
+                warn("nodes.{}: no 'myip' — its network is read from its hypervisor when the lab is created, and "
+                     "an address allocated from it".format(node))
+            elif node_net is None:
+                err("nodes.{}: 'myip' is required — neither the lab ('mygw' and 'mymask') nor its hypervisor's "
+                    "bridge gives a network to allocate one from".format(node))
             else:
-                err("nodes.{}: 'myip' is required — the lab has no 'mygw' and 'mymask' to allocate one "
-                    "from".format(node))
+                err("nodes.{}: 'myip' is required — no free address is left in {}".format(node, node_net))
 
         if not _empty(myip):
             if myip in seen_ips:
