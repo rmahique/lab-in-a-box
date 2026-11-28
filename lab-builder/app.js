@@ -965,6 +965,55 @@ function clusterFieldSet(cfg, name, common) {
   return isSet(cfg, name) || (CLUSTER_FROM_COMMON.has(name) && isSet(common, name));
 }
 
+// The common.mydomain lab definition `lab` is given when it is written, or "" when it needs none (same rule as
+// primary.default_domain()): only a lab that names no domain anywhere, or has a Kubernetes cluster without one while
+// common has none either, gets one. The domain the node names share, else "<name>-<6 random characters>.lab".
+function defaultDomain(lab, name) {
+  const common = lab.common || {};
+  if (isSet(common, "mydomain")) return "";
+  const nodes = Object.entries(lab.nodes || {});
+  const clusters = Object.values(lab.kclusters || {}).map((c) => c || {});
+  if (!nodes.length && !clusters.length) return "";
+  const domains = new Set(nodes.filter(([, cfg]) => !isSet(cfg, "mydomain"))
+    .map(([n]) => (n.includes(".") ? n.slice(n.indexOf(".") + 1) : "")));
+  const fqdn = [...domains].filter((d) => d);
+  if (fqdn.length && domains.size > 1) return "";
+  const shared = fqdn[0] || "";
+  const named = !!shared || nodes.some(([, cfg]) => isSet(cfg, "mydomain")) || clusters.some((c) => isSet(c, "mydomain"));
+  if (named && clusters.every((c) => isSet(c, "mydomain"))) return "";
+  if (shared) return shared;
+  const label = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    .slice(0, 40).replace(/-+$/, "") || "lab";
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let suffix = "";
+  for (let i = 0; i < 6; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+  return label + "-" + suffix + ".lab";
+}
+// Writes defaultDomain() into `definition` (a lab definition the caller is about to save or send); returns it.
+function fillDefaultDomain(definition, name) {
+  const domain = defaultDomain(definition, name);
+  if (domain) definition.common = Object.assign({}, definition.common, { mydomain: domain });
+  return definition;
+}
+// The canvas's lab name, as Save and Create file it.
+function canvasLabName() {
+  return ($("#labName").value.trim() || "lab").replace(/\.json$/, "");
+}
+// Gives the canvas's lab its default domain before it is written, in Common settings where the reader sees it.
+function fillCanvasDomain() {
+  const domain = defaultDomain(state.lab, canvasLabName());
+  if (!domain) return;
+  state.model.common.mydomain = domain;
+  refreshLab();
+  toast("This lab names no domain: it is " + domain + " from now on (Common settings, mydomain).");
+}
+
+// `model`'s Common settings, with the domain defaultDomain() gives the lab when it is written, if any.
+function withPendingDomain(model) {
+  return isSet(model.common, "mydomain") ? model.common
+    : Object.assign({}, model.common, { mydomain: defaultDomain(compileLab(model), "lab") });
+}
+
 // "needs input" markers: required fields with no value and no schema default.
 function missingRequired(item) {
   const secs = state.base && state.base.sections;
@@ -975,7 +1024,8 @@ function missingRequired(item) {
   if (item === "common") return miss(secs.common.fields, m.common);
   if (item.type === "node") return miss(secs.nodes.fields, item.cfg) + (item.name ? 0 : 1);
   if (item.type === "cluster") {
-    return needed(secs.kclusters.fields).filter((f) => !clusterFieldSet(item.cfg, f.name, m.common)).length
+    const common = withPendingDomain(m);
+    return needed(secs.kclusters.fields).filter((f) => !clusterFieldSet(item.cfg, f.name, common)).length
       + (item.name ? 0 : 1);
   }
   const sc = state.schemaCache[item.comp];
@@ -1098,8 +1148,9 @@ function lintLab(model) {
         errors.push("VM " + n.name + " has no IP address (myip), and the lab has no mygw and mymask to allocate one from.");
       }
     });
+    const clusterCommon = withPendingDomain(model);
     clusters.forEach((c) => {
-      secs.kclusters.fields.filter((f) => f.required && !clusterFieldSet(c.cfg, f.name, model.common)).forEach((f) => {
+      secs.kclusters.fields.filter((f) => f.required && !clusterFieldSet(c.cfg, f.name, clusterCommon)).forEach((f) => {
         errors.push("Kubernetes cluster " + c.name + ": " + f.name + " is not set.");
       });
     });
@@ -2411,6 +2462,7 @@ async function validateLab() {
 // the canvas first; with neither, this is the canvas's own button and takes the canvas's lab and name.
 function downloadLab(definition, filename) {
   if (!definition && $("#downloadBtn").disabled) return;
+  if (definition) fillDefaultDomain(definition, filename); else fillCanvasDomain();
   const name = (filename || $("#labName").value.trim() || "lab").replace(/[^A-Za-z0-9._-]/g, "_");
   const blob = new Blob([JSON.stringify(definition || state.lab, null, 2) + "\n"], { type: "application/json" });
   const a = el("a"); a.href = URL.createObjectURL(blob);
@@ -2419,6 +2471,7 @@ function downloadLab(definition, filename) {
 }
 async function saveLab(definition, filename) {
   if (!definition && $("#saveBtn").disabled) return;
+  if (definition) fillDefaultDomain(definition, filename); else fillCanvasDomain();
   try {
     const r = await adminCall("save", { filename: filename || $("#labName").value.trim() || "lab",
                                         config: definition || state.lab });
@@ -2514,6 +2567,7 @@ async function applyUrlParams() {
 
 async function sendLab(origin) {
   if ($("#sendBtn").disabled) return;
+  fillCanvasDomain();
   let sent = [];
   try { sent = JSON.parse(localStorage.getItem(SENT_ORIGINS_KEY) || "[]"); } catch (e) { sent = []; }
   if (!sent.includes(origin)) {
@@ -2878,6 +2932,7 @@ async function setCreatePassphrase(definition) {
 
 async function openCreate(example) {
   if (!example && $("#createBtn").disabled) return;
+  if (!example) fillCanvasDomain();
   state.createExample = example || "";
   const name = example || ($("#labName").value.trim() || "lab").replace(/\.json$/, "");
   $("#createExampleNote").hidden = !example;
