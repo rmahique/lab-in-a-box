@@ -479,7 +479,8 @@
    {"version": "1.0", "breaking": false, "changes": "Initial xfce addon: XFCE from the distribution's own packages, console/xrdp/vnc access"}
   ],
   "addon:zai": [
-   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"}
+   {"version": "1.0", "breaking": false, "changes": "First version: a LiteLLM proxy in front of the provider's hosted API, with the model named by the lab"},
+   {"version": "1.1", "breaking": false, "changes": "podman mode: zai_deployment, and zai_image, zai_image_tag and zai_port for the LiteLLM container a node runs when it lists zai in its own addons[]"}
   ],
   "config:automation.cfg": [
    {"version": "1.0", "breaking": false, "changes": "First version: split from the old config:lab.cfg. The automation node's own identity (network, hostname, vm/container/kubernetes shape) -- needed regardless of whether a KVM host is even involved."},
